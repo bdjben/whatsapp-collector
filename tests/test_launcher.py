@@ -1,12 +1,16 @@
 from pathlib import Path
 
+import pytest
+
 from whatsapp_collector.launcher import (
     DisplayFrame,
     choose_display,
+    debug_port_has_profile_conflict,
     edge_hidden_bounds,
     ensure_dedicated_whatsapp_window,
     launch_dedicated_chrome_window,
     marker_data_url,
+    terminate_debug_port_processes,
     terminate_profile_processes,
     visible_bounds,
 )
@@ -79,6 +83,74 @@ def test_terminate_profile_processes_waits_until_profile_processes_exit(monkeypa
     assert calls[0] == ["pkill", "-f", str(tmp_path)]
     assert calls[1] == ["pgrep", "-fal", str(tmp_path)]
     assert calls[2] == ["pgrep", "-fal", str(tmp_path)]
+
+
+def test_terminate_debug_port_processes_kills_only_configured_devtools_port(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    poll_results = [
+        "20518 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=19220 --user-data-dir=/tmp/old-profile",
+        "",
+    ]
+
+    class Completed:
+        def __init__(self, stdout: str = "", returncode: int = 0):
+            self.stdout = stdout
+            self.returncode = returncode
+
+    def fake_run(command, check=False, capture_output=True, text=True):
+        calls.append(command)
+        if command[:2] == ["pkill", "-f"]:
+            return Completed(returncode=0)
+        if command[:2] == ["pgrep", "-fal"]:
+            stdout = poll_results.pop(0) if poll_results else ""
+            return Completed(stdout=stdout, returncode=0 if stdout else 1)
+        raise AssertionError(f"Unexpected command: {command}")
+
+    monkeypatch.setattr("whatsapp_collector.launcher.subprocess.run", fake_run)
+    monkeypatch.setattr("whatsapp_collector.launcher.time.sleep", lambda *_args, **_kwargs: None)
+
+    terminate_debug_port_processes(19220)
+
+    assert calls[0] == ["pkill", "-f", "remote-debugging-port=19220"]
+    assert calls[1] == ["pgrep", "-fal", "remote-debugging-port=19220"]
+    assert calls[2] == ["pgrep", "-fal", "remote-debugging-port=19220"]
+
+
+def test_debug_port_has_profile_conflict_detects_stale_profile_owner(monkeypatch, tmp_path: Path) -> None:
+    desired = tmp_path / "Chrome Profile"
+    old = tmp_path / "old-profile"
+
+    class Completed:
+        def __init__(self, stdout: str = ""):
+            self.stdout = stdout
+
+    monkeypatch.setattr(
+        "whatsapp_collector.launcher.subprocess.run",
+        lambda *args, **kwargs: Completed(
+            f"101 Google Chrome --remote-debugging-port=19220 --user-data-dir={old}\n"
+            f"202 Google Chrome --remote-debugging-port=19220 --user-data-dir={desired}\n"
+        ),
+    )
+
+    assert debug_port_has_profile_conflict(19220, desired) is True
+
+
+def test_debug_port_has_profile_conflict_accepts_requested_profile_owner(monkeypatch, tmp_path: Path) -> None:
+    desired = tmp_path / "Chrome Profile"
+
+    class Completed:
+        def __init__(self, stdout: str = ""):
+            self.stdout = stdout
+
+    monkeypatch.setattr(
+        "whatsapp_collector.launcher.subprocess.run",
+        lambda *args, **kwargs: Completed(
+            f"202 Google Chrome --remote-debugging-port=19220 --user-data-dir={desired}\n"
+            f"203 Google Chrome Helper --remote-debugging-port=19220 --user-data-dir={desired}\n"
+        ),
+    )
+
+    assert debug_port_has_profile_conflict(19220, desired) is False
 
 
 def test_choose_display_uses_requested_or_first_available_display() -> None:
@@ -168,7 +240,9 @@ def test_ensure_dedicated_whatsapp_window_launches_when_debug_port_is_not_ready(
 
     monkeypatch.setattr("whatsapp_collector.launcher.load_display_frames", fake_load_display_frames)
     monkeypatch.setattr("whatsapp_collector.launcher.ChromeDevToolsBridge", FakeBridge)
+    monkeypatch.setattr("whatsapp_collector.launcher.debug_port_has_profile_conflict", lambda debug_port, profile_dir: False)
     monkeypatch.setattr("whatsapp_collector.launcher.terminate_profile_processes", lambda profile_dir: launched.setdefault('terminated_profile', profile_dir))
+    monkeypatch.setattr("whatsapp_collector.launcher.terminate_debug_port_processes", lambda debug_port: launched.setdefault('terminated_debug_port', debug_port))
     monkeypatch.setattr("whatsapp_collector.launcher.launch_dedicated_chrome_window", fake_launch_dedicated_chrome_window)
     monkeypatch.setattr("whatsapp_collector.launcher.time.sleep", lambda seconds: sleeps.append(seconds))
 
@@ -184,6 +258,52 @@ def test_ensure_dedicated_whatsapp_window_launches_when_debug_port_is_not_ready(
     assert launched['launch']['debug_port'] == 19220
     assert placed == {'left': -251, 'top': 2525, 'width': 420, 'height': 220}
     assert sleeps == [15]
+
+
+def test_ensure_dedicated_whatsapp_window_restarts_stale_devtools_port_without_page_targets(monkeypatch, tmp_path: Path) -> None:
+    calls: dict[str, object] = {"terminated_profiles": [], "terminated_ports": []}
+    state = {"page_calls": 0}
+
+    class FakeBridge:
+        def __init__(self, **kwargs):
+            calls["bridge"] = kwargs
+
+        def wait_until_ready(self, *, attempts, delay_seconds):
+            return {'Browser': 'Chrome/147'}
+
+        def wait_until_page_targets_exist(self, *, attempts, delay_seconds):
+            state["page_calls"] += 1
+            if state["page_calls"] == 1:
+                raise RuntimeError('port is alive but has no page targets')
+            return [{'id': 'page-1', 'type': 'page'}]
+
+        def place_window(self, *, left, top, width, height):
+            return {'windowId': 2026, 'targetId': 'page-1'}
+
+    monkeypatch.setattr(
+        "whatsapp_collector.launcher.load_display_frames",
+        lambda: {"PRIMARY": DisplayFrame(name="PRIMARY", x=0, y=0, width=1920, height=1080)},
+    )
+    monkeypatch.setattr("whatsapp_collector.launcher.ChromeDevToolsBridge", FakeBridge)
+    monkeypatch.setattr("whatsapp_collector.launcher.debug_port_has_profile_conflict", lambda debug_port, profile_dir: False)
+    monkeypatch.setattr(
+        "whatsapp_collector.launcher.terminate_profile_processes",
+        lambda profile_dir: calls["terminated_profiles"].append(profile_dir),
+    )
+    monkeypatch.setattr(
+        "whatsapp_collector.launcher.terminate_debug_port_processes",
+        lambda debug_port: calls["terminated_ports"].append(debug_port),
+    )
+    monkeypatch.setattr("whatsapp_collector.launcher.launch_dedicated_chrome_window", lambda **kwargs: calls.setdefault("launch", kwargs))
+    monkeypatch.setattr("whatsapp_collector.launcher.time.sleep", lambda *_args, **_kwargs: None)
+
+    payload = ensure_dedicated_whatsapp_window(profile_dir=tmp_path, wait_attempts=5, delay_seconds=0, settle_seconds=0)
+
+    assert payload["windowId"] == 2026
+    assert payload["launched"] is True
+    assert calls["terminated_profiles"] == [tmp_path]
+    assert calls["terminated_ports"] == [19220]
+    assert calls["launch"]["profile_dir"] == tmp_path
 
 
 def test_ensure_dedicated_whatsapp_window_reuses_existing_debug_port(monkeypatch, tmp_path: Path) -> None:
@@ -208,6 +328,7 @@ def test_ensure_dedicated_whatsapp_window_reuses_existing_debug_port(monkeypatch
         lambda: {"EXTERNAL": DisplayFrame(name="EXTERNAL", x=0, y=0, width=1920, height=1080)},
     )
     monkeypatch.setattr("whatsapp_collector.launcher.ChromeDevToolsBridge", FakeBridge)
+    monkeypatch.setattr("whatsapp_collector.launcher.debug_port_has_profile_conflict", lambda debug_port, profile_dir: False)
     monkeypatch.setattr(
         "whatsapp_collector.launcher.launch_dedicated_chrome_window",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not relaunch")),
@@ -244,6 +365,7 @@ def test_ensure_dedicated_whatsapp_window_supports_visible_placement_mode(monkey
         lambda: {"WHATSAPPMONITOR": DisplayFrame(name="WHATSAPPMONITOR", x=4224, y=-2351, width=2304, height=1440)},
     )
     monkeypatch.setattr("whatsapp_collector.launcher.ChromeDevToolsBridge", FakeBridge)
+    monkeypatch.setattr("whatsapp_collector.launcher.debug_port_has_profile_conflict", lambda debug_port, profile_dir: False)
     monkeypatch.setattr(
         "whatsapp_collector.launcher.launch_dedicated_chrome_window",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not relaunch")),
@@ -287,6 +409,7 @@ def test_ensure_dedicated_whatsapp_window_falls_back_when_requested_display_miss
         lambda: {"LAPTOP": DisplayFrame(name="LAPTOP", x=0, y=0, width=1728, height=1117)},
     )
     monkeypatch.setattr("whatsapp_collector.launcher.ChromeDevToolsBridge", FakeBridge)
+    monkeypatch.setattr("whatsapp_collector.launcher.debug_port_has_profile_conflict", lambda debug_port, profile_dir: False)
     monkeypatch.setattr(
         "whatsapp_collector.launcher.launch_dedicated_chrome_window",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not relaunch")),

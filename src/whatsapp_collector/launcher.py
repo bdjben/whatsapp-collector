@@ -55,17 +55,16 @@ def _run_applescript(script: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def terminate_profile_processes(profile_dir: Path, *, wait_attempts: int = 20, delay_seconds: float = 0.25) -> None:
-    profile_str = str(profile_dir)
+def _terminate_matching_processes(pattern: str, *, wait_attempts: int = 20, delay_seconds: float = 0.25) -> None:
     subprocess.run(
-        ["pkill", "-f", profile_str],
+        ["pkill", "-f", pattern],
         check=False,
         capture_output=True,
         text=True,
     )
     for _ in range(wait_attempts):
         remaining = subprocess.run(
-            ["pgrep", "-fal", profile_str],
+            ["pgrep", "-fal", pattern],
             check=False,
             capture_output=True,
             text=True,
@@ -73,6 +72,30 @@ def terminate_profile_processes(profile_dir: Path, *, wait_attempts: int = 20, d
         if not remaining.stdout.strip():
             return
         time.sleep(delay_seconds)
+
+
+def terminate_profile_processes(profile_dir: Path, *, wait_attempts: int = 20, delay_seconds: float = 0.25) -> None:
+    _terminate_matching_processes(str(profile_dir), wait_attempts=wait_attempts, delay_seconds=delay_seconds)
+
+
+def terminate_debug_port_processes(debug_port: int, *, wait_attempts: int = 20, delay_seconds: float = 0.25) -> None:
+    _terminate_matching_processes(f"remote-debugging-port={int(debug_port)}", wait_attempts=wait_attempts, delay_seconds=delay_seconds)
+
+
+def debug_port_process_lines(debug_port: int) -> list[str]:
+    completed = subprocess.run(
+        ["pgrep", "-fal", f"remote-debugging-port={int(debug_port)}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return [line for line in completed.stdout.splitlines() if line.strip()]
+
+
+def debug_port_has_profile_conflict(debug_port: int, profile_dir: Path) -> bool:
+    profile = str(profile_dir.expanduser())
+    lines = debug_port_process_lines(debug_port)
+    return bool(lines) and any(profile not in line for line in lines)
 
 
 def load_display_frames() -> dict[str, DisplayFrame]:
@@ -291,11 +314,11 @@ def ensure_dedicated_whatsapp_window(
     )
 
     launched = False
-    try:
-        bridge.wait_until_ready(attempts=1, delay_seconds=delay_seconds)
-        bridge.wait_until_page_targets_exist(attempts=1, delay_seconds=delay_seconds)
-    except RuntimeError:
+
+    def relaunch_window() -> None:
+        nonlocal launched
         terminate_profile_processes(profile_dir)
+        terminate_debug_port_processes(debug_port)
         if delay_seconds:
             time.sleep(delay_seconds)
         launch_dedicated_chrome_window(
@@ -308,6 +331,15 @@ def ensure_dedicated_whatsapp_window(
         launched = True
         bridge.wait_until_ready(attempts=wait_attempts, delay_seconds=delay_seconds)
         bridge.wait_until_page_targets_exist(attempts=wait_attempts, delay_seconds=delay_seconds)
+
+    if debug_port_has_profile_conflict(debug_port, profile_dir):
+        relaunch_window()
+    else:
+        try:
+            bridge.wait_until_ready(attempts=1, delay_seconds=delay_seconds)
+            bridge.wait_until_page_targets_exist(attempts=1, delay_seconds=delay_seconds)
+        except RuntimeError:
+            relaunch_window()
 
     bounds = placement_bounds(display, placement_mode)
     placement = bridge.place_window(

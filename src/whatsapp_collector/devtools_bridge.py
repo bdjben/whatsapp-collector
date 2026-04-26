@@ -27,13 +27,19 @@ class ChromeDevToolsBridge:
             **payload,
         }
         with as_file(NODE_HELPER_RESOURCE) as helper_path:
-            completed = subprocess.run(
-                ["node", str(helper_path)],
-                input=json.dumps(merged),
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+            try:
+                completed = subprocess.run(
+                    ["node", str(helper_path)],
+                    input=json.dumps(merged),
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            except subprocess.CalledProcessError as exc:
+                detail = (exc.stderr or exc.stdout or str(exc)).strip()
+                raise RuntimeError(
+                    f"Chrome DevTools helper failed (action={payload.get('action')}, port={self.port}): {detail}"
+                ) from exc
         stdout = completed.stdout.strip()
         return json.loads(stdout) if stdout else None
 

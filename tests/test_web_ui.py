@@ -49,6 +49,7 @@ def test_render_dashboard_html_has_setup_controls_without_display_assumption(tmp
     assert "*/15 * * * *" in html
     assert "Copy schedule command" in html
     assert "The AI tool needs local file access to this path" in html
+    assert "setError('Export failed'" in html
     assert "Advanced diagnostics" in html
     assert "Display name" not in html
     assert "Max Messages" not in html

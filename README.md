@@ -51,6 +51,18 @@ The app writes exports to a normal visible folder by default:
 
 Deleting the app from `/Applications` removes the app itself. Your exported JSON files remain in `~/Documents/WhatsApp Collector/Exports` so you do not accidentally lose collected data.
 
+### If Run Export says "Export failed"
+
+Use release `v0.3.3` or newer. Earlier builds could leave Chrome's fixed DevTools port attached to an older collector profile, so the app window looked logged in but the exporter was talking to the wrong/stale Chrome process. The fixed app clears stale `remote-debugging-port=19220` collector processes before opening the dedicated WhatsApp window and shows the real export error in the status line plus Advanced diagnostics.
+
+After installing a fixed DMG:
+
+1. Quit `WhatsApp Collector` from the `W↗` menu if it is already running.
+2. Open the new app from `/Applications`.
+3. Click **Launch / Login** once.
+4. Confirm WhatsApp Web is logged in.
+5. Click **Run Export** again.
+
 ## UI
 
 Start the local UI from the menu bar app, or from the CLI:

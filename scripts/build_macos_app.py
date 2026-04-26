@@ -11,7 +11,7 @@ from pathlib import Path
 APP_NAME = "WhatsApp Collector"
 BUNDLE_NAME = f"{APP_NAME}.app"
 BUNDLE_IDENTIFIER = "studio.bdjben.whatsapp-collector"
-BUNDLE_VERSION = "0.3.2"
+BUNDLE_VERSION = "0.3.3"
 PYZ_NAME = "whatsapp-collector.pyz"
 DMG_NAME = "WhatsApp-Collector-macOS.dmg"
 ZIP_NAME = "WhatsApp-Collector-macOS.zip"

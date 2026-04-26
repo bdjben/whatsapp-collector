@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "whatsapp-collector"
-version = "0.3.2"
+version = "0.3.3"
 description = "Read-only WhatsApp Web collector for macOS Chrome sessions"
 readme = "README.md"
 license = "MIT"
