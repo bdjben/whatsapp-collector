@@ -7,7 +7,7 @@ This project is deliberately not a bot and not a sender. It never types into Wha
 ## Features
 
 - Installable Python package with a `whatsapp-collector` CLI.
-- Drag-to-Applications macOS menu bar app (`W↗`) that opens the local UI and exposes the output folder.
+- Drag-to-Applications macOS menu bar app (`W↗`) distributed as a signed DMG with the usual app-to-Applications install flow.
 - Local polished web UI via `whatsapp-collector ui` for login/setup, export runs, settings, status, and export preview.
 - Active Chrome session collection through AppleScript JavaScript from Apple Events.
 - Optional dedicated Chrome profile collection through Chrome DevTools Protocol for exact no-focus targeting.
@@ -22,15 +22,17 @@ This project is deliberately not a bot and not a sender. It never types into Wha
 
 ## Mac app
 
-For non-developer installs, use the macOS app bundle from the GitHub release:
+For non-developer installs, use the macOS DMG from the GitHub release:
 
 ```bash
-curl -L -o WhatsApp-Collector-macOS.zip \
-  https://github.com/bdjben/whatsapp-collector/releases/latest/download/WhatsApp-Collector-macOS.zip
-open WhatsApp-Collector-macOS.zip
+curl -L -o WhatsApp-Collector-macOS.dmg \
+  https://github.com/bdjben/whatsapp-collector/releases/latest/download/WhatsApp-Collector-macOS.dmg
+open WhatsApp-Collector-macOS.dmg
 ```
 
-Then drag `WhatsApp Collector.app` into `/Applications`. If macOS warns that the app is from an unidentified developer, right-click the app, choose **Open**, and confirm once.
+A Finder window opens with `WhatsApp Collector.app` and an `Applications` shortcut. Drag the app onto `Applications`, then launch it from `/Applications` or Spotlight.
+
+The app bundle is ad-hoc signed so macOS no longer reports it as damaged because of an invalid bundle signature. It is not Apple-notarized yet, so macOS may still show the normal unidentified-developer first-launch warning. If that happens, right-click `WhatsApp Collector.app` in `/Applications`, choose **Open**, and confirm once.
 
 The app lives in the macOS menu bar as `W↗`. Use that menu to:
 

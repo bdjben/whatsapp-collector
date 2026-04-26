@@ -4,6 +4,8 @@ import importlib.util
 import plistlib
 from pathlib import Path
 
+import pytest
+
 
 def _load_builder():
     script = Path(__file__).resolve().parents[1] / "scripts" / "build_macos_app.py"
@@ -47,3 +49,57 @@ def test_macos_app_builder_uses_accessible_document_output_folder() -> None:
     assert builder.DEFAULT_APP_OUTPUT_DIR == "~/Documents/WhatsApp Collector/Exports"
     assert builder.DEFAULT_APP_OUTPUT_JSON == "~/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json"
     assert builder.DEFAULT_APP_PROFILE_DIR == "~/Library/Application Support/WhatsApp Collector/Chrome Profile"
+    assert builder.DMG_NAME == "WhatsApp-Collector-macOS.dmg"
+
+
+def test_macos_app_builder_signs_bundle_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    builder = _load_builder()
+    project = tmp_path / "project"
+    dist = tmp_path / "dist"
+    (project / "dist").mkdir(parents=True)
+    (project / "dist" / "whatsapp-collector.pyz").write_text("#!/usr/bin/env python3\n")
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append([str(part) for part in command])
+        return object()
+
+    monkeypatch.setattr(builder.subprocess, "run", fake_run)
+
+    app_path = builder.build_macos_app(project, dist, compile_app=False)
+
+    assert app_path.name == "WhatsApp Collector.app"
+    assert any(
+        call[:6] == ["codesign", "--force", "--deep", "--sign", "-", "--timestamp=none"]
+        and call[-1] == str(app_path)
+        for call in calls
+    )
+
+
+def test_macos_dmg_builder_creates_drag_to_applications_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    builder = _load_builder()
+    app = tmp_path / "WhatsApp Collector.app"
+    app.mkdir()
+    dist = tmp_path / "dist"
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append([str(part) for part in command])
+        if command[0] == "hdiutil" and "-o" in command:
+            output = Path(command[command.index("-o") + 1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"fake dmg")
+        return object()
+
+    monkeypatch.setattr(builder.subprocess, "run", fake_run)
+
+    dmg_path = builder.build_dmg(app, dist)
+
+    assert dmg_path.name == "WhatsApp-Collector-macOS.dmg"
+    assert dmg_path.exists()
+    staging = tmp_path / "dist" / "dmg-staging"
+    assert (staging / "WhatsApp Collector.app").exists()
+    assert (staging / "Applications").is_symlink()
+    hdiutil_call = next(call for call in calls if call[:2] == ["hdiutil", "create"])
+    assert "-volname" in hdiutil_call
+    assert "WhatsApp Collector" in hdiutil_call

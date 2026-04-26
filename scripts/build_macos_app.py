@@ -11,8 +11,10 @@ from pathlib import Path
 APP_NAME = "WhatsApp Collector"
 BUNDLE_NAME = f"{APP_NAME}.app"
 BUNDLE_IDENTIFIER = "studio.bdjben.whatsapp-collector"
-BUNDLE_VERSION = "0.3.1"
+BUNDLE_VERSION = "0.3.2"
 PYZ_NAME = "whatsapp-collector.pyz"
+DMG_NAME = "WhatsApp-Collector-macOS.dmg"
+ZIP_NAME = "WhatsApp-Collector-macOS.zip"
 DEFAULT_APP_OUTPUT_DIR = "~/Documents/WhatsApp Collector/Exports"
 DEFAULT_APP_OUTPUT_JSON = f"{DEFAULT_APP_OUTPUT_DIR}/whatsapp-dashboard-export.json"
 DEFAULT_APP_PROFILE_DIR = "~/Library/Application Support/WhatsApp Collector/Chrome Profile"
@@ -177,7 +179,7 @@ ICON_SVG = '''<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024"
 '''
 
 
-def build_macos_app(project_root: Path, output_dir: Path, *, compile_app: bool = True) -> Path:
+def build_macos_app(project_root: Path, output_dir: Path, *, compile_app: bool = True, sign_app: bool = True) -> Path:
     project_root = project_root.resolve()
     output_dir = output_dir.resolve()
     pyz_path = project_root / "dist" / PYZ_NAME
@@ -204,6 +206,8 @@ def build_macos_app(project_root: Path, output_dir: Path, *, compile_app: bool =
     else:
         (macos / APP_NAME).write_text("#!/bin/sh\necho 'compile_app=False scaffold'\n")
         (macos / APP_NAME).chmod(0o755)
+    if sign_app:
+        _sign_app(app_path)
     return app_path
 
 
@@ -245,14 +249,83 @@ def _build_icon(resources: Path) -> None:
     subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(resources / "WhatsAppCollector.icns")], check=True)
 
 
+def _sign_app(app_path: Path) -> None:
+    subprocess.run(
+        ["codesign", "--force", "--deep", "--sign", "-", "--timestamp=none", str(app_path)],
+        check=True,
+    )
+
+
+def build_zip(app_path: Path, output_dir: Path) -> Path:
+    output_dir = output_dir.resolve()
+    zip_path = output_dir / ZIP_NAME
+    if zip_path.exists():
+        zip_path.unlink()
+    subprocess.run(
+        ["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(app_path), str(zip_path)],
+        check=True,
+    )
+    return zip_path
+
+
+def build_dmg(app_path: Path, output_dir: Path) -> Path:
+    output_dir = output_dir.resolve()
+    staging = output_dir / "dmg-staging"
+    dmg_path = output_dir / DMG_NAME
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    staged_app = staging / BUNDLE_NAME
+    shutil.copytree(app_path, staged_app, symlinks=True)
+    (staging / "Applications").symlink_to("/Applications")
+    readme = staging / "README.txt"
+    readme.write_text(
+        "Drag WhatsApp Collector.app onto the Applications shortcut.\n\n"
+        "If macOS still blocks first launch, right-click WhatsApp Collector.app in Applications, choose Open, "
+        "and confirm once. This release is ad-hoc signed but not Apple-notarized.\n"
+    )
+    if dmg_path.exists():
+        dmg_path.unlink()
+    subprocess.run(
+        [
+            "hdiutil",
+            "create",
+            "-volname",
+            APP_NAME,
+            "-srcfolder",
+            str(staging),
+            "-ov",
+            "-format",
+            "UDZO",
+            "-o",
+            str(dmg_path),
+        ],
+        check=True,
+    )
+    return dmg_path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build WhatsApp Collector.app for macOS")
     parser.add_argument("--project-root", default=str(Path(__file__).resolve().parents[1]))
     parser.add_argument("--output-dir", default="dist")
     parser.add_argument("--no-compile", action="store_true", help="Create bundle scaffold without compiling Swift or generating icns")
+    parser.add_argument("--no-sign", action="store_true", help="Skip ad-hoc code signing")
+    parser.add_argument("--no-dmg", action="store_true", help="Skip DMG creation")
+    parser.add_argument("--no-zip", action="store_true", help="Skip legacy ZIP creation")
     args = parser.parse_args()
-    app = build_macos_app(Path(args.project_root), Path(args.output_dir), compile_app=not args.no_compile)
+    output_dir = Path(args.output_dir)
+    app = build_macos_app(
+        Path(args.project_root),
+        output_dir,
+        compile_app=not args.no_compile,
+        sign_app=not args.no_sign,
+    )
     print(app)
+    if not args.no_zip:
+        print(build_zip(app, output_dir))
+    if not args.no_dmg:
+        print(build_dmg(app, output_dir))
     return 0
 
 
