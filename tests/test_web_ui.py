@@ -43,11 +43,15 @@ def test_render_dashboard_html_has_setup_controls_without_display_assumption(tmp
     assert "Use this export with your AI tools" in html
     assert "Copy AI prompt" in html
     assert "most recent WhatsApp Collector export is at" in html
-    assert "Schedule regular updates" in html
-    assert "curl -X POST http://127.0.0.1:8765/api/export/run" in html
-    assert "Every 15 minutes with cron" in html
-    assert "*/15 * * * *" in html
-    assert "Copy schedule command" in html
+    assert "Automatic exports" in html
+    assert "Start automatic exports" in html
+    assert "Stop automatic exports" in html
+    assert "Every" in html
+    assert "minutes" in html
+    assert "macOS background schedule" in html
+    assert "Copy schedule command" not in html
+    assert "crontab -e" not in html
+    assert "curl -X POST http://127.0.0.1:8765/api/export/run" not in html
     assert "The AI tool needs local file access to this path" in html
     assert "setError('Export failed'" in html
     assert "Advanced diagnostics" in html
@@ -105,6 +109,53 @@ def test_ui_api_run_export_uses_requested_max_messages(tmp_path: Path) -> None:
     assert calls["account_label"] == "Ops"
     written = json.loads((tmp_path / "export.json").read_text())
     assert written["maxRecentMessages"] == 75
+
+
+def test_ui_schedule_api_installs_and_removes_background_schedule(tmp_path: Path) -> None:
+    calls: dict[str, object] = {"removed": False}
+
+    def fake_install_schedule(*, ui_url, payload, interval_minutes):
+        calls["install"] = {
+            "ui_url": ui_url,
+            "payload": payload,
+            "interval_minutes": interval_minutes,
+        }
+        return {"enabled": True, "loaded": True, "intervalMinutes": interval_minutes, "nextStep": "scheduled"}
+
+    def fake_remove_schedule():
+        calls["removed"] = True
+        return {"enabled": False, "loaded": False, "nextStep": "Automatic exports are off."}
+
+    def fake_schedule_status():
+        return {"enabled": False, "loaded": False, "nextStep": "Automatic exports are off."}
+
+    config = UIConfig(output_path=tmp_path / "export.json", profile_dir=tmp_path / "profile", host="127.0.0.1", port=0)
+    server, url = _start_test_server(
+        config,
+        install_schedule=fake_install_schedule,
+        remove_schedule=fake_remove_schedule,
+        schedule_status=fake_schedule_status,
+    )
+    try:
+        status, payload = _json_request(url, "GET", "/api/schedule")
+        assert status == 200
+        assert payload["schedule"]["enabled"] is False
+
+        status, payload = _json_request(url, "POST", "/api/schedule/install", {"intervalMinutes": 10, "maxMessages": 25, "accountLabel": "Ops"})
+        assert status == 200
+        assert payload["ok"] is True
+        assert calls["install"]["interval_minutes"] == 10
+        assert calls["install"]["ui_url"] == url
+        assert calls["install"]["payload"]["maxMessages"] == 25
+        assert calls["install"]["payload"]["accountLabel"] == "Ops"
+        assert calls["install"]["payload"]["outputPath"] == str(tmp_path / "export.json")
+
+        status, payload = _json_request(url, "POST", "/api/schedule/remove", {})
+        assert status == 200
+        assert payload["ok"] is True
+        assert calls["removed"] is True
+    finally:
+        server.shutdown()
 
 
 def _start_test_server(config: UIConfig, **deps):

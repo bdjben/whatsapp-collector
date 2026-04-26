@@ -88,7 +88,7 @@ The UI provides:
 - status cards for chats exported, export status, and runtime state
 - export preview and collapsed advanced diagnostics
 - a copyable AI harness prompt that tells your agent where the most recent regularly updated WhatsApp export lives
-- a copyable local `curl` command and cron example for scheduled exports
+- automatic exports configured directly from the UI using a macOS background schedule, with no Terminal command copying
 
 The UI is local-only by default (`127.0.0.1`) and exposes no send/composer capability.
 
@@ -223,25 +223,16 @@ When finished:
 whatsapp-collector quit-profile --profile-dir ~/.whatsapp-collector/chrome-profile
 ```
 
-## Scheduled exports and AI harness prompt
+## Automatic exports and AI harness prompt
 
-The app can be refreshed manually with **Run Export**, or on a schedule by calling the local UI endpoint while the menu bar app/UI server is running.
+The app can be refreshed manually with **Run Export**, or on a recurring schedule directly from the UI:
 
-Copy this from the UI's **Schedule regular updates** section, or adapt it manually:
+1. Open the menu bar app or run `whatsapp-collector ui`.
+2. Click **Launch / Login** and confirm WhatsApp Web is logged in.
+3. In **Automatic exports**, choose the interval, for example every 15 minutes.
+4. Click **Start automatic exports**.
 
-```bash
-curl -X POST http://127.0.0.1:8765/api/export/run \
-  -H 'Content-Type: application/json' \
-  -d '{"maxMessages":15,"accountLabel":"WhatsApp","displayName":null,"profileDir":"~/Library/Application Support/WhatsApp Collector/Chrome Profile","outputPath":"~/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json"}'
-```
-
-Example cron entry for every 15 minutes:
-
-```cron
-*/15 * * * * curl -X POST http://127.0.0.1:8765/api/export/run -H 'Content-Type: application/json' -d '{"maxMessages":15,"accountLabel":"WhatsApp","displayName":null,"profileDir":"~/Library/Application Support/WhatsApp Collector/Chrome Profile","outputPath":"~/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json"}' >/tmp/whatsapp-collector-export.log 2>&1
-```
-
-Keep the menu bar app or `whatsapp-collector ui` running so the local endpoint exists. Launch / Login must have been completed at least once so the dedicated Chrome profile is logged in.
+WhatsApp Collector writes a user LaunchAgent under `~/Library/LaunchAgents/` and a small helper script/payload under `~/Library/Application Support/WhatsApp Collector/`. The schedule opens the menu-bar app if needed, waits for the local UI endpoint, then refreshes the same export data file. Use **Stop automatic exports** in the UI to turn it off; no Terminal or copied `cron` command is required.
 
 The UI and menu bar app also provide a copyable AI prompt. The default text is:
 

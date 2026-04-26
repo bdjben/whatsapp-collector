@@ -18,11 +18,15 @@ from whatsapp_collector.launcher import (
     DEFAULT_TARGET_URL,
     ensure_dedicated_whatsapp_window,
 )
+from whatsapp_collector.scheduler import install_schedule, remove_schedule, schedule_status
 
 DEFAULT_UI_OUTPUT_PATH = Path("~/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json")
 
 CollectExport = Callable[..., dict[str, Any]]
 EnsureWindow = Callable[..., dict[str, Any]]
+InstallSchedule = Callable[..., dict[str, Any]]
+RemoveSchedule = Callable[[], dict[str, Any]]
+ScheduleStatus = Callable[[], dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -45,8 +49,6 @@ def render_dashboard_html(config: UIConfig) -> str:
     output_display_path = _display_path(config.output_path)
     profile_display_path = _display_path(config.profile_dir)
     ai_prompt = _ai_harness_prompt(output_display_path)
-    schedule_command = _schedule_curl_command(config)
-    cron_example = f"*/15 * * * * {schedule_command} >/tmp/whatsapp-collector-export.log 2>&1"
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -159,12 +161,20 @@ def render_dashboard_html(config: UIConfig) -> str:
       <p class="field-help">Copy this prompt into your AI harness, agent, or automation tool so it knows where the regularly updated WhatsApp Collector data file lives. The AI tool needs local file access to this path; browser-only chat tools usually cannot read local files unless you upload the JSON.</p>
       <textarea class="copy-box" id="aiPrompt" readonly>{_escape_html(ai_prompt)}</textarea>
       <div class="actions"><button class="secondary" onclick="copyText('aiPrompt')">Copy AI prompt</button></div>
-      <h2 style="margin-top:22px">Schedule regular updates</h2>
-      <p class="field-help">After Launch / Login has opened WhatsApp Web and the menu bar app is running, schedule this local request with launchd, cron, Shortcuts, or your automation tool of choice. It refreshes the same export file shown above.</p>
-      <pre id="scheduleCommand">{_escape_html(schedule_command)}</pre>
-      <div class="actions"><button class="secondary" onclick="copyText('scheduleCommand')">Copy schedule command</button></div>
-      <p class="field-help" style="margin-top:14px"><strong>Every 15 minutes with cron:</strong> open Terminal, run <code>crontab -e</code>, paste this line, save, and keep WhatsApp Collector running in the menu bar.</p>
-      <pre id="cronExample">{_escape_html(cron_example)}</pre>
+      <h2 style="margin-top:22px">Automatic exports</h2>
+      <p class="field-help">Set this up here — no Terminal command copying. WhatsApp Collector installs a macOS background schedule that opens the menu-bar app if needed and refreshes the same export file shown above.</p>
+      <div class="row">
+        <div>
+          <label for="scheduleInterval">Every</label>
+          <input id="scheduleInterval" type="number" min="1" value="15" />
+        </div>
+        <div>
+          <label>Automatic export status</label>
+          <div class="path-box" id="scheduleStatus">Automatic exports: checking…</div>
+        </div>
+      </div>
+      <div class="actions"><button onclick="startSchedule()">Start automatic exports</button><button class="secondary" onclick="stopSchedule()">Stop automatic exports</button><button class="secondary" onclick="refreshScheduleStatus()">Refresh schedule status</button></div>
+      <p class="mini-note">This uses a macOS background schedule while you are logged in. Keep WhatsApp Web logged in inside the collector Chrome profile.</p>
     </section>
     <section class="panel" style="margin-top:18px"><details><summary>Advanced diagnostics</summary><p class="field-help">Raw JSON for troubleshooting. Most users can ignore this unless an export fails or another app asks for diagnostics.</p><pre id="log">{config_json}</pre></details></section>
   </main>
@@ -186,8 +196,12 @@ function pathForHumans(fieldId, configKey) {{ const path = document.getElementBy
 function currentOutputPathForHumans() {{ return pathForHumans('outputPath', 'outputPath'); }}
 function currentProfileDirForHumans() {{ return pathForHumans('profileDir', 'profileDir'); }}
 function aiPromptForPath(path) {{ return `My most recent WhatsApp Collector export is at:\n${{path}}\n\nIt is updated regularly. Treat this JSON file as a read-only local resource when answering questions about my WhatsApp conversations. You need local filesystem access to this path; if you cannot read local files directly, ask me to upload the JSON. If you need current WhatsApp context, read this file first, use its account metadata and threads/messages as source data, and cite that the information came from the local WhatsApp Collector export. Do not send messages or modify WhatsApp from this file.`; }}
-function scheduleCommand() {{ return `curl -X POST http://${{initialConfig.host}}:${{initialConfig.port}}/api/export/run -H 'Content-Type: application/json' -d '${{JSON.stringify(cfg())}}'`; }}
-function updatePathHints() {{ const outputPath = currentOutputPathForHumans(); document.getElementById('outputPathHint').textContent = 'Current file: ' + outputPath; document.getElementById('profileDirHint').textContent = 'Current profile folder: ' + currentProfileDirForHumans(); document.getElementById('aiPrompt').value = aiPromptForPath(outputPath); const command = scheduleCommand(); document.getElementById('scheduleCommand').textContent = command; document.getElementById('cronExample').textContent = '*/15 * * * * ' + command + ' >/tmp/whatsapp-collector-export.log 2>&1'; }}
+function scheduleCfg() {{ return {{ ...cfg(), intervalMinutes: Math.max(1, Number(document.getElementById('scheduleInterval').value || 15)) }}; }}
+function renderScheduleStatus(schedule) {{ const state = schedule.enabled ? (schedule.loaded ? 'On' : 'Configured') : 'Off'; const interval = schedule.intervalMinutes ? ` · every ${{schedule.intervalMinutes}} minutes` : ''; document.getElementById('scheduleStatus').textContent = `Automatic exports: ${{state}}${{interval}}. ${{schedule.nextStep || ''}}`; }}
+async function refreshScheduleStatus() {{ try {{ const j=await get('/api/schedule'); renderScheduleStatus(j.schedule); setLog(j); }} catch(e) {{ setLog(e); setError('Schedule status failed', e); }} }}
+async function startSchedule() {{ setBusy('Setting up automatic exports...'); try {{ const j=await post('/api/schedule/install', scheduleCfg()); renderScheduleStatus(j.schedule); setLog(j); setOk('Automatic exports are on.'); }} catch(e) {{ setLog(e); setError('Schedule setup failed', e); }} }}
+async function stopSchedule() {{ setBusy('Turning off automatic exports...'); try {{ const j=await post('/api/schedule/remove', {{}}); renderScheduleStatus(j.schedule); setLog(j); setOk('Automatic exports are off.'); }} catch(e) {{ setLog(e); setError('Schedule stop failed', e); }} }}
+function updatePathHints() {{ const outputPath = currentOutputPathForHumans(); document.getElementById('outputPathHint').textContent = 'Current file: ' + outputPath; document.getElementById('profileDirHint').textContent = 'Current profile folder: ' + currentProfileDirForHumans(); document.getElementById('aiPrompt').value = aiPromptForPath(outputPath); }}
 async function copyText(id) {{ const value = document.getElementById(id).value || document.getElementById(id).textContent; try {{ await navigator.clipboard.writeText(value); setOk('Copied.'); }} catch(e) {{ setLog({{error:'copy-failed', detail:String(e)}}); }} }}
 function escapeHtml(s) {{ return String(s).replace(/[&<>"']/g, c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c])); }}
 document.getElementById('outputPath').addEventListener('input', updatePathHints);
@@ -195,8 +209,10 @@ document.getElementById('profileDir').addEventListener('input', updatePathHints)
 document.getElementById('maxMessages').addEventListener('input', updatePathHints);
 document.getElementById('accountLabel').addEventListener('input', updatePathHints);
 document.getElementById('displayName').addEventListener('input', updatePathHints);
+document.getElementById('scheduleInterval').addEventListener('input', refreshScheduleStatus);
 updatePathHints();
 refreshStatus();
+refreshScheduleStatus();
 </script>
 </body></html>"""
 
@@ -227,20 +243,6 @@ def _ai_harness_prompt(output_display_path: str) -> str:
         "information came from the local WhatsApp Collector export. Do not send messages or modify "
         "WhatsApp from this file."
     )
-
-
-def _schedule_curl_command(config: UIConfig) -> str:
-    payload = json.dumps(
-        {
-            "maxMessages": config.max_messages,
-            "accountLabel": config.account_label,
-            "displayName": config.display_name,
-            "profileDir": str(config.profile_dir),
-            "outputPath": str(config.output_path),
-        },
-        ensure_ascii=False,
-    )
-    return f"curl -X POST http://{config.host}:{config.port}/api/export/run -H 'Content-Type: application/json' -d '{payload}'"
 
 
 def _public_config(config: UIConfig) -> dict[str, Any]:
@@ -283,6 +285,9 @@ def create_app_handler(
     *,
     collect_export: CollectExport = default_collect_export,
     ensure_window: EnsureWindow = ensure_dedicated_whatsapp_window,
+    install_schedule: InstallSchedule = install_schedule,
+    remove_schedule: RemoveSchedule = remove_schedule,
+    schedule_status: ScheduleStatus = schedule_status,
 ):
     class WhatsAppCollectorHandler(BaseHTTPRequestHandler):
         server_version = "WhatsAppCollectorUI/0.1"
@@ -293,6 +298,9 @@ def create_app_handler(
                 return
             if self.path == "/api/status":
                 self._send_json({"ok": True, "checkedAt": _now(), "config": _public_config(config), "export": _read_export_summary(config.output_path)})
+                return
+            if self.path == "/api/schedule":
+                self._send_json({"ok": True, "checkedAt": _now(), "schedule": schedule_status()})
                 return
             if self.path == "/api/export":
                 if not config.output_path.exists():
@@ -331,6 +339,17 @@ def create_app_handler(
                     _write_atomic_json(export, effective.output_path)
                     self._send_json({"ok": True, "export": _read_export_summary(effective.output_path), "threadCount": len(export.get("threads", []))})
                     return
+                if self.path == "/api/schedule/install":
+                    result = install_schedule(
+                        ui_url=self._base_url(),
+                        payload=_schedule_payload(effective),
+                        interval_minutes=_interval_minutes_from_payload(payload),
+                    )
+                    self._send_json({"ok": True, "schedule": result})
+                    return
+                if self.path == "/api/schedule/remove":
+                    self._send_json({"ok": True, "schedule": remove_schedule()})
+                    return
                 self._send_json({"ok": False, "error": "not-found"}, status=404)
             except Exception as exc:  # pragma: no cover - defensive API boundary
                 self._send_json({"ok": False, "error": str(exc)}, status=500)
@@ -343,6 +362,10 @@ def create_app_handler(
             if not length:
                 return {}
             return json.loads(self.rfile.read(length).decode("utf-8"))
+
+        def _base_url(self) -> str:
+            host, port = self.server.server_address[:2]
+            return f"http://{host}:{port}"
 
         def _send_json(self, payload: Any, *, status: int = 200) -> None:
             body = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
@@ -379,6 +402,20 @@ def _config_from_payload(config: UIConfig, payload: dict[str, Any]) -> UIConfig:
         account_label=str(payload.get("accountLabel") or config.account_label),
         max_messages=max(1, int(payload.get("maxMessages") or config.max_messages)),
     )
+
+
+def _schedule_payload(config: UIConfig) -> dict[str, Any]:
+    return {
+        "maxMessages": config.max_messages,
+        "accountLabel": config.account_label,
+        "displayName": config.display_name,
+        "profileDir": str(config.profile_dir),
+        "outputPath": str(config.output_path),
+    }
+
+
+def _interval_minutes_from_payload(payload: dict[str, Any]) -> int:
+    return max(1, min(int(payload.get("intervalMinutes") or 15), 24 * 60))
 
 
 def _read_export_summary(output_path: Path) -> dict[str, Any]:
