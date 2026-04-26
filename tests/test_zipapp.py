@@ -21,7 +21,7 @@ def test_build_zipapp_creates_no_install_runnable_archive(tmp_path: Path) -> Non
     assert "__main__.py" in names
     assert "whatsapp_collector/cli.py" in names
     assert "whatsapp_collector/web_ui.py" in names
-    assert "whatsapp_collector/assets/chrome_devtools.mjs" in names
+    assert "whatsapp_collector/assets/chrome_devtools.mjs" not in names
 
     completed = subprocess.run(
         [sys.executable, str(output), "--help"],

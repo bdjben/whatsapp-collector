@@ -51,9 +51,13 @@ The app writes exports to a normal visible folder by default:
 
 Deleting the app from `/Applications` removes the app itself. Your exported JSON files remain in `~/Documents/WhatsApp Collector/Exports` so you do not accidentally lose collected data.
 
+### If Launch / Login or Run Export says `No such file or directory: 'node'`
+
+Use release `v0.3.5` or newer. Earlier dedicated-profile builds used a small Node.js DevTools helper, so Macs without Node installed could open Chrome successfully but still show a Launch / Login or Run Export failure mentioning `node`. The fixed app talks to Chrome DevTools directly from Python and does not require a system `node` binary.
+
 ### If Run Export says "Export failed"
 
-Use release `v0.3.3` or newer. Earlier builds could leave Chrome's fixed DevTools port attached to an older collector profile, so the app window looked logged in but the exporter was talking to the wrong/stale Chrome process. The fixed app clears stale `remote-debugging-port=19220` collector processes before opening the dedicated WhatsApp window and shows the real export error in the status line plus Advanced diagnostics.
+Use release `v0.3.3` or newer for stale-port recovery. Earlier builds could leave Chrome's fixed DevTools port attached to an older collector profile, so the app window looked logged in but the exporter was talking to the wrong/stale Chrome process. The fixed app clears stale `remote-debugging-port=19220` collector processes before opening the dedicated WhatsApp window and shows the real export error in the status line plus Advanced diagnostics.
 
 After installing a fixed DMG:
 
@@ -99,7 +103,7 @@ The UI is local-only by default (`127.0.0.1`) and exposes no send/composer capab
 - Google Chrome
 - WhatsApp Web or WhatsApp Business Web already logged in at `https://web.whatsapp.com/`
 - For active-session AppleScript mode: Chrome menu `View -> Developer -> Allow JavaScript from Apple Events`
-- For dedicated-profile DevTools mode: Node.js 18+ available as `node`
+- No Node.js install is required for the macOS app or dedicated-profile DevTools mode.
 
 ## Install / run without modifying system Python
 

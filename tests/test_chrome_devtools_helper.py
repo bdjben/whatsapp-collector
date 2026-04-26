@@ -1,46 +1,41 @@
 from pathlib import Path
-import subprocess
 
 import pytest
 
-from whatsapp_collector.devtools_bridge import ChromeDevToolsBridge, NODE_HELPER
+from whatsapp_collector.devtools_bridge import ChromeDevToolsBridge
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-HELPER = NODE_HELPER
 SCHEDULED_SCRIPT = PROJECT_ROOT / "scripts" / "scheduled_export.sh"
 
 
-def test_devtools_helper_is_resolved_from_packaged_resources() -> None:
-    assert HELPER.exists()
-    assert HELPER.name == "chrome_devtools.mjs"
-    assert HELPER.parent.name == "assets"
+def test_native_devtools_bridge_does_not_activate_or_bring_windows_to_front() -> None:
+    bridge_source = (PROJECT_ROOT / "src" / "whatsapp_collector" / "devtools_bridge.py").read_text()
+
+    assert "Page.bringToFront" not in bridge_source
+    assert "Target.activateTarget" not in bridge_source
 
 
-def test_devtools_helper_does_not_activate_or_bring_windows_to_front() -> None:
-    helper_source = HELPER.read_text()
+def test_devtools_bridge_does_not_shell_out_to_system_node() -> None:
+    bridge_source = (PROJECT_ROOT / "src" / "whatsapp_collector" / "devtools_bridge.py").read_text()
 
-    assert "Page.bringToFront" not in helper_source
-    assert "Target.activateTarget" not in helper_source
+    assert '"node"' not in bridge_source
+    assert "subprocess.run" not in bridge_source
+    assert "chrome_devtools.mjs" not in bridge_source
 
 
-def test_devtools_bridge_surfaces_node_helper_stderr(monkeypatch) -> None:
-    def fake_run(*args, **kwargs):
-        raise subprocess.CalledProcessError(
-            1,
-            args[0][0],
-            output="",
-            stderr="Error: No matching Chrome DevTools target found\n    at chooseTarget",
-        )
+def test_devtools_bridge_surfaces_native_cdp_error_details(monkeypatch) -> None:
+    def fake_fetch_json(self, path):
+        raise RuntimeError("No matching Chrome DevTools target found")
 
-    monkeypatch.setattr("whatsapp_collector.devtools_bridge.subprocess.run", fake_run)
+    monkeypatch.setattr(ChromeDevToolsBridge, "_fetch_json", fake_fetch_json)
 
     bridge = ChromeDevToolsBridge(port=19220, marker_title="WhatsApp Collector", target_url_substring="https://web.whatsapp.com/")
     with pytest.raises(RuntimeError) as excinfo:
-        bridge.evaluate("document.title")
+        bridge.version()
 
     message = str(excinfo.value)
-    assert "Chrome DevTools helper failed" in message
-    assert "action=evaluate" in message
+    assert "Chrome DevTools request failed" in message
+    assert "action=version" in message
     assert "port=19220" in message
     assert "No matching Chrome DevTools target found" in message
 

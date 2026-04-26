@@ -15,10 +15,11 @@ def test_pyproject_exposes_installable_console_script() -> None:
     assert data["project"]["license"] == "MIT"
 
 
-def test_packaged_assets_include_chrome_devtools_helper() -> None:
+def test_package_does_not_ship_legacy_node_devtools_helper() -> None:
     data = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text())
 
-    assert "assets/chrome_devtools.mjs" in data["tool"]["setuptools"]["package-data"]["whatsapp_collector"]
+    package_data = data.get("tool", {}).get("setuptools", {}).get("package-data", {}).get("whatsapp_collector", [])
+    assert "assets/chrome_devtools.mjs" not in package_data
 
 
 def test_public_gitignore_excludes_private_runtime_state() -> None:
