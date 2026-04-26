@@ -26,7 +26,7 @@ from whatsapp_collector.launcher import (
     terminate_profile_processes,
 )
 from whatsapp_collector.models import Snapshot
-from whatsapp_collector.web_ui import UIConfig, run_ui_server
+from whatsapp_collector.web_ui import DEFAULT_UI_OUTPUT_PATH, UIConfig, run_ui_server
 
 
 def _merged_excluded_labels(exclude_labels: list[str] | None) -> list[str]:
@@ -212,7 +212,7 @@ def build_parser() -> argparse.ArgumentParser:
     ui.add_argument("--host", default="127.0.0.1")
     ui.add_argument("--port", type=int, default=8765)
     ui.add_argument("--profile-dir", default=str(DEFAULT_PROFILE_DIR))
-    ui.add_argument("--output", default="output/whatsapp-dashboard-export.json")
+    ui.add_argument("--output", default=str(DEFAULT_UI_OUTPUT_PATH))
     ui.add_argument("--debug-port", type=int, default=DEFAULT_DEBUG_PORT)
     ui.add_argument("--marker-title", default=DEFAULT_MARKER_TITLE)
     ui.add_argument("--marker-url-substring", default=DEFAULT_MARKER_URL_SUBSTRING)

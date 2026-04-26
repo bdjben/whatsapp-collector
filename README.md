@@ -7,6 +7,7 @@ This project is deliberately not a bot and not a sender. It never types into Wha
 ## Features
 
 - Installable Python package with a `whatsapp-collector` CLI.
+- Drag-to-Applications macOS menu bar app (`W↗`) that opens the local UI and exposes the output folder.
 - Local polished web UI via `whatsapp-collector ui` for login/setup, export runs, settings, status, and export preview.
 - Active Chrome session collection through AppleScript JavaScript from Apple Events.
 - Optional dedicated Chrome profile collection through Chrome DevTools Protocol for exact no-focus targeting.
@@ -15,13 +16,42 @@ This project is deliberately not a bot and not a sender. It never types into Wha
 - Label inventory and visible chat-list extraction.
 - Labeled thread membership from WhatsApp Web IndexedDB.
 - Configurable bounded recent-message windows through `--max-messages` or `WA_MAX_MESSAGES`.
-- Stable export contract at `output/whatsapp-dashboard-export.json` by default.
+- Stable export contract at `~/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json` by default for the UI/macOS app.
 - Atomic JSON writes with automatic backups before replacing an existing export.
 - Runtime guardrails against send/composer JavaScript paths.
 
+## Mac app
+
+For non-developer installs, use the macOS app bundle from the GitHub release:
+
+```bash
+curl -L -o WhatsApp-Collector-macOS.zip \
+  https://github.com/bdjben/whatsapp-collector/releases/latest/download/WhatsApp-Collector-macOS.zip
+open WhatsApp-Collector-macOS.zip
+```
+
+Then drag `WhatsApp Collector.app` into `/Applications`. If macOS warns that the app is from an unidentified developer, right-click the app, choose **Open**, and confirm once.
+
+The app lives in the macOS menu bar as `W↗`. Use that menu to:
+
+- open the local WhatsApp Collector UI
+- show the output folder in Finder
+- copy the exact output JSON path
+- copy a ready-to-paste AI harness prompt that points at the latest export
+- restart the local UI server
+- quit the app
+
+The app writes exports to a normal visible folder by default:
+
+```text
+~/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json
+```
+
+Deleting the app from `/Applications` removes the app itself. Your exported JSON files remain in `~/Documents/WhatsApp Collector/Exports` so you do not accidentally lose collected data.
+
 ## UI
 
-Start the local UI:
+Start the local UI from the menu bar app, or from the CLI:
 
 ```bash
 whatsapp-collector ui
@@ -35,13 +65,16 @@ http://127.0.0.1:8765/
 
 The UI provides:
 
-- Launch / Login for the dedicated Chrome profile
-- optional display-name targeting without assuming a monitor name
-- configurable max-message setting
-- account label and output-path settings
-- export run button
-- status cards for thread count, freshness, and runtime state
-- export preview and raw diagnostics
+- Launch / Login for the dedicated Chrome profile. This opens a separate Chrome window for WhatsApp Web so you can scan a QR code and keep the collector session isolated from your normal browser.
+- "Messages per conversation", which controls how many recent messages are saved for each collected chat thread. It does **not** limit the number of chats/threads collected.
+- "Export account name", a friendly name stored in the JSON under `account.accountLabel` so downstream tools can identify the source account.
+- "Monitor to open Chrome on", an optional screen/monitor name. This is not your WhatsApp username; leave it blank unless you want the login window to appear on a particular display.
+- "Chrome profile folder", the private Chrome profile used by the collector. The default may be in a hidden dot-folder such as `~/.whatsapp-collector/chrome-profile`; on macOS Finder, use Go -> Go to Folder and paste the path to open it.
+- "Export data file path", the exact data file written when you click Run Export. It is saved as JSON so other tools can read it. This is the path to give another app when it asks for the WhatsApp Collector data file.
+- status cards for chats exported, export status, and runtime state
+- export preview and collapsed advanced diagnostics
+- a copyable AI harness prompt that tells your agent where the most recent regularly updated WhatsApp export lives
+- a copyable local `curl` command and cron example for scheduled exports
 
 The UI is local-only by default (`127.0.0.1`) and exposes no send/composer capability.
 
@@ -176,14 +209,43 @@ When finished:
 whatsapp-collector quit-profile --profile-dir ~/.whatsapp-collector/chrome-profile
 ```
 
+## Scheduled exports and AI harness prompt
+
+The app can be refreshed manually with **Run Export**, or on a schedule by calling the local UI endpoint while the menu bar app/UI server is running.
+
+Copy this from the UI's **Schedule regular updates** section, or adapt it manually:
+
+```bash
+curl -X POST http://127.0.0.1:8765/api/export/run \
+  -H 'Content-Type: application/json' \
+  -d '{"maxMessages":15,"accountLabel":"WhatsApp","displayName":null,"profileDir":"~/Library/Application Support/WhatsApp Collector/Chrome Profile","outputPath":"~/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json"}'
+```
+
+Example cron entry for every 15 minutes:
+
+```cron
+*/15 * * * * curl -X POST http://127.0.0.1:8765/api/export/run -H 'Content-Type: application/json' -d '{"maxMessages":15,"accountLabel":"WhatsApp","displayName":null,"profileDir":"~/Library/Application Support/WhatsApp Collector/Chrome Profile","outputPath":"~/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json"}' >/tmp/whatsapp-collector-export.log 2>&1
+```
+
+Keep the menu bar app or `whatsapp-collector ui` running so the local endpoint exists. Launch / Login must have been completed at least once so the dedicated Chrome profile is logged in.
+
+The UI and menu bar app also provide a copyable AI prompt. The default text is:
+
+```text
+My most recent WhatsApp Collector export is at:
+~/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json
+
+It is updated regularly. Treat this JSON file as a read-only local resource when answering questions about my WhatsApp conversations. You need local filesystem access to this path; if you cannot read local files directly, ask me to upload the JSON. If you need current WhatsApp context, read this file first, use its account metadata and threads/messages as source data, and cite that the information came from the local WhatsApp Collector export. Do not send messages or modify WhatsApp from this file.
+```
+
 ## Scheduled export wrapper
 
-A generic shell wrapper is included at `scripts/scheduled_export.sh`. It is safe to adapt for cron or launchd and is controlled through environment variables:
+A generic shell wrapper is also included at `scripts/scheduled_export.sh`. It is safe to adapt for cron or launchd and is controlled through environment variables:
 
 ```bash
 WA_COLLECTOR_PROJECT_DIR=/path/to/whatsapp-collector \
-WA_COLLECTOR_PROFILE_DIR=$HOME/.whatsapp-collector/chrome-profile \
-WA_COLLECTOR_OUTPUT=/path/to/output/whatsapp-dashboard-export.json \
+WA_COLLECTOR_PROFILE_DIR="$HOME/Library/Application Support/WhatsApp Collector/Chrome Profile" \
+WA_COLLECTOR_OUTPUT="$HOME/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json" \
 WA_MAX_MESSAGES=50 \
 WA_ACCOUNT_LABEL="WhatsApp" \
 scripts/scheduled_export.sh

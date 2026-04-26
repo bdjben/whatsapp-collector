@@ -19,13 +19,15 @@ from whatsapp_collector.launcher import (
     ensure_dedicated_whatsapp_window,
 )
 
+DEFAULT_UI_OUTPUT_PATH = Path("~/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json")
+
 CollectExport = Callable[..., dict[str, Any]]
 EnsureWindow = Callable[..., dict[str, Any]]
 
 
 @dataclass(frozen=True)
 class UIConfig:
-    output_path: Path = Path("output/whatsapp-dashboard-export.json")
+    output_path: Path = DEFAULT_UI_OUTPUT_PATH
     profile_dir: Path = DEFAULT_PROFILE_DIR
     host: str = "127.0.0.1"
     port: int = 8765
@@ -40,6 +42,11 @@ class UIConfig:
 
 def render_dashboard_html(config: UIConfig) -> str:
     config_json = json.dumps(_public_config(config), ensure_ascii=False)
+    output_display_path = _display_path(config.output_path)
+    profile_display_path = _display_path(config.profile_dir)
+    ai_prompt = _ai_harness_prompt(output_display_path)
+    schedule_command = _schedule_curl_command(config)
+    cron_example = f"*/15 * * * * {schedule_command} >/tmp/whatsapp-collector-export.log 2>&1"
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -74,11 +81,18 @@ def render_dashboard_html(config: UIConfig) -> str:
     input {{ width:100%; color:var(--text); background:rgba(0,0,0,.28); border:1px solid var(--line); border-radius:14px; padding:12px 13px; outline:none; }}
     input:focus {{ border-color:rgba(37,211,102,.7); box-shadow:0 0 0 4px rgba(37,211,102,.11); }}
     .row {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
+    .field-help {{ margin:0 0 10px; color:#c2c8d6; font-size:12.5px; line-height:1.45; }}
+    .field-help strong {{ color:var(--text); font-weight:720; }}
+    .mini-note {{ margin-top:7px; color:var(--muted); font-size:12px; line-height:1.4; }}
+    .path-box {{ margin-top:8px; padding:10px 12px; border-radius:13px; background:rgba(37,211,102,.08); border:1px solid rgba(37,211,102,.2); color:#d8ffe8; font:12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap:anywhere; }}
     .actions {{ display:flex; gap:10px; flex-wrap:wrap; margin-top:18px; }}
     button {{ border:0; border-radius:14px; padding:12px 15px; font-weight:750; cursor:pointer; color:#05110a; background:var(--green); }}
     button.secondary {{ color:var(--text); background:var(--panel-strong); border:1px solid var(--line); }}
     button.warn {{ background:var(--amber); }}
-    pre {{ margin:0; max-height:360px; overflow:auto; padding:16px; border-radius:18px; background:#030407; border:1px solid var(--line); color:#d8ffe8; font:12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }}
+    pre, textarea.copy-box {{ margin:0; max-height:360px; overflow:auto; padding:16px; border-radius:18px; background:#030407; border:1px solid var(--line); color:#d8ffe8; font:12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space:pre-wrap; overflow-wrap:anywhere; }}
+    textarea.copy-box {{ width:100%; min-height:150px; resize:vertical; }}
+    details summary {{ cursor:pointer; font-weight:760; font-size:18px; letter-spacing:-.02em; }}
+    details .field-help {{ margin-top:8px; }}
     .status {{ display:flex; align-items:center; gap:8px; color:var(--muted); margin-top:8px; }}
     .dot {{ width:9px; height:9px; border-radius:99px; background:var(--amber); box-shadow:0 0 22px var(--amber); }}
     .dot.ok {{ background:var(--green); box-shadow:0 0 22px var(--green); }}
@@ -95,22 +109,64 @@ def render_dashboard_html(config: UIConfig) -> str:
       <div class="pill" id="endpoint">{config.host}:{config.port}</div>
     </header>
     <section class="cards">
-      <div class="card"><div class="label">Threads</div><div class="value" id="threadCount">—</div></div>
-      <div class="card"><div class="label">Export age</div><div class="value" id="exportAge">—</div></div>
+      <div class="card"><div class="label">Chats exported</div><div class="value" id="threadCount">—</div></div>
+      <div class="card"><div class="label">Export status</div><div class="value" id="exportAge">—</div></div>
       <div class="card"><div class="label">Runtime</div><div class="value" id="runtimeState">Idle</div></div>
     </section>
     <section class="grid">
       <div class="panel">
         <h2>Collector controls</h2>
-        <div class="row"><div><label>Max messages</label><input id="maxMessages" type="number" min="1" value="{config.max_messages}" /></div><div><label>Account label</label><input id="accountLabel" value="{_escape_attr(config.account_label)}" /></div></div>
-        <label>Display name <span style="text-transform:none;letter-spacing:0;color:#c2c8d6">(optional)</span></label><input id="displayName" placeholder="Leave blank to use first available display" value="{_escape_attr(config.display_name or '')}" />
-        <div class="row"><div><label>Profile dir</label><input id="profileDir" value="{_escape_attr(str(config.profile_dir))}" /></div><div><label>Output JSON</label><input id="outputPath" value="{_escape_attr(str(config.output_path))}" /></div></div>
+        <p class="field-help"><strong>Start here:</strong> click Launch / Login to open a separate Chrome window for WhatsApp Web, scan the QR code if needed, then click Run Export to write the JSON file below.</p>
+        <div class="row">
+          <div>
+            <label for="maxMessages">Messages per conversation</label>
+            <p class="field-help">Maximum recent messages saved for each chat thread. This does not limit how many chats are collected.</p>
+            <input id="maxMessages" type="number" min="1" value="{config.max_messages}" />
+          </div>
+          <div>
+            <label for="accountLabel">Export account name</label>
+            <p class="field-help">A friendly label stored in the JSON under account.accountLabel so downstream tools know which WhatsApp account produced the export.</p>
+            <input id="accountLabel" value="{_escape_attr(config.account_label)}" />
+          </div>
+        </div>
+        <label for="displayName">Monitor to open Chrome on <span style="text-transform:none;letter-spacing:0;color:#c2c8d6">(optional)</span></label>
+        <p class="field-help">This is a monitor, not a WhatsApp username. The collector needs a dedicated Chrome window so you can log in and keep WhatsApp Web loaded; this setting only chooses which screen that window appears on. Leave blank unless you want the login window on a specific screen.</p>
+        <input id="displayName" placeholder="Example: Studio Display. Leave blank to use the first available screen." value="{_escape_attr(config.display_name or '')}" />
+        <div class="row">
+          <div>
+            <label for="profileDir">Chrome profile folder</label>
+            <p class="field-help">Private Chrome data for this collector window. Most users should leave this unchanged. Hidden folders start with a dot; in Finder use Finder → Go → Go to Folder and paste this path to open it.</p>
+            <input id="profileDir" value="{_escape_attr(str(config.profile_dir))}" />
+            <div class="path-box" id="profileDirHint">Current profile folder: {_escape_html(profile_display_path)}</div>
+            <div class="actions"><button class="secondary" onclick="copyText('profileDir')">Copy profile folder</button></div>
+            <div class="mini-note">If you delete this folder, WhatsApp will ask you to log in again.</div>
+          </div>
+          <div>
+            <label for="outputPath">Export data file path</label>
+            <p class="field-help">This is the data file the collector writes when you click Run Export. It is saved as JSON so other tools can read it. Open or copy this exact path when another app asks for the WhatsApp Collector data file.</p>
+            <input id="outputPath" value="{_escape_attr(str(config.output_path))}" />
+            <div class="path-box" id="outputPathHint">Current file: {_escape_html(output_display_path)}</div>
+            <div class="actions"><button class="secondary" onclick="copyText('outputPath')">Copy data file path</button></div>
+          </div>
+        </div>
         <div class="actions"><button onclick="launchLogin()">Launch / Login</button><button onclick="runExport()">Run Export</button><button class="secondary" onclick="refreshStatus()">Refresh</button><button class="secondary" onclick="loadExport()">Preview Export</button></div>
         <div class="status"><span class="dot" id="dot"></span><span id="statusText">Ready.</span></div>
       </div>
-      <div class="panel"><h2>Export preview</h2><div class="threads" id="threads"></div></div>
+      <div class="panel"><h2>Export preview</h2><div class="threads" id="threads"><span style="color:var(--muted)">No export loaded yet. Click Preview Export or Run Export.</span></div></div>
     </section>
-    <section class="panel" style="margin-top:18px"><h2>Raw diagnostics</h2><pre id="log">{config_json}</pre></section>
+    <section class="panel" style="margin-top:18px">
+      <h2>Use this export with your AI tools</h2>
+      <p class="field-help">Copy this prompt into your AI harness, agent, or automation tool so it knows where the regularly updated WhatsApp Collector data file lives. The AI tool needs local file access to this path; browser-only chat tools usually cannot read local files unless you upload the JSON.</p>
+      <textarea class="copy-box" id="aiPrompt" readonly>{_escape_html(ai_prompt)}</textarea>
+      <div class="actions"><button class="secondary" onclick="copyText('aiPrompt')">Copy AI prompt</button></div>
+      <h2 style="margin-top:22px">Schedule regular updates</h2>
+      <p class="field-help">After Launch / Login has opened WhatsApp Web and the menu bar app is running, schedule this local request with launchd, cron, Shortcuts, or your automation tool of choice. It refreshes the same export file shown above.</p>
+      <pre id="scheduleCommand">{_escape_html(schedule_command)}</pre>
+      <div class="actions"><button class="secondary" onclick="copyText('scheduleCommand')">Copy schedule command</button></div>
+      <p class="field-help" style="margin-top:14px"><strong>Every 15 minutes with cron:</strong> open Terminal, run <code>crontab -e</code>, paste this line, save, and keep WhatsApp Collector running in the menu bar.</p>
+      <pre id="cronExample">{_escape_html(cron_example)}</pre>
+    </section>
+    <section class="panel" style="margin-top:18px"><details><summary>Advanced diagnostics</summary><p class="field-help">Raw JSON for troubleshooting. Most users can ignore this unless an export fails or another app asks for diagnostics.</p><pre id="log">{config_json}</pre></details></section>
   </main>
 <script>
 const initialConfig = {config_json};
@@ -120,24 +176,78 @@ function setOk(text) {{ document.getElementById('runtimeState').textContent='Rea
 function setLog(x) {{ document.getElementById('log').textContent=JSON.stringify(x,null,2); }}
 async function post(url, body) {{ const r=await fetch(url,{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}}); const j=await r.json(); if(!r.ok) throw j; return j; }}
 async function get(url) {{ const r=await fetch(url); const j=await r.json(); if(!r.ok) throw j; return j; }}
-async function refreshStatus() {{ try {{ const j=await get('/api/status'); document.getElementById('threadCount').textContent=j.export.threadCount ?? 0; document.getElementById('exportAge').textContent=j.export.updatedAt ? 'fresh' : 'none'; setLog(j); setOk('Status refreshed.'); }} catch(e) {{ setLog(e); }} }}
+async function refreshStatus() {{ try {{ const j=await get('/api/status'); document.getElementById('threadCount').textContent=j.export.threadCount ?? 0; document.getElementById('exportAge').textContent=j.export.updatedAt ? 'Ready' : 'No export yet'; setLog(j); setOk('Status refreshed.'); }} catch(e) {{ setLog(e); }} }}
 async function launchLogin() {{ setBusy('Opening dedicated Chrome profile...'); try {{ const j=await post('/api/window/ensure', cfg()); setLog(j); setOk('Window ready. Scan QR if WhatsApp asks.'); }} catch(e) {{ setLog(e); document.getElementById('statusText').textContent='Launch failed.'; }} }}
-async function runExport() {{ setBusy('Collecting export...'); try {{ const j=await post('/api/export/run', cfg()); setLog(j); setOk('Export complete.'); await loadExport(); await refreshStatus(); }} catch(e) {{ setLog(e); document.getElementById('statusText').textContent='Export failed.'; }} }}
-async function loadExport() {{ try {{ const j=await get('/api/export'); const threads=j.threads||[]; document.getElementById('threadCount').textContent=threads.length; document.getElementById('threads').innerHTML=threads.slice(0,12).map(t=>`<div class="thread"><b>${{escapeHtml(t.chatTitle||t.threadKey||'Untitled')}}</b><span>${{escapeHtml((t.labelsRaw||[]).join(', '))}} · ${{(t.recentMessages||[]).length}} messages</span></div>`).join('') || '<span style="color:var(--muted)">No threads yet.</span>'; setLog(j); }} catch(e) {{ setLog(e); }} }}
+async function runExport() {{ setBusy('Collecting export...'); try {{ const j=await post('/api/export/run', cfg()); setLog(j); setOk('Export complete. JSON saved to ' + currentOutputPathForHumans() + '.'); await loadExport(); await refreshStatus(); }} catch(e) {{ setLog(e); document.getElementById('statusText').textContent='Export failed.'; }} }}
+async function loadExport() {{ try {{ const j=await get('/api/export'); const threads=j.threads||[]; document.getElementById('threadCount').textContent=threads.length; document.getElementById('threads').innerHTML=threads.slice(0,12).map(t=>`<div class="thread"><b>${{escapeHtml(t.chatTitle||t.threadKey||'Untitled')}}</b><span>${{escapeHtml((t.labelsRaw||[]).join(', '))}} · ${{(t.recentMessages||[]).length}} messages</span></div>`).join('') || '<span style="color:var(--muted)">No threads in the export yet.</span>'; setLog(j); }} catch(e) {{ setLog(e); }} }}
+function pathForHumans(fieldId, configKey) {{ const path = document.getElementById(fieldId).value || initialConfig[configKey]; if (path.startsWith('/')) return path; if (path.startsWith('~')) return path + ' (expanded by the server when running)'; return `${{initialConfig.workingDirectory}}/${{path}}`; }}
+function currentOutputPathForHumans() {{ return pathForHumans('outputPath', 'outputPath'); }}
+function currentProfileDirForHumans() {{ return pathForHumans('profileDir', 'profileDir'); }}
+function aiPromptForPath(path) {{ return `My most recent WhatsApp Collector export is at:\n${{path}}\n\nIt is updated regularly. Treat this JSON file as a read-only local resource when answering questions about my WhatsApp conversations. You need local filesystem access to this path; if you cannot read local files directly, ask me to upload the JSON. If you need current WhatsApp context, read this file first, use its account metadata and threads/messages as source data, and cite that the information came from the local WhatsApp Collector export. Do not send messages or modify WhatsApp from this file.`; }}
+function scheduleCommand() {{ return `curl -X POST http://${{initialConfig.host}}:${{initialConfig.port}}/api/export/run -H 'Content-Type: application/json' -d '${{JSON.stringify(cfg())}}'`; }}
+function updatePathHints() {{ const outputPath = currentOutputPathForHumans(); document.getElementById('outputPathHint').textContent = 'Current file: ' + outputPath; document.getElementById('profileDirHint').textContent = 'Current profile folder: ' + currentProfileDirForHumans(); document.getElementById('aiPrompt').value = aiPromptForPath(outputPath); const command = scheduleCommand(); document.getElementById('scheduleCommand').textContent = command; document.getElementById('cronExample').textContent = '*/15 * * * * ' + command + ' >/tmp/whatsapp-collector-export.log 2>&1'; }}
+async function copyText(id) {{ const value = document.getElementById(id).value || document.getElementById(id).textContent; try {{ await navigator.clipboard.writeText(value); setOk('Copied.'); }} catch(e) {{ setLog({{error:'copy-failed', detail:String(e)}}); }} }}
 function escapeHtml(s) {{ return String(s).replace(/[&<>"']/g, c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c])); }}
+document.getElementById('outputPath').addEventListener('input', updatePathHints);
+document.getElementById('profileDir').addEventListener('input', updatePathHints);
+document.getElementById('maxMessages').addEventListener('input', updatePathHints);
+document.getElementById('accountLabel').addEventListener('input', updatePathHints);
+document.getElementById('displayName').addEventListener('input', updatePathHints);
+updatePathHints();
 refreshStatus();
 </script>
 </body></html>"""
 
 
 def _escape_attr(value: str) -> str:
-    return value.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+    return _escape_html(value).replace('"', "&quot;")
+
+
+def _escape_html(value: str) -> str:
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _display_path(path: Path) -> str:
+    expanded = path.expanduser()
+    if expanded.is_absolute():
+        return str(expanded)
+    return str((Path.cwd() / expanded).resolve())
+
+
+def _ai_harness_prompt(output_display_path: str) -> str:
+    return (
+        "My most recent WhatsApp Collector export is at:\n"
+        f"{output_display_path}\n\n"
+        "It is updated regularly. Treat this JSON file as a read-only local resource when answering "
+        "questions about my WhatsApp conversations. You need local filesystem access to this path; "
+        "if you cannot read local files directly, ask me to upload the JSON. If you need current "
+        "WhatsApp context, read this file first, use its account metadata and threads/messages as source data, and cite that the "
+        "information came from the local WhatsApp Collector export. Do not send messages or modify "
+        "WhatsApp from this file."
+    )
+
+
+def _schedule_curl_command(config: UIConfig) -> str:
+    payload = json.dumps(
+        {
+            "maxMessages": config.max_messages,
+            "accountLabel": config.account_label,
+            "displayName": config.display_name,
+            "profileDir": str(config.profile_dir),
+            "outputPath": str(config.output_path),
+        },
+        ensure_ascii=False,
+    )
+    return f"curl -X POST http://{config.host}:{config.port}/api/export/run -H 'Content-Type: application/json' -d '{payload}'"
 
 
 def _public_config(config: UIConfig) -> dict[str, Any]:
     return {
         "outputPath": str(config.output_path),
+        "outputPathDisplay": _display_path(config.output_path),
         "profileDir": str(config.profile_dir),
+        "profileDirDisplay": _display_path(config.profile_dir),
+        "workingDirectory": str(Path.cwd()),
         "host": config.host,
         "port": config.port,
         "debugPort": config.debug_port,
