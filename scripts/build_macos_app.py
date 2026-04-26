@@ -179,7 +179,14 @@ ICON_SVG = '''<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024"
 '''
 
 
-def build_macos_app(project_root: Path, output_dir: Path, *, compile_app: bool = True, sign_app: bool = True) -> Path:
+def build_macos_app(
+    project_root: Path,
+    output_dir: Path,
+    *,
+    compile_app: bool = True,
+    sign_app: bool = True,
+    sign_identity: str | None = None,
+) -> Path:
     project_root = project_root.resolve()
     output_dir = output_dir.resolve()
     pyz_path = project_root / "dist" / PYZ_NAME
@@ -207,7 +214,7 @@ def build_macos_app(project_root: Path, output_dir: Path, *, compile_app: bool =
         (macos / APP_NAME).write_text("#!/bin/sh\necho 'compile_app=False scaffold'\n")
         (macos / APP_NAME).chmod(0o755)
     if sign_app:
-        _sign_app(app_path)
+        _sign_app(app_path, identity=sign_identity)
     return app_path
 
 
@@ -249,11 +256,37 @@ def _build_icon(resources: Path) -> None:
     subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(resources / "WhatsAppCollector.icns")], check=True)
 
 
-def _sign_app(app_path: Path) -> None:
+def _sign_app(app_path: Path, *, identity: str | None = None) -> None:
+    if identity:
+        command = [
+            "codesign",
+            "--force",
+            "--deep",
+            "--options",
+            "runtime",
+            "--sign",
+            identity,
+            "--timestamp",
+            str(app_path),
+        ]
+    else:
+        command = ["codesign", "--force", "--deep", "--sign", "-", "--timestamp=none", str(app_path)]
+    subprocess.run(command, check=True)
+
+
+def _sign_dmg(dmg_path: Path, *, identity: str) -> None:
+    subprocess.run(["codesign", "--force", "--sign", identity, "--timestamp", str(dmg_path)], check=True)
+
+
+def _notarize_dmg(dmg_path: Path, *, keychain_profile: str) -> None:
     subprocess.run(
-        ["codesign", "--force", "--deep", "--sign", "-", "--timestamp=none", str(app_path)],
+        ["xcrun", "notarytool", "submit", str(dmg_path), "--keychain-profile", keychain_profile, "--wait"],
         check=True,
     )
+
+
+def _staple_dmg(dmg_path: Path) -> None:
+    subprocess.run(["xcrun", "stapler", "staple", str(dmg_path)], check=True)
 
 
 def build_zip(app_path: Path, output_dir: Path) -> Path:
@@ -268,7 +301,14 @@ def build_zip(app_path: Path, output_dir: Path) -> Path:
     return zip_path
 
 
-def build_dmg(app_path: Path, output_dir: Path) -> Path:
+def build_dmg(
+    app_path: Path,
+    output_dir: Path,
+    *,
+    sign_identity: str | None = None,
+    notary_profile: str | None = None,
+    staple: bool = False,
+) -> Path:
     output_dir = output_dir.resolve()
     staging = output_dir / "dmg-staging"
     dmg_path = output_dir / DMG_NAME
@@ -282,7 +322,7 @@ def build_dmg(app_path: Path, output_dir: Path) -> Path:
     readme.write_text(
         "Drag WhatsApp Collector.app onto the Applications shortcut.\n\n"
         "If macOS still blocks first launch, right-click WhatsApp Collector.app in Applications, choose Open, "
-        "and confirm once. This release is ad-hoc signed but not Apple-notarized.\n"
+        "and confirm once. Developer ID signed and notarized releases should open without the unidentified-developer warning.\n"
     )
     if dmg_path.exists():
         dmg_path.unlink()
@@ -302,6 +342,12 @@ def build_dmg(app_path: Path, output_dir: Path) -> Path:
         ],
         check=True,
     )
+    if sign_identity:
+        _sign_dmg(dmg_path, identity=sign_identity)
+    if notary_profile:
+        _notarize_dmg(dmg_path, keychain_profile=notary_profile)
+    if staple:
+        _staple_dmg(dmg_path)
     return dmg_path
 
 
@@ -310,22 +356,31 @@ def main() -> int:
     parser.add_argument("--project-root", default=str(Path(__file__).resolve().parents[1]))
     parser.add_argument("--output-dir", default="dist")
     parser.add_argument("--no-compile", action="store_true", help="Create bundle scaffold without compiling Swift or generating icns")
-    parser.add_argument("--no-sign", action="store_true", help="Skip ad-hoc code signing")
+    parser.add_argument("--no-sign", action="store_true", help="Skip code signing")
+    parser.add_argument("--sign-identity", default=os.environ.get("WHATSAPP_COLLECTOR_CODESIGN_IDENTITY"), help="Developer ID Application identity for real signing. Defaults to ad-hoc signing when omitted.")
+    parser.add_argument("--notary-profile", default=os.environ.get("WHATSAPP_COLLECTOR_NOTARY_PROFILE"), help="notarytool keychain profile for DMG notarization")
+    parser.add_argument("--notarize", action="store_true", help="Submit the final DMG to Apple notarization using --notary-profile")
+    parser.add_argument("--staple", action="store_true", help="Staple notarization ticket to the final DMG")
     parser.add_argument("--no-dmg", action="store_true", help="Skip DMG creation")
     parser.add_argument("--no-zip", action="store_true", help="Skip legacy ZIP creation")
     args = parser.parse_args()
     output_dir = Path(args.output_dir)
+    if args.notarize and not args.notary_profile:
+        parser.error("--notarize requires --notary-profile or WHATSAPP_COLLECTOR_NOTARY_PROFILE")
+    if args.notarize and not args.sign_identity:
+        parser.error("--notarize requires --sign-identity or WHATSAPP_COLLECTOR_CODESIGN_IDENTITY")
     app = build_macos_app(
         Path(args.project_root),
         output_dir,
         compile_app=not args.no_compile,
         sign_app=not args.no_sign,
+        sign_identity=args.sign_identity,
     )
     print(app)
     if not args.no_zip:
         print(build_zip(app, output_dir))
     if not args.no_dmg:
-        print(build_dmg(app, output_dir))
+        print(build_dmg(app, output_dir, sign_identity=args.sign_identity, notary_profile=(args.notary_profile if args.notarize else None), staple=args.staple or args.notarize))
     return 0
 
 

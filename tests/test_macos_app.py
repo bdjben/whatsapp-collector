@@ -76,6 +76,63 @@ def test_macos_app_builder_signs_bundle_by_default(tmp_path: Path, monkeypatch: 
     )
 
 
+def test_macos_app_builder_can_use_developer_id_identity_with_hardened_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    builder = _load_builder()
+    project = tmp_path / "project"
+    dist = tmp_path / "dist"
+    identity = "Developer ID Application: Example LLC (ABCDE12345)"
+    (project / "dist").mkdir(parents=True)
+    (project / "dist" / "whatsapp-collector.pyz").write_text("#!/usr/bin/env python3\n")
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append([str(part) for part in command])
+        return object()
+
+    monkeypatch.setattr(builder.subprocess, "run", fake_run)
+
+    app_path = builder.build_macos_app(project, dist, compile_app=False, sign_identity=identity)
+
+    assert [
+        "codesign",
+        "--force",
+        "--deep",
+        "--options",
+        "runtime",
+        "--sign",
+        identity,
+        "--timestamp",
+        str(app_path),
+    ] in calls
+
+
+def test_macos_dmg_builder_can_sign_notarize_and_staple_final_dmg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    builder = _load_builder()
+    app = tmp_path / "WhatsApp Collector.app"
+    app.mkdir()
+    dist = tmp_path / "dist"
+    identity = "Developer ID Application: Example LLC (ABCDE12345)"
+    profile = "whatsapp-collector-notary"
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append([str(part) for part in command])
+        if command[0] == "hdiutil" and "-o" in command:
+            output = Path(command[command.index("-o") + 1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"fake dmg")
+        return object()
+
+    monkeypatch.setattr(builder.subprocess, "run", fake_run)
+
+    dmg_path = builder.build_dmg(app, dist, sign_identity=identity, notary_profile=profile, staple=True)
+
+    assert dmg_path.name == "WhatsApp-Collector-macOS.dmg"
+    assert ["codesign", "--force", "--sign", identity, "--timestamp", str(dmg_path)] in calls
+    assert ["xcrun", "notarytool", "submit", str(dmg_path), "--keychain-profile", profile, "--wait"] in calls
+    assert ["xcrun", "stapler", "staple", str(dmg_path)] in calls
+
+
 def test_macos_dmg_builder_creates_drag_to_applications_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     builder = _load_builder()
     app = tmp_path / "WhatsApp Collector.app"

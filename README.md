@@ -32,7 +32,7 @@ open WhatsApp-Collector-macOS.dmg
 
 A Finder window opens with `WhatsApp Collector.app` and an `Applications` shortcut. Drag the app onto `Applications`, then launch it from `/Applications` or Spotlight.
 
-The app bundle is ad-hoc signed so macOS no longer reports it as damaged because of an invalid bundle signature. It is not Apple-notarized yet, so macOS may still show the normal unidentified-developer first-launch warning. If that happens, right-click `WhatsApp Collector.app` in `/Applications`, choose **Open**, and confirm once.
+Release DMGs can be Developer ID signed, Apple-notarized, and stapled. Those notarized releases should open normally without the unidentified-developer first-launch warning. Local development builds fall back to ad-hoc signing unless a Developer ID identity is provided.
 
 The app lives in the macOS menu bar as `W↗`. Use that menu to:
 
@@ -341,6 +341,30 @@ Build a distributable package:
 ```bash
 python -m build
 ```
+
+Build the macOS app locally with the default ad-hoc signature:
+
+```bash
+python scripts/build_zipapp.py --output dist/whatsapp-collector.pyz
+python scripts/build_macos_app.py --output-dir dist
+```
+
+Build a Developer ID signed, notarized, and stapled DMG when a `Developer ID Application` certificate is installed in the keychain and `notarytool` credentials are stored:
+
+```bash
+xcrun notarytool store-credentials whatsapp-collector-notary \
+  --apple-id "you@example.com" \
+  --team-id "TEAMID1234" \
+  --password "app-specific-password"
+
+python scripts/build_zipapp.py --output dist/whatsapp-collector.pyz
+python scripts/build_macos_app.py --output-dir dist \
+  --sign-identity "Developer ID Application: Your Name (TEAMID1234)" \
+  --notary-profile whatsapp-collector-notary \
+  --notarize
+```
+
+The same values can be supplied as `WHATSAPP_COLLECTOR_CODESIGN_IDENTITY` and `WHATSAPP_COLLECTOR_NOTARY_PROFILE`.
 
 Install the built wheel locally:
 
