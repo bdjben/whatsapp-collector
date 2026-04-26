@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import json
 import webbrowser
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
 from whatsapp_collector.chrome_session import ChromeTarget, ChromeWhatsAppSession
-from whatsapp_collector.collector import MAX_MESSAGE_LOOKBACK_HARD_LIMIT, WhatsAppCollector
+from whatsapp_collector.collector import DEFAULT_ALL_VIEW_CHAT_LIMIT, MAX_MESSAGE_LOOKBACK_HARD_LIMIT, WhatsAppCollector
 from whatsapp_collector.launcher import (
     DEFAULT_DEBUG_PORT,
     DEFAULT_MARKER_TITLE,
@@ -27,6 +27,7 @@ EnsureWindow = Callable[..., dict[str, Any]]
 InstallSchedule = Callable[..., dict[str, Any]]
 RemoveSchedule = Callable[[], dict[str, Any]]
 ScheduleStatus = Callable[[], dict[str, Any]]
+CollectLabels = Callable[..., list[str]]
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,9 @@ class UIConfig:
     display_name: str | None = None
     account_label: str = "WhatsApp"
     max_messages: int = MAX_MESSAGE_LOOKBACK_HARD_LIMIT
+    max_all_chats: int = DEFAULT_ALL_VIEW_CHAT_LIMIT
+    allow_labels: list[str] = field(default_factory=list)
+    exclude_labels: list[str] = field(default_factory=list)
 
 
 def render_dashboard_html(config: UIConfig) -> str:
@@ -49,6 +53,8 @@ def render_dashboard_html(config: UIConfig) -> str:
     output_display_path = _display_path(config.output_path)
     profile_display_path = _display_path(config.profile_dir)
     ai_prompt = _ai_harness_prompt(output_display_path)
+    allow_label_text = "\n".join(config.allow_labels)
+    exclude_label_text = "\n".join(config.exclude_labels)
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -80,8 +86,9 @@ def render_dashboard_html(config: UIConfig) -> str:
     .panel {{ padding:20px; }}
     .panel h2 {{ margin:0 0 14px; font-size:18px; letter-spacing:-.02em; }}
     label {{ display:block; color:var(--muted); font-size:12px; margin:14px 0 7px; text-transform:uppercase; letter-spacing:.12em; }}
-    input {{ width:100%; color:var(--text); background:rgba(0,0,0,.28); border:1px solid var(--line); border-radius:14px; padding:12px 13px; outline:none; }}
-    input:focus {{ border-color:rgba(37,211,102,.7); box-shadow:0 0 0 4px rgba(37,211,102,.11); }}
+    input, textarea.label-box {{ width:100%; color:var(--text); background:rgba(0,0,0,.28); border:1px solid var(--line); border-radius:14px; padding:12px 13px; outline:none; }}
+    textarea.label-box {{ min-height:82px; resize:vertical; font:13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }}
+    input:focus, textarea.label-box:focus {{ border-color:rgba(37,211,102,.7); box-shadow:0 0 0 4px rgba(37,211,102,.11); }}
     .row {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
     .field-help {{ margin:0 0 10px; color:#c2c8d6; font-size:12.5px; line-height:1.45; }}
     .field-help strong {{ color:var(--text); font-weight:720; }}
@@ -101,6 +108,9 @@ def render_dashboard_html(config: UIConfig) -> str:
     .threads {{ display:grid; gap:10px; margin-top:12px; }}
     .thread {{ padding:13px; border:1px solid var(--line); border-radius:16px; background:rgba(0,0,0,.18); }}
     .thread b {{ display:block; margin-bottom:4px; }} .thread span {{ color:var(--muted); }}
+    .label-options {{ display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }}
+    .label-chip {{ display:inline-flex; align-items:center; gap:7px; border:1px solid var(--line); border-radius:999px; padding:7px 8px 7px 11px; background:rgba(255,255,255,.07); color:#d8ffe8; }}
+    .label-chip button {{ border-radius:999px; padding:5px 8px; font-size:11px; background:rgba(255,255,255,.12); color:var(--text); border:1px solid var(--line); }}
     @media (max-width: 900px) {{ .grid, .cards, .row {{ grid-template-columns:1fr; }} header {{ display:block; }} .pill {{ display:inline-block; margin-top:14px; }} }}
   </style>
 </head>
@@ -126,10 +136,30 @@ def render_dashboard_html(config: UIConfig) -> str:
             <input id="maxMessages" type="number" min="1" value="{config.max_messages}" />
           </div>
           <div>
-            <label for="accountLabel">Export account name</label>
-            <p class="field-help">A friendly label stored in the JSON under account.accountLabel so downstream tools know which WhatsApp account produced the export.</p>
-            <input id="accountLabel" value="{_escape_attr(config.account_label)}" />
+            <label for="maxAllChats">Recent chats from All view</label>
+            <p class="field-help">Maximum number of most recent chats visible in WhatsApp Web's All view to collect in addition to labeled chats. Increase this when you want broader unlabeled/recent-chat coverage.</p>
+            <input id="maxAllChats" type="number" min="1" value="{config.max_all_chats}" />
           </div>
+        </div>
+        <label for="accountLabel">Export account name</label>
+        <p class="field-help">A friendly label stored in the JSON under account.accountLabel so downstream tools know which WhatsApp account produced the export.</p>
+        <input id="accountLabel" value="{_escape_attr(config.account_label)}" />
+        <div style="margin-top:18px">
+          <h2>Label collection rules</h2>
+          <p class="field-help"><strong>Always collect labels</strong> are WhatsApp chat labels that should be included whenever present. <strong>Never collect if only label</strong> labels are excluded only when that label is the chat's sole label, so a chat with both an excluded label and another useful label can still be exported.</p>
+          <div class="row">
+            <div>
+              <label for="allowLabels">Always collect labels</label>
+              <textarea id="allowLabels" class="label-box" placeholder="One label per line">{_escape_html(allow_label_text)}</textarea>
+            </div>
+            <div>
+              <label for="excludeLabels">Never collect if only label</label>
+              <textarea id="excludeLabels" class="label-box" placeholder="One label per line">{_escape_html(exclude_label_text)}</textarea>
+            </div>
+          </div>
+          <div class="actions"><button class="secondary" onclick="prepopulateLabels()">Pre-Populate Currently Available Labels from WhatsApp Web</button></div>
+          <div class="mini-note">The button reads the current label list from the dedicated WhatsApp Web window and injects selectable chips below. It does not send messages or modify WhatsApp.</div>
+          <div id="labelOptions" class="label-options"></div>
         </div>
         <label for="displayName">Monitor to open Chrome on <span style="text-transform:none;letter-spacing:0;color:#c2c8d6">(optional)</span></label>
         <p class="field-help">This is a monitor, not a WhatsApp username. The collector needs a dedicated Chrome window so you can log in and keep WhatsApp Web loaded; this setting only chooses which screen that window appears on. Leave blank unless you want the login window on a specific screen.</p>
@@ -180,7 +210,10 @@ def render_dashboard_html(config: UIConfig) -> str:
   </main>
 <script>
 const initialConfig = {config_json};
-function cfg() {{ return {{ maxMessages: Number(document.getElementById('maxMessages').value || 15), accountLabel: document.getElementById('accountLabel').value, displayName: document.getElementById('displayName').value || null, profileDir: document.getElementById('profileDir').value, outputPath: document.getElementById('outputPath').value }}; }}
+function labelList(id) {{ const seen=new Set(); return (document.getElementById(id).value||'').split(/[\\n,]+/).map(s=>s.trim()).filter(Boolean).filter(label=>{{ const key=label.toLowerCase(); if(seen.has(key)) return false; seen.add(key); return true; }}); }}
+function setLabelList(id, labels) {{ document.getElementById(id).value=(labels||[]).join('\\n'); }}
+function addLabel(id, label) {{ const labels=labelList(id); if(!labels.some(x=>x.toLowerCase()===String(label).toLowerCase())) labels.push(label); setLabelList(id, labels); }}
+function cfg() {{ return {{ maxMessages: Math.max(1, Number(document.getElementById('maxMessages').value || 15)), maxAllChats: Math.max(1, Number(document.getElementById('maxAllChats').value || 15)), accountLabel: document.getElementById('accountLabel').value, allowLabels: labelList('allowLabels'), excludeLabels: labelList('excludeLabels'), displayName: document.getElementById('displayName').value || null, profileDir: document.getElementById('profileDir').value, outputPath: document.getElementById('outputPath').value }}; }}
 function setBusy(text) {{ document.getElementById('runtimeState').textContent='Busy'; document.getElementById('statusText').textContent=text; document.getElementById('dot').className='dot'; }}
 function setOk(text) {{ document.getElementById('runtimeState').textContent='Ready'; document.getElementById('statusText').textContent=text; document.getElementById('dot').className='dot ok'; }}
 function setError(prefix, error) {{ document.getElementById('runtimeState').textContent='Failed'; document.getElementById('statusText').textContent=prefix + ': ' + errorMessage(error); document.getElementById('dot').className='dot'; }}
@@ -192,6 +225,8 @@ async function refreshStatus() {{ try {{ const j=await get('/api/status'); docum
 async function launchLogin() {{ setBusy('Opening dedicated Chrome profile...'); try {{ const j=await post('/api/window/ensure', cfg()); setLog(j); setOk('Window ready. Scan QR if WhatsApp asks.'); }} catch(e) {{ setLog(e); setError('Launch failed', e); }} }}
 async function runExport() {{ setBusy('Collecting export...'); try {{ const j=await post('/api/export/run', cfg()); setLog(j); setOk('Export complete. JSON saved to ' + currentOutputPathForHumans() + '.'); await loadExport(); await refreshStatus(); }} catch(e) {{ setLog(e); setError('Export failed', e); }} }}
 async function loadExport() {{ try {{ const j=await get('/api/export'); const threads=j.threads||[]; document.getElementById('threadCount').textContent=threads.length; document.getElementById('threads').innerHTML=threads.slice(0,12).map(t=>`<div class="thread"><b>${{escapeHtml(t.chatTitle||t.threadKey||'Untitled')}}</b><span>${{escapeHtml((t.labelsRaw||[]).join(', '))}} · ${{(t.recentMessages||[]).length}} messages</span></div>`).join('') || '<span style="color:var(--muted)">No threads in the export yet.</span>'; setLog(j); }} catch(e) {{ setLog(e); }} }}
+function renderLabelOptions(labels) {{ const box=document.getElementById('labelOptions'); const items=(labels||[]).filter(Boolean); box.innerHTML=items.length ? items.map(label=>`<span class="label-chip">${{escapeHtml(label)}} <button type="button" onclick="addLabel('allowLabels', '${{escapeJs(label)}}')">Allow</button><button type="button" onclick="addLabel('excludeLabels', '${{escapeJs(label)}}')">Block</button></span>`).join('') : '<span style="color:var(--muted)">No label options loaded yet.</span>'; }}
+async function prepopulateLabels() {{ setBusy('Reading current WhatsApp labels...'); try {{ const j=await post('/api/labels/prepopulate', cfg()); renderLabelOptions(j.labels || []); setLog(j); setOk('Loaded ' + ((j.labels||[]).length) + ' label options from WhatsApp Web.'); }} catch(e) {{ setLog(e); setError('Label pre-populate failed', e); }} }}
 function pathForHumans(fieldId, configKey) {{ const path = document.getElementById(fieldId).value || initialConfig[configKey]; if (path.startsWith('/')) return path; if (path.startsWith('~')) return path + ' (expanded by the server when running)'; return `${{initialConfig.workingDirectory}}/${{path}}`; }}
 function currentOutputPathForHumans() {{ return pathForHumans('outputPath', 'outputPath'); }}
 function currentProfileDirForHumans() {{ return pathForHumans('profileDir', 'profileDir'); }}
@@ -204,13 +239,18 @@ async function stopSchedule() {{ setBusy('Turning off automatic exports...'); tr
 function updatePathHints() {{ const outputPath = currentOutputPathForHumans(); document.getElementById('outputPathHint').textContent = 'Current file: ' + outputPath; document.getElementById('profileDirHint').textContent = 'Current profile folder: ' + currentProfileDirForHumans(); document.getElementById('aiPrompt').value = aiPromptForPath(outputPath); }}
 async function copyText(id) {{ const value = document.getElementById(id).value || document.getElementById(id).textContent; try {{ await navigator.clipboard.writeText(value); setOk('Copied.'); }} catch(e) {{ setLog({{error:'copy-failed', detail:String(e)}}); }} }}
 function escapeHtml(s) {{ return String(s).replace(/[&<>"']/g, c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c])); }}
+function escapeJs(s) {{ return String(s).replace(/\\\\/g,'\\\\\\\\').replace(/'/g,"\\\\'").replace(/\\n/g,' '); }}
 document.getElementById('outputPath').addEventListener('input', updatePathHints);
 document.getElementById('profileDir').addEventListener('input', updatePathHints);
 document.getElementById('maxMessages').addEventListener('input', updatePathHints);
+document.getElementById('maxAllChats').addEventListener('input', updatePathHints);
 document.getElementById('accountLabel').addEventListener('input', updatePathHints);
+document.getElementById('allowLabels').addEventListener('input', updatePathHints);
+document.getElementById('excludeLabels').addEventListener('input', updatePathHints);
 document.getElementById('displayName').addEventListener('input', updatePathHints);
 document.getElementById('scheduleInterval').addEventListener('input', refreshScheduleStatus);
 updatePathHints();
+renderLabelOptions(initialConfig.availableLabels || []);
 refreshStatus();
 refreshScheduleStatus();
 </script>
@@ -261,6 +301,10 @@ def _public_config(config: UIConfig) -> dict[str, Any]:
         "displayName": config.display_name,
         "accountLabel": config.account_label,
         "maxMessages": config.max_messages,
+        "maxAllChats": config.max_all_chats,
+        "allowLabels": list(config.allow_labels),
+        "excludeLabels": list(config.exclude_labels),
+        "availableLabels": sorted({*config.allow_labels, *config.exclude_labels}),
     }
 
 
@@ -268,6 +312,9 @@ def default_collect_export(
     *,
     account_label: str,
     max_messages: int,
+    max_all_chats: int,
+    allow_labels: list[str],
+    exclude_labels: list[str],
     output_path: Path,
     debug_port: int,
     marker_title: str,
@@ -277,13 +324,33 @@ def default_collect_export(
     target = ChromeTarget(marker_title=marker_title, marker_url_substring=marker_url_substring, target_url_substring=target_url)
     session = ChromeWhatsAppSession(target=target, debug_port=debug_port)
     collector = WhatsAppCollector(session=session)
-    return collector.collect_dashboard_export(account_label=account_label, max_messages=max_messages)
+    return collector.collect_dashboard_export(
+        account_label=account_label,
+        max_messages=max_messages,
+        max_all_chats=max_all_chats,
+        allow_labels=allow_labels,
+        exclude_labels=exclude_labels,
+    )
+
+
+def default_collect_labels(
+    *,
+    debug_port: int,
+    marker_title: str,
+    marker_url_substring: str,
+    target_url: str,
+) -> list[str]:
+    target = ChromeTarget(marker_title=marker_title, marker_url_substring=marker_url_substring, target_url_substring=target_url)
+    session = ChromeWhatsAppSession(target=target, debug_port=debug_port)
+    collector = WhatsAppCollector(session=session)
+    return [label.name for label in collector.collect_labels()]
 
 
 def create_app_handler(
     config: UIConfig,
     *,
     collect_export: CollectExport = default_collect_export,
+    collect_labels: CollectLabels = default_collect_labels,
     ensure_window: EnsureWindow = ensure_dedicated_whatsapp_window,
     install_schedule: InstallSchedule = install_schedule,
     remove_schedule: RemoveSchedule = remove_schedule,
@@ -330,6 +397,9 @@ def create_app_handler(
                     export = collect_export(
                         account_label=effective.account_label,
                         max_messages=effective.max_messages,
+                        max_all_chats=effective.max_all_chats,
+                        allow_labels=effective.allow_labels,
+                        exclude_labels=effective.exclude_labels,
                         output_path=effective.output_path,
                         debug_port=effective.debug_port,
                         marker_title=effective.marker_title,
@@ -338,6 +408,23 @@ def create_app_handler(
                     )
                     _write_atomic_json(export, effective.output_path)
                     self._send_json({"ok": True, "export": _read_export_summary(effective.output_path), "threadCount": len(export.get("threads", []))})
+                    return
+                if self.path == "/api/labels/prepopulate":
+                    labels = _normalize_label_list(
+                        collect_labels(
+                            debug_port=effective.debug_port,
+                            marker_title=effective.marker_title,
+                            marker_url_substring=effective.marker_url_substring,
+                            target_url=effective.target_url,
+                        )
+                    )
+                    combined = _sorted_unique_labels([*labels, *effective.allow_labels, *effective.exclude_labels])
+                    self._send_json({
+                        "ok": True,
+                        "labels": combined,
+                        "allowLabels": effective.allow_labels,
+                        "excludeLabels": effective.exclude_labels,
+                    })
                     return
                 if self.path == "/api/schedule/install":
                     result = install_schedule(
@@ -388,6 +475,33 @@ def create_app_handler(
     return WhatsAppCollectorHandler
 
 
+def _normalize_label_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_items = value.replace(",", "\n").splitlines()
+    elif isinstance(value, list | tuple | set):
+        raw_items = list(value)
+    else:
+        raw_items = [value]
+    labels: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        label = str(item or "").replace("\u200e", "").strip()
+        if not label:
+            continue
+        key = label.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        labels.append(label)
+    return labels
+
+
+def _sorted_unique_labels(value: list[str]) -> list[str]:
+    return sorted(_normalize_label_list(value), key=lambda item: item.casefold())
+
+
 def _config_from_payload(config: UIConfig, payload: dict[str, Any]) -> UIConfig:
     return UIConfig(
         output_path=Path(payload.get("outputPath") or config.output_path).expanduser(),
@@ -401,13 +515,19 @@ def _config_from_payload(config: UIConfig, payload: dict[str, Any]) -> UIConfig:
         display_name=(str(payload.get("displayName")).strip() if payload.get("displayName") else None),
         account_label=str(payload.get("accountLabel") or config.account_label),
         max_messages=max(1, int(payload.get("maxMessages") or config.max_messages)),
+        max_all_chats=max(1, int(payload.get("maxAllChats") or config.max_all_chats)),
+        allow_labels=_normalize_label_list(payload.get("allowLabels", config.allow_labels)),
+        exclude_labels=_normalize_label_list(payload.get("excludeLabels", config.exclude_labels)),
     )
 
 
 def _schedule_payload(config: UIConfig) -> dict[str, Any]:
     return {
         "maxMessages": config.max_messages,
+        "maxAllChats": config.max_all_chats,
         "accountLabel": config.account_label,
+        "allowLabels": list(config.allow_labels),
+        "excludeLabels": list(config.exclude_labels),
         "displayName": config.display_name,
         "profileDir": str(config.profile_dir),
         "outputPath": str(config.output_path),

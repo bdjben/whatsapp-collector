@@ -183,6 +183,25 @@ def test_navigation_js_targets_all_and_collapsed_labels_filter() -> None:
     assert '\\d{1,2}:\\d{2}(?:\\s?[AP]M)?' in CHAT_LIST_BODY_JS
 
 
+def test_plan_all_view_rows_honors_configured_recent_all_view_chat_count() -> None:
+    collector = WhatsAppCollector(session=StubSession())
+    initial_rows = [
+        ChatRow(chat_name=f"Chat {idx}", timestamp_label="Today", preview=f"Preview {idx}", unread_count=0, unread_flag=False)
+        for idx in range(1, 11)
+    ]
+    refreshed_rows = [
+        ChatRow(chat_name=f"Chat {idx}", timestamp_label="Today", preview=f"Preview {idx}", unread_count=0, unread_flag=False)
+        for idx in range(6, 11)
+    ] + [
+        ChatRow(chat_name="New Chat A", timestamp_label="Today", preview="A", unread_count=0, unread_flag=False),
+        ChatRow(chat_name="New Chat B", timestamp_label="Today", preview="B", unread_count=0, unread_flag=False),
+    ]
+
+    planned = collector._plan_all_view_rows(initial_rows, refreshed_rows, all_view_chat_limit=3)
+
+    assert [row.chat_name for row in planned] == ["Chat 1", "Chat 2", "Chat 3"]
+
+
 def test_plan_all_view_rows_uses_initial_top_15_then_adds_newcomers_up_to_hard_cap() -> None:
     collector = WhatsAppCollector(session=StubSession())
     initial_rows = [
@@ -560,6 +579,31 @@ def test_collect_events_projects_status_importance_and_recent_message_counts() -
             recent_message_text_available_count=1,
         ),
     ]
+
+
+def test_collect_dashboard_export_passes_configured_all_view_chat_count_to_recent_all_exports() -> None:
+    class PlanningCollector(WhatsAppCollector):
+        def __init__(self) -> None:
+            super().__init__(session=StubSession())
+            self.recent_call: dict = {}
+
+        def collect_labeled_threads(self, *args, **kwargs):
+            return []
+
+        def _excluded_recent_chat_names(self, excluded_labels):
+            return set()
+
+        def _recent_default_view_exports(self, **kwargs):
+            self.recent_call = kwargs
+            return []
+
+    collector = PlanningCollector()
+
+    payload = collector.collect_dashboard_export(max_all_chats=2)
+
+    assert payload["maxAllViewChats"] == 2
+    assert [row.chat_name for row in collector.recent_call["chat_rows"]] == ["Example Contact", "Example Lead"]
+    assert collector.recent_call["limit"] == 2
 
 
 def test_collect_dashboard_export_emits_labeled_plus_recent_default_view_threads_with_dedupe() -> None:

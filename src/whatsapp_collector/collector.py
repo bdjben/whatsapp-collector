@@ -25,6 +25,7 @@ MODEL_STORAGE_STORES_JS = '''window.__hermes_async_result = null;(function(){con
 DEFAULT_EXCLUDED_LABELS = ["Excluded Label", "Archive Label"]
 MAX_MESSAGE_LOOKBACK_HARD_LIMIT = 15
 DEFAULT_MAX_MESSAGES = MAX_MESSAGE_LOOKBACK_HARD_LIMIT
+DEFAULT_ALL_VIEW_CHAT_LIMIT = 15
 
 
 class WhatsAppCollector:
@@ -219,8 +220,10 @@ class WhatsAppCollector:
         allow_labels: list[str] | None = None,
         exclude_labels: list[str] | None = None,
         max_messages: int = MAX_MESSAGE_LOOKBACK_HARD_LIMIT,
+        max_all_chats: int = DEFAULT_ALL_VIEW_CHAT_LIMIT,
     ) -> dict[str, Any]:
         max_messages = self._bounded_max_messages(max_messages)
+        max_all_chats = max(1, int(max_all_chats))
         excluded_labels = self._effective_excluded_labels(exclude_labels)
         snapshot = self.collect_snapshot()
         threads = self.collect_labeled_threads(
@@ -275,13 +278,14 @@ class WhatsAppCollector:
             )
         excluded_recent_chat_names = self._excluded_recent_chat_names(excluded_labels)
         refreshed_chat_rows = self.collect_chat_list()
-        planned_chat_rows = self._plan_all_view_rows(snapshot.chat_list, refreshed_chat_rows)
+        planned_chat_rows = self._plan_all_view_rows(snapshot.chat_list, refreshed_chat_rows, all_view_chat_limit=max_all_chats)
         exported_threads.extend(
             self._recent_default_view_exports(
                 chat_rows=planned_chat_rows,
                 existing_titles=[thread["chatTitle"] for thread in exported_threads],
                 excluded_titles=excluded_recent_chat_names,
                 max_messages=max_messages,
+                limit=max_all_chats,
             )
         )
         return {
@@ -294,6 +298,7 @@ class WhatsAppCollector:
             "allowLabels": allow_labels or [],
             "excludeLabels": excluded_labels,
             "maxRecentMessages": max_messages,
+            "maxAllViewChats": max_all_chats,
             "threads": exported_threads,
         }
 
@@ -374,7 +379,11 @@ class WhatsAppCollector:
         *,
         initial_limit: int = 15,
         hard_cap: int = 20,
+        all_view_chat_limit: int | None = None,
     ) -> list[ChatRow]:
+        if all_view_chat_limit is not None:
+            initial_limit = max(1, int(all_view_chat_limit))
+            hard_cap = initial_limit
         planned: list[ChatRow] = []
         seen: set[str] = set()
 

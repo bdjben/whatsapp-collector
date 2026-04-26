@@ -9,6 +9,7 @@ from typing import Sequence
 
 from whatsapp_collector.chrome_session import ChromeTarget, ChromeWhatsAppSession
 from whatsapp_collector.collector import (
+    DEFAULT_ALL_VIEW_CHAT_LIMIT,
     DEFAULT_EXCLUDED_LABELS,
     MAX_MESSAGE_LOOKBACK_HARD_LIMIT,
     WhatsAppCollector,
@@ -187,6 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_export.add_argument("--allow-label", action="append", default=[])
     dashboard_export.add_argument("--exclude-label", action="append", default=[])
     dashboard_export.add_argument("--max-messages", type=int, default=MAX_MESSAGE_LOOKBACK_HARD_LIMIT)
+    dashboard_export.add_argument("--max-all-chats", type=int, default=DEFAULT_ALL_VIEW_CHAT_LIMIT)
 
     ensure_window = subparsers.add_parser("ensure-window")
     for window_parser in (ensure_window,):
@@ -220,6 +222,9 @@ def build_parser() -> argparse.ArgumentParser:
     ui.add_argument("--display-name", default=DEFAULT_DISPLAY_NAME)
     ui.add_argument("--account-label", default="WhatsApp")
     ui.add_argument("--max-messages", type=int, default=MAX_MESSAGE_LOOKBACK_HARD_LIMIT)
+    ui.add_argument("--max-all-chats", type=int, default=DEFAULT_ALL_VIEW_CHAT_LIMIT)
+    ui.add_argument("--allow-label", action="append", default=[])
+    ui.add_argument("--exclude-label", action="append", default=[])
     ui.add_argument("--open-browser", action="store_true")
 
     status = subparsers.add_parser("status")
@@ -242,6 +247,7 @@ def main(argv: Sequence[str] | None = None, *, collector: WhatsAppCollector | No
     storage_dir = Path(getattr(args, "storage_dir", "storage"))
     excluded_labels = _merged_excluded_labels(getattr(args, "exclude_label", []))
     max_messages = max(int(getattr(args, "max_messages", MAX_MESSAGE_LOOKBACK_HARD_LIMIT)), 1)
+    max_all_chats = max(int(getattr(args, "max_all_chats", DEFAULT_ALL_VIEW_CHAT_LIMIT)), 1)
 
     if args.command == "labels":
         payload = {"labels": [label.__dict__ for label in collector.collect_labels()]}
@@ -283,6 +289,7 @@ def main(argv: Sequence[str] | None = None, *, collector: WhatsAppCollector | No
             allow_labels=args.allow_label,
             exclude_labels=excluded_labels,
             max_messages=max_messages,
+            max_all_chats=max_all_chats,
         )
         payload["written_to"] = str(_write_atomic_json(payload, Path(args.output)))
     elif args.command == "ensure-window":
@@ -317,6 +324,9 @@ def main(argv: Sequence[str] | None = None, *, collector: WhatsAppCollector | No
                 display_name=args.display_name,
                 account_label=args.account_label,
                 max_messages=max_messages,
+                max_all_chats=max_all_chats,
+                allow_labels=args.allow_label,
+                exclude_labels=args.exclude_label,
             ),
             open_browser=args.open_browser,
         )

@@ -85,7 +85,7 @@ class StubCollector:
             ),
         )
 
-    def collect_dashboard_export(self, account_label="WhatsApp", allow_labels=None, exclude_labels=None, max_messages=15):
+    def collect_dashboard_export(self, account_label="WhatsApp", allow_labels=None, exclude_labels=None, max_messages=15, max_all_chats=15):
         return {
             "source": "whatsapp",
             "exportedAt": "2026-04-19T00:00:00+00:00",
@@ -96,6 +96,7 @@ class StubCollector:
             "allowLabels": allow_labels or [],
             "excludeLabels": exclude_labels or ["Excluded Label"],
             "maxRecentMessages": max_messages,
+            "maxAllViewChats": max_all_chats,
             "threads": [
                 {
                     "threadKey": "141394635137028@lid",
@@ -405,6 +406,29 @@ def test_cli_ensure_window_does_not_assume_display_name(monkeypatch, capsys, tmp
     assert "TV" not in capsys.readouterr().out
 
 
+def test_cli_dashboard_export_accepts_all_view_chat_count_and_label_rules(capsys, tmp_path: Path) -> None:
+    exit_code = main(
+        [
+            "dashboard-export",
+            "--output",
+            str(tmp_path / "export.json"),
+            "--max-all-chats",
+            "42",
+            "--allow-label",
+            "VIP",
+            "--exclude-label",
+            "Archive",
+        ],
+        collector=StubCollector(),
+    )
+
+    assert exit_code == 0
+    text = (tmp_path / "export.json").read_text()
+    assert '"maxAllViewChats": 42' in text
+    assert '"allowLabels": [\n    "VIP"' in text
+    assert '"Archive"' in text
+
+
 def test_cli_max_messages_is_not_clamped_to_default(capsys, tmp_path: Path) -> None:
     exit_code = main(
         ["dashboard-export", "--output", str(tmp_path / "export.json"), "--max-messages", "50"],
@@ -437,6 +461,12 @@ def test_cli_ui_starts_local_web_ui(monkeypatch, tmp_path: Path) -> None:
             str(tmp_path / "export.json"),
             "--max-messages",
             "88",
+            "--max-all-chats",
+            "33",
+            "--allow-label",
+            "VIP",
+            "--exclude-label",
+            "Archive",
             "--open-browser",
         ],
         collector=StubCollector(),
@@ -447,6 +477,9 @@ def test_cli_ui_starts_local_web_ui(monkeypatch, tmp_path: Path) -> None:
     config = captured["config"]
     assert config.port == 9009
     assert config.max_messages == 88
+    assert config.max_all_chats == 33
+    assert config.allow_labels == ["VIP"]
+    assert config.exclude_labels == ["Archive"]
     assert str(config.profile_dir) == str(tmp_path / "profile")
     assert str(config.output_path) == str(tmp_path / "export.json")
     assert config.marker_title == "WhatsApp Collector"

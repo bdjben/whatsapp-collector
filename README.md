@@ -15,7 +15,7 @@ This project is deliberately not a bot and not a sender. It never types into Wha
 - Dedicated marker tab is named `WhatsApp Collector`.
 - Label inventory and visible chat-list extraction.
 - Labeled thread membership from WhatsApp Web IndexedDB.
-- Configurable bounded recent-message windows through `--max-messages` or `WA_MAX_MESSAGES`.
+- Configurable bounded recent-message windows through `--max-messages` or `WA_MAX_MESSAGES`, plus configurable recent-chat coverage from WhatsApp Web's All view through `--max-all-chats`.
 - Stable export contract at `~/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json` by default for the UI/macOS app.
 - Atomic JSON writes with automatic backups before replacing an existing export.
 - Runtime guardrails against send/composer JavaScript paths.
@@ -85,6 +85,8 @@ The UI provides:
 
 - Launch / Login for the dedicated Chrome profile. This opens a separate Chrome window for WhatsApp Web so you can scan a QR code and keep the collector session isolated from your normal browser.
 - "Messages per conversation", which controls how many recent messages are saved for each collected chat thread. It does **not** limit the number of chats/threads collected.
+- "Recent chats from All view", which controls how many of the most recent chats visible in WhatsApp Web's All view are collected in addition to labeled chats.
+- "Label collection rules", where "Always collect labels" exposes the existing allow/whitelist labels and "Never collect if only label" exposes the existing exclude/blacklist labels. The pre-populate button reads the currently available WhatsApp Web label list and turns it into selectable Allow/Block chips without sending or modifying messages.
 - "Export account name", a friendly name stored in the JSON under `account.accountLabel` so downstream tools can identify the source account.
 - "Monitor to open Chrome on", an optional screen/monitor name. This is not your WhatsApp username; leave it blank unless you want the login window to appear on a particular display.
 - "Chrome profile folder", the private Chrome profile used by the collector. The default may be in a hidden dot-folder such as `~/.whatsapp-collector/chrome-profile`; on macOS Finder, use Go -> Go to Folder and paste the path to open it.
