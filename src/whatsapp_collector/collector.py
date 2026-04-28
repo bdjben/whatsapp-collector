@@ -460,7 +460,10 @@ class WhatsAppCollector:
                     )
                 ]
             if not recent_messages:
-                recent_messages = self._opened_chat_recent_messages_for_chat(row.chat_name, max_messages=max_messages)
+                try:
+                    recent_messages = self._opened_chat_recent_messages_for_chat(row.chat_name, max_messages=max_messages)
+                except RuntimeError:
+                    recent_messages = []
             if not recent_messages:
                 continue
 

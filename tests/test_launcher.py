@@ -54,11 +54,16 @@ def test_launch_dedicated_chrome_window_opens_background_chrome_instance(monkeyp
     assert "https://web.whatsapp.com/" in command
 
 
-def test_terminate_profile_processes_waits_until_profile_processes_exit(monkeypatch, tmp_path: Path) -> None:
+def test_terminate_profile_processes_kills_only_chrome_processes_and_not_wrapper_shell(monkeypatch, tmp_path: Path) -> None:
+    profile = "/tmp/profile"
     calls: list[list[str]] = []
+    killed: list[tuple[int, int]] = []
     poll_results = [
-        "20518 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/tmp/profile",
-        "",
+        (
+            "20518 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/tmp/profile\n"
+            "99999 /bin/bash -c whatsapp-collector quit-profile --profile-dir /tmp/profile"
+        ),
+        "99999 /bin/bash -c whatsapp-collector quit-profile --profile-dir /tmp/profile",
     ]
 
     class Completed:
@@ -69,24 +74,26 @@ def test_terminate_profile_processes_waits_until_profile_processes_exit(monkeypa
     def fake_run(command, check=False, capture_output=True, text=True):
         calls.append(command)
         if command[:2] == ["pkill", "-f"]:
-            return Completed(returncode=0)
+            raise AssertionError("terminate_profile_processes must not pkill the raw profile pattern; it can kill its own wrapper shell")
         if command[:2] == ["pgrep", "-fal"]:
             stdout = poll_results.pop(0) if poll_results else ""
             return Completed(stdout=stdout, returncode=0 if stdout else 1)
         raise AssertionError(f"Unexpected command: {command}")
 
     monkeypatch.setattr("whatsapp_collector.launcher.subprocess.run", fake_run)
+    monkeypatch.setattr("whatsapp_collector.launcher.os.kill", lambda pid, sig: killed.append((pid, sig)))
     monkeypatch.setattr("whatsapp_collector.launcher.time.sleep", lambda *_args, **_kwargs: None)
 
-    terminate_profile_processes(tmp_path)
+    terminate_profile_processes(Path(profile))
 
-    assert calls[0] == ["pkill", "-f", str(tmp_path)]
-    assert calls[1] == ["pgrep", "-fal", str(tmp_path)]
-    assert calls[2] == ["pgrep", "-fal", str(tmp_path)]
+    assert calls[0] == ["pgrep", "-fal", profile]
+    assert calls[1] == ["pgrep", "-fal", profile]
+    assert killed == [(20518, 15)]
 
 
 def test_terminate_debug_port_processes_kills_only_configured_devtools_port(monkeypatch) -> None:
     calls: list[list[str]] = []
+    killed: list[tuple[int, int]] = []
     poll_results = [
         "20518 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=19220 --user-data-dir=/tmp/old-profile",
         "",
@@ -100,20 +107,21 @@ def test_terminate_debug_port_processes_kills_only_configured_devtools_port(monk
     def fake_run(command, check=False, capture_output=True, text=True):
         calls.append(command)
         if command[:2] == ["pkill", "-f"]:
-            return Completed(returncode=0)
+            raise AssertionError("terminate_debug_port_processes must not pkill raw patterns")
         if command[:2] == ["pgrep", "-fal"]:
             stdout = poll_results.pop(0) if poll_results else ""
             return Completed(stdout=stdout, returncode=0 if stdout else 1)
         raise AssertionError(f"Unexpected command: {command}")
 
     monkeypatch.setattr("whatsapp_collector.launcher.subprocess.run", fake_run)
+    monkeypatch.setattr("whatsapp_collector.launcher.os.kill", lambda pid, sig: killed.append((pid, sig)))
     monkeypatch.setattr("whatsapp_collector.launcher.time.sleep", lambda *_args, **_kwargs: None)
 
     terminate_debug_port_processes(19220)
 
-    assert calls[0] == ["pkill", "-f", "remote-debugging-port=19220"]
+    assert calls[0] == ["pgrep", "-fal", "remote-debugging-port=19220"]
     assert calls[1] == ["pgrep", "-fal", "remote-debugging-port=19220"]
-    assert calls[2] == ["pgrep", "-fal", "remote-debugging-port=19220"]
+    assert killed == [(20518, 15)]
 
 
 def test_debug_port_has_profile_conflict_detects_stale_profile_owner(monkeypatch, tmp_path: Path) -> None:

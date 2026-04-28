@@ -15,6 +15,9 @@ MARKER_URL_SUBSTRING="${WA_CHROME_MARKER_URL_SUBSTRING:-whatsapp-collector}"
 TARGET_URL="${WA_CHROME_TARGET_URL:-https://web.whatsapp.com/}"
 ACCOUNT_LABEL="${WA_ACCOUNT_LABEL:-WhatsApp}"
 MAX_MESSAGES="${WA_MAX_MESSAGES:-15}"
+DEDICATED_RETRY_DELAY_SECONDS="${WA_DEDICATED_RETRY_DELAY_SECONDS:-8}"
+DEDICATED_ATTEMPTS="${WA_DEDICATED_ATTEMPTS:-5}"
+EXCLUDE_LABELS_RAW="${WA_EXCLUDE_LABELS:-}"
 
 PYTHON_BIN="${PYTHON_BIN:-}"
 RUNNER=(whatsapp-collector)
@@ -77,6 +80,25 @@ backup_and_replace_output() {
   cp "$candidate_path" "$output_path"
 }
 
+build_exclude_label_args() {
+  local raw="$1"
+  local label
+  EXCLUDE_LABEL_ARGS=()
+  if [[ -z "$raw" ]]; then
+    return
+  fi
+  while IFS= read -r label; do
+    label="${label#"${label%%[![:space:]]*}"}"
+    label="${label%"${label##*[![:space:]]}"}"
+    if [[ -n "$label" ]]; then
+      EXCLUDE_LABEL_ARGS+=(--exclude-label "$label")
+    fi
+  done < <(printf '%s\n' "$raw" | tr ',' '\n')
+}
+
+EXCLUDE_LABEL_ARGS=()
+build_exclude_label_args "$EXCLUDE_LABELS_RAW"
+
 current_count=$(validate_export "$OUTPUT_PATH")
 
 ENSURE_WINDOW_ARGS=(
@@ -92,35 +114,59 @@ ENSURE_WINDOW_ARGS=(
 if [[ -n "$DISPLAY_NAME" ]]; then
   ENSURE_WINDOW_ARGS+=(--display-name "$DISPLAY_NAME")
 fi
-"${RUNNER[@]}" "${ENSURE_WINDOW_ARGS[@]}" >/tmp/wa-collector-window.json || true
+
+run_ensure_window() {
+  "${RUNNER[@]}" "${ENSURE_WINDOW_ARGS[@]}" >/tmp/wa-collector-window.json 2>/tmp/wa-collector-window.err || true
+}
+
+run_dedicated_attempt() {
+  local attempt="$1"
+  WA_CHROME_DEBUG_PORT="$DEBUG_PORT" \
+  WA_CHROME_MARKER_TITLE="$MARKER_TITLE" \
+  WA_CHROME_MARKER_URL_SUBSTRING="$MARKER_URL_SUBSTRING" \
+  "${RUNNER[@]}" dashboard-export \
+    --account-label "$ACCOUNT_LABEL" \
+    --max-messages "$MAX_MESSAGES" \
+    "${EXCLUDE_LABEL_ARGS[@]}" \
+    --output "$DEDICATED_CANDIDATE" >/tmp/wa-collector-dedicated-export.json 2>"/tmp/wa-collector-dedicated-export.attempt-${attempt}.err"
+}
+
+DEDICATED_STATUS=1
+dedicated_count=0
+for attempt in $(seq 1 "$DEDICATED_ATTEMPTS"); do
+  cleanup
+  if [[ "$attempt" -gt 1 ]]; then
+    sleep "$DEDICATED_RETRY_DELAY_SECONDS"
+  fi
+  run_ensure_window
+  set +e
+  run_dedicated_attempt "$attempt"
+  DEDICATED_STATUS=$?
+  set -e
+  cp "/tmp/wa-collector-dedicated-export.attempt-${attempt}.err" /tmp/wa-collector-dedicated-export.err 2>/dev/null || true
+  if [[ $DEDICATED_STATUS -eq 0 ]]; then
+    dedicated_count=$(validate_export "$DEDICATED_CANDIDATE")
+  else
+    dedicated_count=0
+  fi
+  if [[ "$dedicated_count" -gt 0 ]]; then
+    backup_and_replace_output "$DEDICATED_CANDIDATE" "$OUTPUT_PATH"
+    printf '{"mode":"dedicated-profile","thread_count":%s,"output":"%s","attempt":%s}\n' "$dedicated_count" "$OUTPUT_PATH" "$attempt"
+    exit 0
+  fi
+done
 
 set +e
-WA_CHROME_DEBUG_PORT="$DEBUG_PORT" \
-WA_CHROME_MARKER_TITLE="$MARKER_TITLE" \
-WA_CHROME_MARKER_URL_SUBSTRING="$MARKER_URL_SUBSTRING" \
-"${RUNNER[@]}" dashboard-export \
+env \
+  -u WA_CHROME_DEBUG_PORT \
+  -u WA_CHROME_MARKER_TITLE \
+  -u WA_CHROME_MARKER_URL_SUBSTRING \
+  -u WA_CHROME_TARGET_URL \
+  -u WA_CHROME_TARGET_URL_SUBSTRING \
+  "${RUNNER[@]}" dashboard-export \
   --account-label "$ACCOUNT_LABEL" \
   --max-messages "$MAX_MESSAGES" \
-  --output "$DEDICATED_CANDIDATE" >/tmp/wa-collector-dedicated-export.json 2>/tmp/wa-collector-dedicated-export.err
-DEDICATED_STATUS=$?
-set -e
-
-if [[ $DEDICATED_STATUS -eq 0 ]]; then
-  dedicated_count=$(validate_export "$DEDICATED_CANDIDATE")
-else
-  dedicated_count=0
-fi
-
-if [[ "$dedicated_count" -gt 0 ]]; then
-  backup_and_replace_output "$DEDICATED_CANDIDATE" "$OUTPUT_PATH"
-  printf '{"mode":"dedicated-profile","thread_count":%s,"output":"%s"}\n' "$dedicated_count" "$OUTPUT_PATH"
-  exit 0
-fi
-
-set +e
-"${RUNNER[@]}" dashboard-export \
-  --account-label "$ACCOUNT_LABEL" \
-  --max-messages "$MAX_MESSAGES" \
+  "${EXCLUDE_LABEL_ARGS[@]}" \
   --output "$ACTIVE_CANDIDATE" >/tmp/wa-collector-active-export.json 2>/tmp/wa-collector-active-export.err
 ACTIVE_STATUS=$?
 set -e
@@ -138,7 +184,7 @@ if [[ "$active_count" -gt 0 ]]; then
 fi
 
 if [[ "$current_count" -gt 0 ]]; then
-  printf '{"mode":"preserved-current","thread_count":%s,"output":"%s","dedicated_status":%s,"active_status":%s}\n' "$current_count" "$OUTPUT_PATH" "$DEDICATED_STATUS" "$ACTIVE_STATUS"
+  printf '{"mode":"whatsappmonitor-preserved","thread_count":%s,"output":"%s","dedicated_status":%s,"active_status":%s,"dedicated_attempts":%s,"preserved":true}\n' "$current_count" "$OUTPUT_PATH" "$DEDICATED_STATUS" "$ACTIVE_STATUS" "$DEDICATED_ATTEMPTS"
   exit 0
 fi
 

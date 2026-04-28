@@ -864,6 +864,51 @@ def test_collect_dashboard_export_opens_chat_and_uses_true_message_ids_when_inde
     assert session.clicked
 
 
+def test_collect_dashboard_export_skips_unlabeled_open_chat_runtime_failures_instead_of_failing_export() -> None:
+    class FailingOpenedChatSession:
+        def click_point(self, expression: str):
+            return {"x": 100, "y": 200}
+
+        def run_json(self, js: str):
+            if "PAGE_META" in js:
+                return {"title": "WhatsApp Business", "url": "https://web.whatsapp.com/"}
+            if "LABELS_BODY" in js:
+                return {"body": "Labels"}
+            if "CHAT_LIST_BODY" in js:
+                return {
+                    "rows": [
+                        {
+                            "chat_name": "+1 555-0101",
+                            "timestamp_label": "Today",
+                            "preview": "Need the runtime model",
+                            "unread_count": 0,
+                            "unread_flag": False,
+                        },
+                    ],
+                    "body": "All",
+                }
+            if "OPENED_CHAT_RECENT_MESSAGES" in js:
+                raise RuntimeError("Chrome DevTools request failed (action=evaluate, port=19220): Promise was collected")
+            raise AssertionError(f"Unexpected js: {js}")
+
+        def run_async_json(self, script: str, result_var: str = "__hermes_async_result"):
+            if 'objectStoreNames' in script and 'model-storage' in script:
+                return {"stores": ["chat", "contact", "group-metadata", "label", "label-association", "message"]}
+            if '"label"' in script or '"label-association"' in script or '"group-metadata"' in script:
+                return []
+            if '"contact"' in script:
+                return [{"key": "15550101@s.whatsapp.net", "value": {"id": "15550101@s.whatsapp.net", "phoneNumber": "15550101@c.us"}}]
+            if '"chat"' in script:
+                return [{"key": "1234567890@lid", "value": {"id": "1234567890@lid", "historyChatId": "15550101@c.us", "t": 1776693263}}]
+            if '"message"' in script:
+                return [{"key": "false_1234567890@lid_3EB0META", "value": {"id": "false_1234567890@lid_3EB0META", "t": 1776693263, "type": "e2e_notification", "subtype": "encrypt", "from": "1234567890@lid"}}]
+            raise AssertionError(f"Unexpected async script: {script[:200]}")
+
+    payload = WhatsAppCollector(session=FailingOpenedChatSession()).collect_dashboard_export(account_label="WhatsApp", allow_labels=[])
+
+    assert payload["threads"] == []
+
+
 def test_collect_dashboard_export_resolves_unlabeled_threads_via_chat_aliases_and_phone_digits_without_preview_fallback() -> None:
     class AliasResolvingSession:
         def run_json(self, js: str):

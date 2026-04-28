@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 import time
 import urllib.parse
@@ -55,13 +57,41 @@ def _run_applescript(script: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _matching_chrome_process_ids(output: str) -> list[int]:
+    pids: list[int] = []
+    current_pid = os.getpid()
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = stripped.split(maxsplit=1)
+        if not parts:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        command = parts[1] if len(parts) > 1 else ""
+        if pid == current_pid:
+            continue
+        if "Google Chrome" not in command:
+            continue
+        pids.append(pid)
+    return pids
+
+
 def _terminate_matching_processes(pattern: str, *, wait_attempts: int = 20, delay_seconds: float = 0.25) -> None:
-    subprocess.run(
-        ["pkill", "-f", pattern],
+    initial = subprocess.run(
+        ["pgrep", "-fal", pattern],
         check=False,
         capture_output=True,
         text=True,
     )
+    for pid in _matching_chrome_process_ids(initial.stdout):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
     for _ in range(wait_attempts):
         remaining = subprocess.run(
             ["pgrep", "-fal", pattern],
@@ -69,9 +99,21 @@ def _terminate_matching_processes(pattern: str, *, wait_attempts: int = 20, dela
             capture_output=True,
             text=True,
         )
-        if not remaining.stdout.strip():
+        remaining_pids = _matching_chrome_process_ids(remaining.stdout)
+        if not remaining_pids:
             return
         time.sleep(delay_seconds)
+    final = subprocess.run(
+        ["pgrep", "-fal", pattern],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    for pid in _matching_chrome_process_ids(final.stdout):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def terminate_profile_processes(profile_dir: Path, *, wait_attempts: int = 20, delay_seconds: float = 0.25) -> None:
