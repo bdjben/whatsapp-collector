@@ -2,6 +2,10 @@ import AppKit
 import Sparkle
 import SwiftUI
 
+private extension NSUserInterfaceItemIdentifier {
+    static let whatsappCollectorMainWindow = NSUserInterfaceItemIdentifier("studio.bdjben.whatsapp-collector.main-window")
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = false
@@ -13,9 +17,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor
-    private static func placeMainWindow() {
+    static func markMainWindow(_ window: NSWindow?) {
+        guard let window else { return }
+        window.identifier = .whatsappCollectorMainWindow
+        window.tabbingMode = .disallowed
+        window.isReleasedWhenClosed = false
+    }
+
+    @MainActor
+    static func placeMainWindow() {
         closeDuplicateMainWindows()
-        guard let window = NSApp.windows.first(where: { $0.isVisible }) else { return }
+        guard let window = mainWindows().first(where: { $0.isVisible }) ?? mainWindows().first else { return }
         window.tabbingMode = .disallowed
         let targetScreen = NSScreen.screens.first { $0.frame.origin.x == 0 && $0.frame.origin.y == 0 } ?? NSScreen.main
         guard let visibleFrame = targetScreen?.visibleFrame else {
@@ -35,7 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     static func showMainWindow() -> Bool {
         closeDuplicateMainWindows()
-        guard let window = NSApp.windows.first(where: { $0.isVisible || $0.canBecomeMain }) else {
+        guard let window = mainWindows().first(where: { $0.isVisible }) else {
             return false
         }
         window.tabbingMode = .disallowed
@@ -46,10 +58,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     private static func closeDuplicateMainWindows() {
-        let visibleWindows = NSApp.windows.filter { $0.isVisible }
+        let visibleWindows = mainWindows().filter { $0.isVisible }
         guard visibleWindows.count > 1 else { return }
         for window in visibleWindows.dropFirst() {
             window.close()
+        }
+    }
+
+    @MainActor
+    private static func mainWindows() -> [NSWindow] {
+        let identified = NSApp.windows.filter { $0.identifier == .whatsappCollectorMainWindow }
+        if identified.isEmpty == false {
+            return identified
+        }
+        return NSApp.windows.filter { window in
+            window.level == .normal &&
+            window.canBecomeMain &&
+            window.contentViewController != nil &&
+            window.title.localizedCaseInsensitiveContains(AppMetadata.appName)
         }
     }
 }
@@ -57,6 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct WhatsAppCollectorNativeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @Environment(\.openWindow) private var openWindow
     @StateObject private var store = CollectorStore()
     private let updaterController: SPUStandardUpdaterController
 
@@ -68,7 +95,9 @@ struct WhatsAppCollectorNativeApp: App {
         WindowGroup("WhatsApp Collector", id: "main") {
             ContentView()
                 .environmentObject(store)
+                .environment(\.appActions, appActions)
                 .frame(minWidth: 1080, minHeight: 700)
+                .background(MainWindowAccessor())
                 .task {
                     await store.bootstrap()
                 }
@@ -82,10 +111,29 @@ struct WhatsAppCollectorNativeApp: App {
         .defaultSize(width: 1180, height: 760)
         .commands {
             CommandGroup(after: .appInfo) {
-                CheckForUpdatesView(updater: updaterController.updater)
+                Button("Check for Updates...") {
+                    checkForUpdates()
+                }
             }
 
             CommandMenu("Collector") {
+                Button("Show Dashboard") {
+                    showSection(.dashboard)
+                }
+                .keyboardShortcut("0", modifiers: [.command])
+
+                Button("Show Export Preview") {
+                    showSection(.export)
+                }
+                .keyboardShortcut("1", modifiers: [.command])
+
+                Button("Show Help") {
+                    showSection(.help)
+                }
+                .keyboardShortcut("?", modifiers: [.command, .shift])
+
+                Divider()
+
                 Button("Launch / Login") {
                     Task { await store.launchLogin() }
                 }
@@ -107,29 +155,75 @@ struct WhatsAppCollectorNativeApp: App {
                     store.revealOutput()
                 }
 
+                Button("Open GitHub Repository") {
+                    AppMetadata.openRepository()
+                }
+
                 Divider()
 
-                CheckForUpdatesView(updater: updaterController.updater)
+                Button("Check for Updates...") {
+                    checkForUpdates()
+                }
+            }
+
+            CommandGroup(replacing: .help) {
+                Button("WhatsApp Collector Help") {
+                    showSection(.help)
+                }
+                Button("GitHub Repository") {
+                    AppMetadata.openRepository()
+                }
+                Button("Latest Release") {
+                    AppMetadata.openLatestRelease()
+                }
             }
         }
 
         MenuBarExtra("W↗") {
-            MenuBarContent(updater: updaterController.updater)
+            MenuBarContent()
                 .environmentObject(store)
+                .environment(\.appActions, appActions)
         }
+    }
+
+    private var appActions: AppActionHandlers {
+        AppActionHandlers(
+            checkForUpdates: checkForUpdates,
+            openRepository: AppMetadata.openRepository,
+            openLatestRelease: AppMetadata.openLatestRelease
+        )
+    }
+
+    @MainActor
+    private func showSection(_ section: AppSection) {
+        store.selectedSection = section
+        if AppDelegate.showMainWindow() == false {
+            openWindow(id: "main")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                AppDelegate.placeMainWindow()
+            }
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @MainActor
+    private func checkForUpdates() {
+        updaterController.updater.checkForUpdates()
     }
 }
 
-struct CheckForUpdatesView: View {
-    private let updater: SPUUpdater
-
-    init(updater: SPUUpdater) {
-        self.updater = updater
+struct MainWindowAccessor: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async {
+            AppDelegate.markMainWindow(view.window)
+        }
+        return view
     }
 
-    var body: some View {
-        Button("Check for Updates...") {
-            updater.checkForUpdates()
+    func updateNSView(_ view: NSView, context: Context) {
+        DispatchQueue.main.async {
+            AppDelegate.markMainWindow(view.window)
         }
     }
 }
@@ -137,14 +231,17 @@ struct CheckForUpdatesView: View {
 struct MenuBarContent: View {
     @EnvironmentObject private var store: CollectorStore
     @Environment(\.openWindow) private var openWindow
-    let updater: SPUUpdater
+    @Environment(\.appActions) private var appActions
 
     var body: some View {
-        Button("Open Window") {
-            if AppDelegate.showMainWindow() == false {
-                openWindow(id: "main")
-                NSApp.activate(ignoringOtherApps: true)
-            }
+        Button("Open Dashboard") {
+            show(.dashboard)
+        }
+        Button("Open Export Preview") {
+            show(.export)
+        }
+        Button("Open Help") {
+            show(.help)
         }
         Divider()
         Button("Launch / Login") {
@@ -159,11 +256,30 @@ struct MenuBarContent: View {
         Button("Reveal Export") {
             store.revealOutput()
         }
-        CheckForUpdatesView(updater: updater)
+        Divider()
+        Button("Check for Updates...") {
+            appActions.checkForUpdates()
+        }
+        Button("GitHub Repository") {
+            appActions.openRepository()
+        }
         Divider()
         Text(store.schedule?.displayState ?? "Schedule unknown")
+        Text(AppMetadata.displayVersion)
         Button("Quit") {
             NSApplication.shared.terminate(nil)
         }
+    }
+
+    @MainActor
+    private func show(_ section: AppSection) {
+        store.selectedSection = section
+        if AppDelegate.showMainWindow() == false {
+            openWindow(id: "main")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                AppDelegate.placeMainWindow()
+            }
+        }
+        NSApp.activate(ignoringOtherApps: true)
     }
 }

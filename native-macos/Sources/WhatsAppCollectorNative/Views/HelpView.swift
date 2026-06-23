@@ -2,6 +2,7 @@ import SwiftUI
 
 struct HelpView: View {
     @EnvironmentObject private var store: CollectorStore
+    @Environment(\.appActions) private var appActions
 
     var body: some View {
         ScrollView {
@@ -11,6 +12,29 @@ struct HelpView: View {
                     subtitle: "Set up the dedicated WhatsApp Web profile, keep exports fresh, and hand the JSON to local AI agents.",
                     systemImage: "questionmark.circle"
                 )
+
+                GroupBox("App Support") {
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(AppMetadata.displayVersion)
+                                .font(.headline)
+                            Text("The Help menu opens this section, and GitHub has the public release page, downloads, and issue history.")
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button {
+                            appActions.checkForUpdates()
+                        } label: {
+                            Label("Check for Updates...", systemImage: "arrow.triangle.2.circlepath")
+                        }
+                        Button {
+                            appActions.openRepository()
+                        } label: {
+                            Label("GitHub", systemImage: "safari")
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
 
                 GroupBox("Typical Workflow") {
                     VStack(alignment: .leading, spacing: 12) {

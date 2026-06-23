@@ -2,12 +2,11 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var store: CollectorStore
-    @SceneStorage("selectedSection") private var selectedSectionRaw = AppSection.dashboard.rawValue
 
     private var selection: Binding<AppSection> {
         Binding(
-            get: { AppSection(rawValue: selectedSectionRaw) ?? .dashboard },
-            set: { selectedSectionRaw = $0.rawValue }
+            get: { store.selectedSection },
+            set: { store.selectedSection = $0 }
         )
     }
 

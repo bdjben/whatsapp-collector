@@ -2,25 +2,49 @@ import SwiftUI
 
 struct DashboardView: View {
     @EnvironmentObject private var store: CollectorStore
+    @Environment(\.appActions) private var appActions
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                SectionHeader(
-                    title: "WhatsApp Collector Dashboard",
-                    subtitle: "Launch the dedicated WhatsApp Web profile, run exports, and keep the AI-ready JSON fresh.",
-                    systemImage: "message.badge"
-                )
+                dashboardHeader
 
                 StatusBanner(busyState: store.busyState, error: store.lastError)
 
                 metrics
                 actions
+                updates
                 browserReadiness
                 collectionSettings
                 paths
             }
             .padding(22)
+        }
+    }
+
+    private var dashboardHeader: some View {
+        HStack(alignment: .top, spacing: 16) {
+            SectionHeader(
+                title: "WhatsApp Collector Dashboard",
+                subtitle: "Launch the dedicated WhatsApp Web profile, run exports, and keep the AI-ready JSON fresh.",
+                systemImage: "message.badge"
+            )
+
+            VStack(alignment: .trailing, spacing: 6) {
+                Text(AppMetadata.displayVersion)
+                    .font(.headline)
+                Text("Native macOS app")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button {
+                    appActions.checkForUpdates()
+                } label: {
+                    Label("Check for Updates...", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .controlSize(.small)
+                .accessibilityLabel("Check for Updates")
+            }
+            .frame(minWidth: 190, alignment: .trailing)
         }
     }
 
@@ -43,6 +67,12 @@ struct DashboardView: View {
                 value: store.schedule?.displayState ?? "Unknown",
                 detail: scheduleDetail,
                 systemImage: "clock.arrow.circlepath"
+            )
+            MetricTile(
+                title: "App Version",
+                value: AppMetadata.shortVersionString,
+                detail: "Sparkle updates enabled",
+                systemImage: "sparkles"
             )
         }
     }
@@ -89,6 +119,34 @@ struct DashboardView: View {
             .padding(.vertical, 4)
         } label: {
             Text("Primary Actions")
+        }
+    }
+
+    private var updates: some View {
+        GroupBox("Updates and Help") {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(AppMetadata.displayVersion)
+                        .font(.headline)
+                    Text("Use Sparkle to check GitHub releases for newer signed builds.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    appActions.checkForUpdates()
+                } label: {
+                    Label("Check for Updates...", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .accessibilityLabel("Check for Updates")
+                Button {
+                    appActions.openRepository()
+                } label: {
+                    Label("GitHub", systemImage: "questionmark.circle")
+                }
+                .accessibilityLabel("Open GitHub Repository")
+            }
+            .padding(.vertical, 4)
         }
     }
 

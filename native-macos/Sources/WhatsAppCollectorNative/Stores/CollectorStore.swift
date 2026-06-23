@@ -16,6 +16,7 @@ final class CollectorStore: ObservableObject {
     @Published var scheduleIntervalMinutes: Int = 15
     @Published var legacyAppCandidate: LegacyAppCandidate?
     @Published var legacyCleanupSummary: String?
+    @Published var selectedSection: AppSection = .dashboard
 
     private let bridge = CollectorBridge()
     private let defaults = UserDefaults.standard
