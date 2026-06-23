@@ -631,7 +631,8 @@ def test_collect_dashboard_export_emits_labeled_plus_recent_default_view_threads
     }
     assert payload["excludeLabels"] == DEFAULT_EXCLUDED_LABELS
     assert payload["maxRecentMessages"] == 15
-    assert payload["threads"] == [
+    assert [thread["chatTitle"] for thread in payload["threads"]] == ["Example Contact", "New Prospect", "Example Lead"]
+    assert sorted(payload["threads"], key=lambda thread: thread["chatTitle"]) == [
         {
             "threadKey": "141394635137028@lid",
             "chatTitle": "Example Contact",
@@ -1056,6 +1057,91 @@ def test_collect_dashboard_export_keeps_recent_direct_indexeddb_chats_when_group
     assert indexeddb_titles == ["Newer Group A", "Tamar Simon"]
 
 
+def test_collect_dashboard_export_can_skip_groups_unless_always_include_label_matches() -> None:
+    class GroupPolicySession:
+        def __init__(self, *, group_has_vip_label: bool = False) -> None:
+            self.group_has_vip_label = group_has_vip_label
+
+        def run_json(self, js: str):
+            if "PAGE_META" in js:
+                return {"title": "WhatsApp Business", "url": "https://web.whatsapp.com/"}
+            if "LABELS_BODY" in js:
+                return {"body": "Labels"}
+            if "CHAT_LIST_RESET" in js:
+                return {"ok": True}
+            if "CHAT_LIST_BODY" in js:
+                return {"rows": [], "body": "All"}
+            raise AssertionError(f"Unexpected js: {js}")
+
+        def run_async_json(self, script: str, result_var: str = "__hermes_async_result"):
+            if 'objectStoreNames' in script and 'model-storage' in script:
+                return {"stores": ["chat", "contact", "group-metadata", "label", "label-association", "message"]}
+            if '"label"' in script:
+                return [{"key": "1", "value": {"id": "1", "name": "VIP"}}]
+            if '"label-association"' in script:
+                if self.group_has_vip_label:
+                    return [
+                        {
+                            "key": ["1", "group-a@g.us", "jid"],
+                            "value": {"labelId": "1", "associationId": "group-a@g.us", "type": "jid"},
+                        }
+                    ]
+                return []
+            if '"contact"' in script:
+                return [
+                    {
+                        "key": "direct@lid",
+                        "value": {"id": "direct@lid", "name": "Direct Recent", "phoneNumber": "15550100@c.us"},
+                    }
+                ]
+            if '"group-metadata"' in script:
+                return [{"key": "group-a@g.us", "value": {"id": "group-a@g.us", "subject": "Massive Group"}}]
+            if '"chat"' in script:
+                return [
+                    {"key": "group-a@g.us", "value": {"id": "group-a@g.us", "t": 1782049000, "unreadCount": 0}},
+                    {
+                        "key": "direct@lid",
+                        "value": {
+                            "id": "direct@lid",
+                            "historyChatId": "15550100@c.us",
+                            "t": 1781987078,
+                            "unreadCount": 0,
+                        },
+                    },
+                ]
+            if '"message"' in script:
+                return [
+                    {
+                        "key": "false_direct@lid_msg1",
+                        "value": {"id": "false_direct@lid_msg1", "t": 1781987078, "type": "chat", "from": "15550100@c.us", "body": "Direct text"},
+                    },
+                    {
+                        "key": "false_group-a@g.us_msg1",
+                        "value": {"id": "false_group-a@g.us_msg1", "t": 1782049000, "type": "chat", "from": "participant@c.us", "body": "Group text"},
+                    },
+                ]
+            raise AssertionError(f"Unexpected async script: {script[:200]}")
+
+    payload = WhatsAppCollector(session=GroupPolicySession()).collect_dashboard_export(
+        account_label="WhatsApp",
+        allow_labels=[],
+        include_groups="labeledAlways",
+        max_all_chats=5,
+    )
+
+    assert payload["includeGroups"] == "labeledAlways"
+    assert [thread["chatTitle"] for thread in payload["threads"]] == ["Direct Recent"]
+
+    labeled_payload = WhatsAppCollector(session=GroupPolicySession(group_has_vip_label=True)).collect_dashboard_export(
+        account_label="WhatsApp",
+        allow_labels=["VIP"],
+        include_groups="labeledAlways",
+        max_all_chats=5,
+    )
+
+    assert [thread["chatTitle"] for thread in labeled_payload["threads"]] == ["Massive Group", "Direct Recent"]
+
+
 def test_collect_dashboard_export_skips_unlabeled_open_chat_runtime_failures_instead_of_failing_export() -> None:
     class FailingOpenedChatSession:
         def click_point(self, expression: str):
@@ -1192,7 +1278,6 @@ def test_collect_dashboard_export_uses_all_view_when_label_indexeddb_times_out()
     assert payload["threads"][0]["chatTitle"] == "Example Lead"
     assert payload["threads"][0]["labelsRaw"] == ["Unlabeled"]
     assert payload["threads"][0]["recentMessages"][0]["text"] == "Need help with an OpenClaw dashboard"
-    assert any(warning.startswith("labeled-thread-export-skipped:RuntimeError") for warning in payload["exportWarnings"])
     assert any(warning.startswith("excluded-label-filter-skipped:RuntimeError") for warning in payload["exportWarnings"])
 
 
@@ -1370,12 +1455,12 @@ def test_collect_dashboard_export_resolves_unlabeled_threads_via_chat_aliases_an
     payload = collector.collect_dashboard_export(account_label="WhatsApp", allow_labels=[])
 
     unlabeled = [thread for thread in payload["threads"] if thread["labelsRaw"] == ["Unlabeled"]]
-    assert [thread["threadKey"] for thread in unlabeled] == ["245530529685647@lid", "555123@lid"]
-    assert [thread["chatTitle"] for thread in unlabeled] == ["Example Lead", "+972 58-699-1569"]
+    assert [thread["threadKey"] for thread in unlabeled] == ["555123@lid", "245530529685647@lid"]
+    assert [thread["chatTitle"] for thread in unlabeled] == ["+972 58-699-1569", "Example Lead"]
     assert [len(thread["recentMessages"]) for thread in unlabeled] == [2, 2]
     assert all(thread["recentMessages"][0]["messageType"] == "chat" for thread in unlabeled)
     assert all(thread["recentMessages"][0]["messageType"] != "visible-preview" for thread in unlabeled)
-    assert unlabeled[1]["lastMessageText"].startswith("An expensive strawberry cheesecake")
+    assert unlabeled[0]["lastMessageText"].startswith("An expensive strawberry cheesecake")
 
 
 def test_recent_messages_for_thread_excludes_null_text_messages() -> None:

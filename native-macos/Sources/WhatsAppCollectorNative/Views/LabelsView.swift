@@ -42,11 +42,22 @@ struct LabelsView: View {
         VStack(alignment: .leading, spacing: 16) {
             SectionHeader(
                 title: "Label Rules",
-                subtitle: "Choose labels that should always be collected, and labels that should be skipped when they are the only label.",
+                subtitle: "Choose which WhatsApp labels follow standard recent-chat behavior, always force inclusion, or block a thread when they are the only label.",
                 systemImage: "tag"
             )
 
             StatusBanner(busyState: store.busyState, error: store.lastError)
+
+            GroupBox("What Standard Means") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Standard does not force a chat into the export and does not block it. A Standard-labeled chat is included only when it qualifies through the normal export rules, especially the configured Recent chats from All window.")
+                    Text("Always Include forces matching chats into the export even if they are outside the recent-chat window. Never Include skips a chat only when every label on that chat is a Never Include label.")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.callout)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4)
+            }
 
             HStack(spacing: 10) {
                 Button {
@@ -63,9 +74,9 @@ struct LabelsView: View {
 
                 Spacer()
 
-                Label("\(store.configuration.allowLabels.count) allow", systemImage: "checkmark.circle")
+                Label("\(store.configuration.allowLabels.count) always", systemImage: "checkmark.circle")
                     .foregroundStyle(.green)
-                Label("\(store.configuration.excludeLabels.count) exclude", systemImage: "minus.circle")
+                Label("\(store.configuration.excludeLabels.count) never", systemImage: "minus.circle")
                     .foregroundStyle(.orange)
             }
 
@@ -73,12 +84,12 @@ struct LabelsView: View {
                 TextField("Add label manually", text: $manualLabel)
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 280)
-                Button("Allow") {
+                Button("Always Include") {
                     store.setAllow(manualLabel)
                     manualLabel = ""
                 }
                 .disabled(manualLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                Button("Exclude") {
+                Button("Never Include") {
                     store.setExclude(manualLabel)
                     manualLabel = ""
                 }
@@ -110,11 +121,11 @@ struct LabelsView: View {
 
     private func role(for label: String) -> LabelRole {
         if store.configuration.allowLabels.contains(where: { $0.caseInsensitiveCompare(label) == .orderedSame }) {
-            return .allow
+            return .alwaysInclude
         }
         if store.configuration.excludeLabels.contains(where: { $0.caseInsensitiveCompare(label) == .orderedSame }) {
-            return .exclude
+            return .neverInclude
         }
-        return .ignore
+        return .standard
     }
 }

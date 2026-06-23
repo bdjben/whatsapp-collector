@@ -11,6 +11,8 @@ from whatsapp_collector.chrome_session import ChromeTarget, ChromeWhatsAppSessio
 from whatsapp_collector.collector import (
     DEFAULT_ALL_VIEW_CHAT_LIMIT,
     DEFAULT_EXCLUDED_LABELS,
+    GROUP_INCLUDE_LABELED_ALWAYS,
+    GROUP_INCLUDE_STANDARD,
     MAX_MESSAGE_LOOKBACK_HARD_LIMIT,
     WhatsAppCollector,
 )
@@ -189,6 +191,12 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_export.add_argument("--exclude-label", action="append", default=[])
     dashboard_export.add_argument("--max-messages", type=int, default=MAX_MESSAGE_LOOKBACK_HARD_LIMIT)
     dashboard_export.add_argument("--max-all-chats", type=int, default=DEFAULT_ALL_VIEW_CHAT_LIMIT)
+    dashboard_export.add_argument(
+        "--include-groups",
+        choices=[GROUP_INCLUDE_STANDARD, GROUP_INCLUDE_LABELED_ALWAYS],
+        default=GROUP_INCLUDE_STANDARD,
+        help="standard includes groups by normal recency rules; labeledAlways includes groups only when they match an Always Include label.",
+    )
 
     ensure_window = subparsers.add_parser("ensure-window")
     for window_parser in (ensure_window,):
@@ -223,6 +231,7 @@ def build_parser() -> argparse.ArgumentParser:
     ui.add_argument("--account-label", default="WhatsApp")
     ui.add_argument("--max-messages", type=int, default=MAX_MESSAGE_LOOKBACK_HARD_LIMIT)
     ui.add_argument("--max-all-chats", type=int, default=DEFAULT_ALL_VIEW_CHAT_LIMIT)
+    ui.add_argument("--include-groups", choices=[GROUP_INCLUDE_STANDARD, GROUP_INCLUDE_LABELED_ALWAYS], default=GROUP_INCLUDE_STANDARD)
     ui.add_argument("--allow-label", action="append", default=[])
     ui.add_argument("--exclude-label", action="append", default=[])
     ui.add_argument("--open-browser", action="store_true")
@@ -290,6 +299,7 @@ def main(argv: Sequence[str] | None = None, *, collector: WhatsAppCollector | No
             exclude_labels=excluded_labels,
             max_messages=max_messages,
             max_all_chats=max_all_chats,
+            include_groups=args.include_groups,
         )
         payload["written_to"] = str(_write_atomic_json(payload, Path(args.output)))
     elif args.command == "ensure-window":
@@ -325,6 +335,7 @@ def main(argv: Sequence[str] | None = None, *, collector: WhatsAppCollector | No
                 account_label=args.account_label,
                 max_messages=max_messages,
                 max_all_chats=max_all_chats,
+                include_groups=args.include_groups,
                 allow_labels=args.allow_label,
                 exclude_labels=args.exclude_label,
             ),

@@ -8,6 +8,7 @@ struct CollectorConfiguration: Codable, Equatable, Sendable {
     var maxAllChats: Int
     var allowLabels: [String]
     var excludeLabels: [String]
+    var includeGroups: GroupInclusionMode
     var displayName: String
     var debugPort: Int
     var markerTitle: String
@@ -31,6 +32,7 @@ struct CollectorConfiguration: Codable, Equatable, Sendable {
             maxAllChats: 15,
             allowLabels: [],
             excludeLabels: [],
+            includeGroups: .standard,
             displayName: "",
             debugPort: 19220,
             markerTitle: "WhatsApp Collector",
@@ -47,6 +49,7 @@ struct CollectorConfiguration: Codable, Equatable, Sendable {
         copy.accountLabel = payload.accountLabel ?? copy.accountLabel
         copy.allowLabels = payload.allowLabels ?? copy.allowLabels
         copy.excludeLabels = payload.excludeLabels ?? copy.excludeLabels
+        copy.includeGroups = payload.includeGroups ?? copy.includeGroups
         copy.displayName = payload.displayName ?? copy.displayName
         copy.profileDir = payload.profileDir ?? copy.profileDir
         copy.outputPath = payload.outputPath ?? copy.outputPath
@@ -73,6 +76,29 @@ struct CollectorConfiguration: Codable, Equatable, Sendable {
     }
 }
 
+enum GroupInclusionMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case standard
+    case labeledAlways
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .standard: "Standard"
+        case .labeledAlways: "Only Always Include groups"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .standard:
+            "Groups can be included by the normal recent-chat window, the same as direct chats."
+        case .labeledAlways:
+            "Groups are skipped unless they have a label marked Always Include."
+        }
+    }
+}
+
 struct BridgeRequest: Encodable, Sendable {
     var outputPath: String
     var profileDir: String
@@ -81,6 +107,7 @@ struct BridgeRequest: Encodable, Sendable {
     var maxAllChats: Int
     var allowLabels: [String]
     var excludeLabels: [String]
+    var includeGroups: String
     var displayName: String?
     var debugPort: Int
     var markerTitle: String
@@ -96,6 +123,7 @@ struct BridgeRequest: Encodable, Sendable {
         maxAllChats = max(1, configuration.maxAllChats)
         allowLabels = configuration.allowLabels
         excludeLabels = configuration.excludeLabels
+        includeGroups = configuration.includeGroups.rawValue
         displayName = configuration.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : configuration.displayName
         debugPort = configuration.debugPort
         markerTitle = configuration.markerTitle

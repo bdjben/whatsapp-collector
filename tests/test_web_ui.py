@@ -24,10 +24,13 @@ def test_render_dashboard_html_has_setup_controls_without_display_assumption(tmp
     assert "Messages per conversation" in html
     assert "This does not limit how many chats are collected" in html
     assert "Recent chats from All view" in html
-    assert "most recent chats visible in WhatsApp Web's All view" in html
+    assert "Standard labels do not force inclusion" in html
+    assert 'id="includeGroups"' in html
+    assert "Only groups with Always Include labels" in html
     assert "Label collection rules" in html
-    assert "Always collect labels" in html
-    assert "Never collect if only label" in html
+    assert "Always Include labels" in html
+    assert "Never Include labels" in html
+    assert "Standard</strong> labels follow the normal recent-chat export rules" in html
     assert "Pre-Populate Currently Available Labels from WhatsApp Web" in html
     assert 'id="maxAllChats"' in html
     assert 'id="allowLabels"' in html
@@ -93,6 +96,7 @@ def test_ui_api_status_reports_lightweight_export_file_info_and_config_without_l
     assert "exportedAt" not in payload["export"]
     assert payload["config"]["maxMessages"] == 50
     assert payload["config"]["maxAllChats"] == 15
+    assert payload["config"]["includeGroups"] == "standard"
     assert payload["config"]["allowLabels"] == []
     assert payload["config"]["excludeLabels"] == []
     assert payload["config"]["displayName"] is None
@@ -109,6 +113,7 @@ def test_ui_api_run_export_uses_requested_collection_limits_and_label_rules(tmp_
             "exportedAt": "2026-04-26T00:00:00+00:00",
             "maxRecentMessages": kwargs["max_messages"],
             "maxAllViewChats": kwargs["max_all_chats"],
+            "includeGroups": kwargs["include_groups"],
             "allowLabels": kwargs["allow_labels"],
             "excludeLabels": kwargs["exclude_labels"],
             "threads": [],
@@ -124,6 +129,7 @@ def test_ui_api_run_export_uses_requested_collection_limits_and_label_rules(tmp_
             {
                 "maxMessages": 75,
                 "maxAllChats": 42,
+                "includeGroups": "labeledAlways",
                 "accountLabel": "Ops",
                 "allowLabels": ["VIP", "Important"],
                 "excludeLabels": ["Archive"],
@@ -139,12 +145,14 @@ def test_ui_api_run_export_uses_requested_collection_limits_and_label_rules(tmp_
     assert payload["export"]["exportedAt"] == "2026-04-26T00:00:00+00:00"
     assert calls["max_messages"] == 75
     assert calls["max_all_chats"] == 42
+    assert calls["include_groups"] == "labeledAlways"
     assert calls["account_label"] == "Ops"
     assert calls["allow_labels"] == ["VIP", "Important"]
     assert calls["exclude_labels"] == ["Archive"]
     written = json.loads((tmp_path / "export.json").read_text())
     assert written["maxRecentMessages"] == 75
     assert written["maxAllViewChats"] == 42
+    assert written["includeGroups"] == "labeledAlways"
     assert written["allowLabels"] == ["VIP", "Important"]
     assert written["excludeLabels"] == ["Archive"]
 
@@ -205,6 +213,7 @@ def test_ui_schedule_api_installs_and_removes_background_schedule(tmp_path: Path
                 "intervalMinutes": 10,
                 "maxMessages": 25,
                 "maxAllChats": 12,
+                "includeGroups": "labeledAlways",
                 "accountLabel": "Ops",
                 "allowLabels": ["VIP"],
                 "excludeLabels": ["Archive"],
@@ -216,6 +225,7 @@ def test_ui_schedule_api_installs_and_removes_background_schedule(tmp_path: Path
         assert calls["install"]["ui_url"] == url
         assert calls["install"]["payload"]["maxMessages"] == 25
         assert calls["install"]["payload"]["maxAllChats"] == 12
+        assert calls["install"]["payload"]["includeGroups"] == "labeledAlways"
         assert calls["install"]["payload"]["accountLabel"] == "Ops"
         assert calls["install"]["payload"]["allowLabels"] == ["VIP"]
         assert calls["install"]["payload"]["excludeLabels"] == ["Archive"]

@@ -143,13 +143,13 @@ struct LabelChip: View {
                 .lineLimit(1)
             Spacer(minLength: 6)
             Picker("", selection: roleBinding) {
-                Text("Ignore").tag(LabelRole.ignore)
-                Text("Allow").tag(LabelRole.allow)
-                Text("Exclude").tag(LabelRole.exclude)
+                Text("Standard").tag(LabelRole.standard)
+                Text("Always Include").tag(LabelRole.alwaysInclude)
+                Text("Never Include").tag(LabelRole.neverInclude)
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 190)
+            .frame(width: 330)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -165,9 +165,9 @@ struct LabelChip: View {
             get: { role },
             set: { newValue in
                 switch newValue {
-                case .ignore: clearAction()
-                case .allow: allowAction()
-                case .exclude: excludeAction()
+                case .standard: clearAction()
+                case .alwaysInclude: allowAction()
+                case .neverInclude: excludeAction()
                 }
             }
         )
@@ -175,17 +175,17 @@ struct LabelChip: View {
 
     private var background: Color {
         switch role {
-        case .ignore: Color(nsColor: .controlBackgroundColor)
-        case .allow: Color.green.opacity(0.12)
-        case .exclude: Color.orange.opacity(0.12)
+        case .standard: Color(nsColor: .controlBackgroundColor)
+        case .alwaysInclude: Color.green.opacity(0.12)
+        case .neverInclude: Color.orange.opacity(0.12)
         }
     }
 }
 
 enum LabelRole: Hashable {
-    case ignore
-    case allow
-    case exclude
+    case standard
+    case alwaysInclude
+    case neverInclude
 }
 
 struct EmptyState: View {

@@ -12,6 +12,7 @@ struct BridgeResponse: Decodable, Sendable {
     var labels: [String]?
     var allowLabels: [String]?
     var excludeLabels: [String]?
+    var includeGroups: GroupInclusionMode?
     var window: WindowSummary?
     var threadCount: Int?
     var aiPrompt: String?
@@ -68,6 +69,7 @@ struct SchedulePayload: Codable, Equatable, Sendable {
     var accountLabel: String?
     var allowLabels: [String]?
     var excludeLabels: [String]?
+    var includeGroups: GroupInclusionMode?
     var displayName: String?
     var profileDir: String?
     var outputPath: String?
@@ -96,6 +98,7 @@ struct WhatsAppExport: Decodable, Sendable {
     var excludeLabels: [String]?
     var maxRecentMessages: Int?
     var maxAllViewChats: Int?
+    var includeGroups: String?
     var threads: [ExportThread]
     var exportWarnings: [String]?
 }
@@ -131,6 +134,33 @@ struct ExportThread: Codable, Identifiable, Sendable {
         return labels.isEmpty ? "No labels" : labels.joined(separator: ", ")
     }
     var messageCount: Int { recentMessages?.count ?? messages?.count ?? 0 }
+
+    var previewMessages: [ExportMessage] {
+        let captured = recentMessages ?? messages ?? []
+        if captured.isEmpty,
+           let lastMessageText,
+           lastMessageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            return [
+                ExportMessage(
+                    messageId: "\(id):latest",
+                    timestamp: lastMessageAt,
+                    direction: lastMessageDirection,
+                    sender: lastMessageSender,
+                    text: lastMessageText,
+                    textAvailable: true,
+                    messageType: "chat",
+                    subtype: nil
+                )
+            ]
+        }
+        return captured.sortedByRecency()
+    }
+
+    var displayMessageCount: Int {
+        let count = previewMessages.count
+        if count > 0 { return count }
+        return messageCount
+    }
 }
 
 struct ExportParticipant: Codable, Sendable {
@@ -149,6 +179,44 @@ struct ExportMessage: Codable, Identifiable, Sendable {
     var subtype: String?
 
     var id: String { messageId ?? timestamp ?? text ?? "unknown-message" }
+}
+
+extension Array where Element == ExportThread {
+    func sortedByRecency() -> [ExportThread] {
+        sorted { lhs, rhs in
+            let left = lhs.recencyDate
+            let right = rhs.recencyDate
+            if left != right {
+                return left > right
+            }
+            return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+        }
+    }
+}
+
+extension Array where Element == ExportMessage {
+    func sortedByRecency() -> [ExportMessage] {
+        sorted { lhs, rhs in
+            let left = lhs.recencyDate
+            let right = rhs.recencyDate
+            if left != right {
+                return left > right
+            }
+            return lhs.id < rhs.id
+        }
+    }
+}
+
+extension ExportThread {
+    fileprivate var recencyDate: Date {
+        DisplayFormatters.parseDate(lastMessageAt) ?? .distantPast
+    }
+}
+
+extension ExportMessage {
+    fileprivate var recencyDate: Date {
+        DisplayFormatters.parseDate(timestamp) ?? .distantPast
+    }
 }
 
 enum BusyState: Equatable {

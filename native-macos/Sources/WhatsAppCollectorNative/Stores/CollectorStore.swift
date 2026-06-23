@@ -61,6 +61,7 @@ final class CollectorStore: ObservableObject {
         defaults.set(configuration.maxAllChats, forKey: DefaultsKey.maxAllChats.rawValue)
         defaults.set(configuration.allowLabels, forKey: DefaultsKey.allowLabels.rawValue)
         defaults.set(configuration.excludeLabels, forKey: DefaultsKey.excludeLabels.rawValue)
+        defaults.set(configuration.includeGroups.rawValue, forKey: DefaultsKey.includeGroups.rawValue)
         defaults.set(configuration.displayName, forKey: DefaultsKey.displayName.rawValue)
         defaults.set(configuration.debugPort, forKey: DefaultsKey.debugPort.rawValue)
         defaults.set(configuration.markerTitle, forKey: DefaultsKey.markerTitle.rawValue)
@@ -130,7 +131,18 @@ final class CollectorStore: ObservableObject {
             let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
             let modifiedAt = (attributes?[.modificationDate] as? Date).map { Self.isoFormatter.string(from: $0) }
             let sizeBytes = (attributes?[.size] as? NSNumber)?.intValue ?? data.count
-            export = decoded
+            export = WhatsAppExport(
+                source: decoded.source,
+                exportedAt: decoded.exportedAt,
+                account: decoded.account,
+                allowLabels: decoded.allowLabels,
+                excludeLabels: decoded.excludeLabels,
+                maxRecentMessages: decoded.maxRecentMessages,
+                maxAllViewChats: decoded.maxAllViewChats,
+                includeGroups: decoded.includeGroups,
+                threads: decoded.threads.sortedByRecency(),
+                exportWarnings: decoded.exportWarnings
+            )
             exportSummary = ExportSummary(
                 path: url.path,
                 exists: true,
@@ -141,7 +153,7 @@ final class CollectorStore: ObservableObject {
                 parseError: nil
             )
             if selectedThreadID == nil || decoded.threads.contains(where: { $0.id == selectedThreadID }) == false {
-                selectedThreadID = decoded.threads.first?.id
+                selectedThreadID = export?.threads.first?.id
             }
             lastError = nil
         } catch {
@@ -208,22 +220,15 @@ final class CollectorStore: ObservableObject {
     func promptForLegacyCleanup() {
         refreshLegacyAppCandidate()
         guard let candidate = legacyAppCandidate else {
-            legacyCleanupSummary = "No older WhatsApp Collector app was found in /Applications."
+            legacyCleanupSummary = "No older WhatsApp Collector app or legacy export folder was found."
             return
         }
         let alert = NSAlert()
-        alert.messageText = "Older WhatsApp Collector Found"
-        alert.informativeText = """
-        The app found the older menu-bar/web UI version at:
-        \(candidate.displayPath)
-
-        Version: \(candidate.displayVersion)
-
-        With your permission, it will copy your existing exports folder to a timestamped backup, then move the older app to Trash. Your WhatsApp export JSON format and Chrome profile are not changed.
-        """
+        alert.messageText = candidate.hasAppBundle ? "Older WhatsApp Collector Found" : "Existing WhatsApp Collector Exports Found"
+        alert.informativeText = legacyCleanupPrompt(for: candidate)
         alert.alertStyle = .informational
         alert.addButton(withTitle: "Not Now")
-        alert.addButton(withTitle: "Back Up Exports and Move Old App to Trash")
+        alert.addButton(withTitle: candidate.hasAppBundle ? "Back Up Exports and Move Old App to Trash" : "Back Up Existing Exports")
         guard alert.runModal() == .alertSecondButtonReturn else {
             return
         }
@@ -232,10 +237,16 @@ final class CollectorStore: ObservableObject {
             let result = try LegacyAppMigration.cleanup(candidate)
             legacyAppCandidate = nil
             let backup = result.backupURL?.path ?? "No exports folder was present to back up."
-            let trashed = result.trashedURL?.path ?? "Trash"
-            legacyCleanupSummary = "Backed up exports: \(backup)\nMoved old app to: \(trashed)"
+            let trashed = result.trashedURL?.path
+            legacyCleanupSummary = [
+                "Backed up exports: \(backup)",
+                trashed.map { "Moved old app to: \($0)" },
+            ].compactMap { $0 }.joined(separator: "\n")
             diagnostics = legacyCleanupSummary ?? diagnostics
-            showLegacyCleanupResult(title: "Older App Moved to Trash", message: legacyCleanupSummary ?? "Cleanup complete.")
+            showLegacyCleanupResult(
+                title: trashed == nil ? "Exports Backed Up" : "Older App Moved to Trash",
+                message: legacyCleanupSummary ?? "Cleanup complete."
+            )
         } catch {
             lastError = "Could not clean up the older app: \(error.localizedDescription)"
             diagnostics = error.localizedDescription
@@ -309,6 +320,32 @@ final class CollectorStore: ObservableObject {
         alert.runModal()
     }
 
+    private func legacyCleanupPrompt(for candidate: LegacyAppCandidate) -> String {
+        var lines: [String] = []
+        if candidate.hasAppBundle {
+            lines.append("""
+            The app found the older menu-bar/web UI version at:
+            \(candidate.displayPath)
+
+            Version: \(candidate.displayVersion)
+            """)
+        }
+        if let exportsURL = candidate.exportsURL {
+            lines.append("""
+            Existing export content was also found at:
+            \(exportsURL.path)
+            """)
+        } else {
+            lines.append("No existing exports were found in the legacy output folder.")
+        }
+        if candidate.hasAppBundle {
+            lines.append("With your permission, WhatsApp Collector will copy existing exports to a timestamped backup, then move the older app to Trash. Your export JSON format and Chrome profile are not changed.")
+        } else {
+            lines.append("With your permission, WhatsApp Collector will copy those existing exports to a timestamped backup. No app will be removed.")
+        }
+        return lines.joined(separator: "\n\n")
+    }
+
     private static func loadConfiguration(from defaults: UserDefaults) -> CollectorConfiguration {
         var config = CollectorConfiguration.defaults
         config.outputPath = defaults.string(forKey: DefaultsKey.outputPath.rawValue) ?? config.outputPath
@@ -322,6 +359,10 @@ final class CollectorStore: ObservableObject {
         }
         config.allowLabels = loadStringArray(for: .allowLabels, from: defaults)
         config.excludeLabels = loadStringArray(for: .excludeLabels, from: defaults)
+        if let includeGroups = defaults.string(forKey: DefaultsKey.includeGroups.rawValue),
+           let mode = GroupInclusionMode(rawValue: includeGroups) {
+            config.includeGroups = mode
+        }
         config.displayName = defaults.string(forKey: DefaultsKey.displayName.rawValue) ?? config.displayName
         if defaults.object(forKey: DefaultsKey.debugPort.rawValue) != nil {
             config.debugPort = defaults.integer(forKey: DefaultsKey.debugPort.rawValue)
@@ -356,6 +397,7 @@ private enum DefaultsKey: String {
     case maxAllChats = "maxAllChats"
     case allowLabels = "allowLabels"
     case excludeLabels = "excludeLabels"
+    case includeGroups = "includeGroups"
     case displayName = "displayName"
     case debugPort = "debugPort"
     case markerTitle = "markerTitle"

@@ -15,7 +15,7 @@ struct HelpView: View {
                 GroupBox("Typical Workflow") {
                     VStack(alignment: .leading, spacing: 12) {
                         HelpStep(number: 1, title: "Launch / Login", detail: "Open the dedicated Chrome profile and confirm WhatsApp Web or WhatsApp Business Web is logged in.")
-                        HelpStep(number: 2, title: "Load Labels", detail: "Read the current WhatsApp label inventory, then mark labels as Ignore, Allow, or Exclude.")
+                        HelpStep(number: 2, title: "Load Labels", detail: "Read the current WhatsApp label inventory, then mark labels as Standard, Always Include, or Never Include.")
                         HelpStep(number: 3, title: "Run Export", detail: "Refresh the same stable JSON file used by local agents and automations.")
                         HelpStep(number: 4, title: "Preview or Reveal", detail: "Review threads inside the app, copy one thread as JSON, or reveal the full export file in Finder.")
                     }
@@ -24,10 +24,22 @@ struct HelpView: View {
 
                 GroupBox("Label Rules") {
                     VStack(alignment: .leading, spacing: 8) {
-                        HelpDefinition(term: "Ignore", detail: "Use the normal collector behavior for this label.")
-                        HelpDefinition(term: "Allow", detail: "Always collect chats with this label.")
-                        HelpDefinition(term: "Exclude", detail: "Skip chats when this is their only label.")
+                        HelpDefinition(term: "Standard", detail: "Do not force or block chats with this label. Standard chats are included only when they match the normal export rules, especially the Recent chats from All setting.")
+                        HelpDefinition(term: "Always Include", detail: "Force chats with this label into the export even when they are outside the recent-chat window.")
+                        HelpDefinition(term: "Never Include", detail: "Skip a chat only when every label on it is a Never Include label.")
+                        HelpDefinition(term: "Groups", detail: "Use the Groups setting on the dashboard to keep group chats out unless the group has an Always Include label.")
                     }
+                    .padding(.vertical, 4)
+                }
+
+                GroupBox("Browser Requirements") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("WhatsApp Collector needs Google Chrome installed and uses a dedicated Chrome profile, separate from your normal browsing profile. Click Launch / Login, let that Chrome window open, and keep WhatsApp Web or WhatsApp Business Web logged in there.")
+                        Text("Do not close the dedicated Chrome window while exporting. If Chrome asks for a QR login, scan it first, then return to the app and run the export. The native app uses Chrome DevTools on its private debug port; it does not send messages or need the old localhost web UI.")
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.callout)
+                    .textSelection(.enabled)
                     .padding(.vertical, 4)
                 }
 
@@ -48,12 +60,12 @@ struct HelpView: View {
                 GroupBox("Older App Cleanup") {
                     VStack(alignment: .leading, spacing: 10) {
                         if let candidate = store.legacyAppCandidate {
-                            Text("Older app found at \(candidate.displayPath)")
+                            Text(candidate.hasAppBundle ? "Older app found at \(candidate.displayPath)" : "Existing export content found at \(candidate.displayPath)")
                                 .textSelection(.enabled)
-                            Text("The app can back up exports from \(DisplayFormatters.shortPath(LegacyAppMigration.defaultExportsURL.path)) and move the older wrapper app to Trash.")
+                            Text(candidate.hasAppBundle ? "The app can back up exports from \(DisplayFormatters.shortPath(LegacyAppMigration.defaultExportsURL.path)) and move the older wrapper app to Trash." : "The app can back up existing exports from \(DisplayFormatters.shortPath(LegacyAppMigration.defaultExportsURL.path)) without removing any app.")
                                 .foregroundStyle(.secondary)
                         } else {
-                            Text("No older menu-bar/web UI app is currently detected in /Applications.")
+                            Text("No older menu-bar/web UI app or legacy export folder is currently detected.")
                                 .foregroundStyle(.secondary)
                         }
                         if let summary = store.legacyCleanupSummary {
@@ -71,7 +83,7 @@ struct HelpView: View {
                             Button {
                                 store.promptForLegacyCleanup()
                             } label: {
-                                Label("Back Up and Remove Older App", systemImage: "trash")
+                                Label(store.legacyAppCandidate?.hasAppBundle == true ? "Back Up and Remove Older App" : "Back Up Existing Exports", systemImage: "tray.and.arrow.down")
                             }
                             .disabled(store.legacyAppCandidate == nil)
                         }
@@ -132,7 +144,7 @@ private struct HelpDefinition: View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(term)
                 .font(.headline)
-                .frame(width: 72, alignment: .leading)
+                .frame(width: 124, alignment: .leading)
             Text(detail)
                 .foregroundStyle(.secondary)
         }

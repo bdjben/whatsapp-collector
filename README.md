@@ -16,7 +16,7 @@ This project is deliberately not a bot and not a sender. It never types into Wha
 | Native macOS app | A proper SwiftUI window for login, export, labels, preview, automation, diagnostics, help, and updates. |
 | Stable JSON export | `~/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json`, ready for local AI agents. |
 | Dedicated Chrome profile | Keeps the collector session isolated from normal browsing and targets WhatsApp Web through DevTools. |
-| Label-aware collection | Reads WhatsApp labels from IndexedDB and preserves labeled-thread membership in the export. |
+| Label-aware collection | Reads WhatsApp labels from IndexedDB so selected labels can always include, never include, or follow standard recency behavior. |
 | Safe automation | A user LaunchAgent can refresh exports on a schedule without a localhost web UI. |
 
 ## Quick start
@@ -40,11 +40,12 @@ Drag `WhatsApp Collector.app` to Applications, launch it, click **Launch / Login
 - No default display-name assumption: the dedicated window uses the first available macOS display unless `--display-name` is provided.
 - Dedicated marker tab is named `WhatsApp Collector`.
 - Label inventory and visible chat-list extraction.
-- Labeled thread membership from WhatsApp Web IndexedDB.
+- Labeled thread membership from WhatsApp Web IndexedDB, including Standard / Always Include / Never Include label rules.
+- Optional group filtering that keeps groups out unless they carry an Always Include label.
 - Configurable bounded recent-message windows through `--max-messages` or `WA_MAX_MESSAGES`, plus configurable recent-chat coverage from WhatsApp Web's All view through `--max-all-chats`.
 - Stable export contract at `~/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json` by default for the UI/macOS app.
 - Atomic JSON writes with automatic backups before replacing an existing export.
-- First-launch detection for the older menu-bar/web UI app, with permission-gated export backup and removal to Trash.
+- First-launch detection for the older menu-bar/web UI app and legacy export-folder content, with permission-gated export backup and old-app removal when applicable.
 - Runtime guardrails against send/composer JavaScript paths.
 
 ## Mac app
@@ -65,7 +66,7 @@ The app opens as a normal macOS window and also provides a compact menu bar extr
 
 - launch or focus the dedicated WhatsApp Web / WhatsApp Business Web Chrome profile
 - run an export without opening a browser-based collector UI
-- load the current WhatsApp label inventory and choose per-label allow/exclude rules
+- load the current WhatsApp label inventory and choose Standard / Always Include / Never Include rules
 - preview the exported threads and recent messages in a native split view
 - configure automatic exports through a macOS LaunchAgent
 - check for future app updates through Sparkle
@@ -81,7 +82,7 @@ The app writes exports to a normal visible folder by default:
 
 Deleting the app from `/Applications` removes the app itself. Your exported JSON files remain in `~/Documents/WhatsApp Collector/Exports` so you do not accidentally lose collected data.
 
-If an older pre-native `WhatsApp Collector.app` is still installed in `/Applications`, the native app detects the old wrapper markers (`LSUIElement`, bundled `whatsapp-collector.pyz`, and generated menu source), asks for permission, backs up the export folder to `~/Documents/WhatsApp Collector/Backups/legacy-app-YYYYMMDD-HHMMSS/`, and moves the old app to Trash. You can also run this check from **Help -> Older App Cleanup**.
+If an older pre-native `WhatsApp Collector.app` is still installed in `/Applications`, the native app detects the old wrapper markers (`LSUIElement`, bundled `whatsapp-collector.pyz`, and generated menu source), asks for permission, backs up the export folder to `~/Documents/WhatsApp Collector/Backups/legacy-app-YYYYMMDD-HHMMSS/`, and moves the old app to Trash. It also detects existing content in the legacy export folder even when the old app bundle is already gone, and can back up that folder without removing any app. You can run this check from **Help -> Older App Cleanup**.
 
 ### If Launch / Login or Run Export says `No such file or directory: 'node'`
 
@@ -105,9 +106,9 @@ The macOS app is the primary UI. It does not host the collector controls at `127
 
 The app provides:
 
-- **Dashboard**, with export freshness, schedule state, launch/login, run export, prompt, output/profile paths, and collection limits.
-- **Labels**, where "Ignore", "Allow", and "Exclude" are explicit native choices for each WhatsApp label. Loading labels reads WhatsApp Web's IndexedDB label store through the existing read-only DevTools path, so it does not depend on brittle visible-menu scraping.
-- **Export Preview**, a searchable master-detail view over the same `threads[]` JSON that AI agents consume.
+- **Dashboard**, with export freshness, schedule state, launch/login, run export, prompt, output/profile paths, group handling, and collection limits.
+- **Labels**, where **Standard**, **Always Include**, and **Never Include** are explicit native choices for each WhatsApp label. Standard means the label does not force or block export; the chat is included only if it qualifies through normal export rules such as the Recent chats from All window. Loading labels reads WhatsApp Web's IndexedDB label store through the existing read-only DevTools path, so it does not depend on brittle visible-menu scraping.
+- **Export Preview**, a searchable master-detail view over the same `threads[]` JSON that AI agents consume, sorted by latest message recency.
 - **Automation**, which installs a user LaunchAgent that calls the native bridge directly. No localhost web server has to be running for scheduled exports.
 - **Diagnostics**, with raw bridge responses for debugging Chrome, scheduling, and export failures.
 - **Help**, with setup steps, label-rule explanations, AI-agent file paths, and an older-app cleanup action.
@@ -134,10 +135,11 @@ http://127.0.0.1:8765/
 
 The web UI provides:
 
-- Launch / Login for the dedicated Chrome profile. This opens a separate Chrome window for WhatsApp Web so you can scan a QR code and keep the collector session isolated from your normal browser.
+- Launch / Login for the dedicated Chrome profile. This opens a separate Chrome window for WhatsApp Web so you can scan a QR code and keep the collector session isolated from your normal browser. Keep that window open while exporting.
 - "Messages per conversation", which controls how many recent messages are saved for each collected chat thread. It does **not** limit the number of chats/threads collected.
-- "Recent chats from All view", which controls how many of the most recent chats visible in WhatsApp Web's All view are collected in addition to labeled chats.
-- "Label collection rules", where "Always collect labels" exposes the existing allow/whitelist labels and "Never collect if only label" exposes the existing exclude/blacklist labels. The pre-populate button reads the currently available WhatsApp Web label list and turns it into selectable Allow/Block chips without sending or modifying messages.
+- "Recent chats from All view", which controls how many of the most recent chats visible in WhatsApp Web's All view are collected by the standard recency rule.
+- "Groups", where Standard includes groups by normal recency rules, and the stricter option keeps groups out unless they have an Always Include label.
+- "Label collection rules", where "Standard" follows normal recency/default behavior, "Always Include" forces matching chats into the export, and "Never Include" skips a chat only when every label on that chat is a Never Include label. The pre-populate button reads the currently available WhatsApp Web label list and turns it into selectable chips without sending or modifying messages.
 - "Export account name", a friendly name stored in the JSON under `account.accountLabel` so downstream tools can identify the source account.
 - "Monitor to open Chrome on", an optional screen/monitor name. This is not your WhatsApp username; leave it blank unless you want the login window to appear on a particular display.
 - "Chrome profile folder", the private Chrome profile used by the collector. The default may be in a hidden dot-folder such as `~/.whatsapp-collector/chrome-profile`; on macOS Finder, use Go -> Go to Folder and paste the path to open it.
@@ -154,7 +156,7 @@ The web UI is local-only by default (`127.0.0.1`) and exposes no send/composer c
 - macOS
 - Python 3.11+
 - Google Chrome
-- WhatsApp Web or WhatsApp Business Web already logged in at `https://web.whatsapp.com/`
+- WhatsApp Web or WhatsApp Business Web logged in inside the dedicated Chrome profile opened by **Launch / Login**
 - For active-session AppleScript mode: Chrome menu `View -> Developer -> Allow JavaScript from Apple Events`
 - No Node.js install is required for the macOS app or dedicated-profile DevTools mode.
 

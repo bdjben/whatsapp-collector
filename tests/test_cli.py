@@ -85,7 +85,15 @@ class StubCollector:
             ),
         )
 
-    def collect_dashboard_export(self, account_label="WhatsApp", allow_labels=None, exclude_labels=None, max_messages=15, max_all_chats=15):
+    def collect_dashboard_export(
+        self,
+        account_label="WhatsApp",
+        allow_labels=None,
+        exclude_labels=None,
+        max_messages=15,
+        max_all_chats=15,
+        include_groups="standard",
+    ):
         return {
             "source": "whatsapp",
             "exportedAt": "2026-04-19T00:00:00+00:00",
@@ -97,6 +105,7 @@ class StubCollector:
             "excludeLabels": exclude_labels or ["Excluded Label"],
             "maxRecentMessages": max_messages,
             "maxAllViewChats": max_all_chats,
+            "includeGroups": include_groups,
             "threads": [
                 {
                     "threadKey": "141394635137028@lid",
@@ -414,6 +423,8 @@ def test_cli_dashboard_export_accepts_all_view_chat_count_and_label_rules(capsys
             str(tmp_path / "export.json"),
             "--max-all-chats",
             "42",
+            "--include-groups",
+            "labeledAlways",
             "--allow-label",
             "VIP",
             "--exclude-label",
@@ -425,6 +436,7 @@ def test_cli_dashboard_export_accepts_all_view_chat_count_and_label_rules(capsys
     assert exit_code == 0
     text = (tmp_path / "export.json").read_text()
     assert '"maxAllViewChats": 42' in text
+    assert '"includeGroups": "labeledAlways"' in text
     assert '"allowLabels": [\n    "VIP"' in text
     assert '"Archive"' in text
 
@@ -463,6 +475,8 @@ def test_cli_ui_starts_local_web_ui(monkeypatch, tmp_path: Path) -> None:
             "88",
             "--max-all-chats",
             "33",
+            "--include-groups",
+            "labeledAlways",
             "--allow-label",
             "VIP",
             "--exclude-label",
@@ -478,6 +492,7 @@ def test_cli_ui_starts_local_web_ui(monkeypatch, tmp_path: Path) -> None:
     assert config.port == 9009
     assert config.max_messages == 88
     assert config.max_all_chats == 33
+    assert config.include_groups == "labeledAlways"
     assert config.allow_labels == ["VIP"]
     assert config.exclude_labels == ["Archive"]
     assert str(config.profile_dir) == str(tmp_path / "profile")

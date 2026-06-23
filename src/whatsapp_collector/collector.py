@@ -28,6 +28,8 @@ DEFAULT_EXCLUDED_LABELS = ["Excluded Label", "Archive Label"]
 MAX_MESSAGE_LOOKBACK_HARD_LIMIT = 15
 DEFAULT_MAX_MESSAGES = MAX_MESSAGE_LOOKBACK_HARD_LIMIT
 DEFAULT_ALL_VIEW_CHAT_LIMIT = 15
+GROUP_INCLUDE_STANDARD = "standard"
+GROUP_INCLUDE_LABELED_ALWAYS = "labeledAlways"
 
 
 class WhatsAppCollector:
@@ -114,6 +116,7 @@ class WhatsAppCollector:
         *,
         allow_labels: list[str] | None = None,
         exclude_labels: list[str] | None = None,
+        include_groups: str = GROUP_INCLUDE_STANDARD,
         max_messages: int = MAX_MESSAGE_LOOKBACK_HARD_LIMIT,
         snapshot: Snapshot | None = None,
     ) -> list[IndexedDBThread]:
@@ -159,6 +162,13 @@ class WhatsAppCollector:
             if not clean_labels:
                 continue
             if self._thread_has_only_excluded_labels(normalized_thread_labels, excluded):
+                continue
+            if not self._include_group_for_policy(
+                jid.endswith("@g.us"),
+                normalized_thread_labels,
+                allowed,
+                include_groups,
+            ):
                 continue
             if allowed and not self._label_set_matches(normalized_thread_labels, allowed):
                 continue
@@ -209,11 +219,13 @@ class WhatsAppCollector:
         *,
         exclude_labels: list[str] | None = None,
         max_messages: int = MAX_MESSAGE_LOOKBACK_HARD_LIMIT,
+        include_groups: str = GROUP_INCLUDE_STANDARD,
     ) -> list[NormalizedEvent]:
         events: list[NormalizedEvent] = []
         for thread in self.collect_labeled_threads(
             allow_labels=allow_labels,
             exclude_labels=exclude_labels,
+            include_groups=include_groups,
             max_messages=max_messages,
         ):
             events.append(
@@ -227,6 +239,7 @@ class WhatsAppCollector:
         *,
         exclude_labels: list[str] | None = None,
         max_messages: int = MAX_MESSAGE_LOOKBACK_HARD_LIMIT,
+        include_groups: str = GROUP_INCLUDE_STANDARD,
     ) -> dict[str, Any]:
         max_messages = self._bounded_max_messages(max_messages)
         excluded_labels = self._effective_excluded_labels(exclude_labels)
@@ -234,6 +247,7 @@ class WhatsAppCollector:
         threads = self.collect_labeled_threads(
             allow_labels=allow_labels,
             exclude_labels=excluded_labels,
+            include_groups=include_groups,
             max_messages=max_messages,
             snapshot=snapshot,
         )
@@ -254,6 +268,7 @@ class WhatsAppCollector:
         exclude_labels: list[str] | None = None,
         max_messages: int = MAX_MESSAGE_LOOKBACK_HARD_LIMIT,
         max_all_chats: int = DEFAULT_ALL_VIEW_CHAT_LIMIT,
+        include_groups: str = GROUP_INCLUDE_STANDARD,
     ) -> dict[str, Any]:
         with self._cached_idb_reads():
             return self._collect_dashboard_export(
@@ -262,6 +277,7 @@ class WhatsAppCollector:
                 exclude_labels=exclude_labels,
                 max_messages=max_messages,
                 max_all_chats=max_all_chats,
+                include_groups=include_groups,
             )
 
     def _collect_dashboard_export(
@@ -272,18 +288,26 @@ class WhatsAppCollector:
         exclude_labels: list[str] | None = None,
         max_messages: int = MAX_MESSAGE_LOOKBACK_HARD_LIMIT,
         max_all_chats: int = DEFAULT_ALL_VIEW_CHAT_LIMIT,
+        include_groups: str = GROUP_INCLUDE_STANDARD,
     ) -> dict[str, Any]:
         max_messages = self._bounded_max_messages(max_messages)
         max_all_chats = max(1, int(max_all_chats))
+        include_groups = self._normalized_group_policy(include_groups)
         excluded_labels = self._effective_excluded_labels(exclude_labels)
+        forced_labels = list(allow_labels or [])
         snapshot = self.collect_snapshot()
         export_warnings: list[str] = []
         try:
-            threads = self.collect_labeled_threads(
-                allow_labels=allow_labels,
-                exclude_labels=excluded_labels,
-                max_messages=max_messages,
-                snapshot=snapshot,
+            threads = (
+                self.collect_labeled_threads(
+                    allow_labels=forced_labels,
+                    exclude_labels=excluded_labels,
+                    include_groups=include_groups,
+                    max_messages=max_messages,
+                    snapshot=snapshot,
+                )
+                if forced_labels
+                else []
             )
         except (RuntimeError, TimeoutError, ValueError) as exc:
             threads = []
@@ -344,6 +368,7 @@ class WhatsAppCollector:
                 chat_rows=planned_chat_rows,
                 existing_titles=[thread["chatTitle"] for thread in exported_threads],
                 excluded_titles=excluded_recent_chat_names,
+                include_groups=include_groups,
                 max_messages=max_messages,
                 limit=max_all_chats,
             )
@@ -352,10 +377,13 @@ class WhatsAppCollector:
             self._recent_indexeddb_chat_exports(
                 existing_threads=exported_threads,
                 excluded_labels=excluded_labels,
+                allow_labels=forced_labels,
+                include_groups=include_groups,
                 max_messages=max_messages,
                 limit=max_all_chats,
             )
         )
+        exported_threads.sort(key=self._export_thread_recency_key, reverse=True)
         payload = {
             "source": "whatsapp",
             "exportedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
@@ -367,6 +395,7 @@ class WhatsAppCollector:
             "excludeLabels": excluded_labels,
             "maxRecentMessages": max_messages,
             "maxAllViewChats": max_all_chats,
+            "includeGroups": include_groups,
             "threads": exported_threads,
         }
         if export_warnings:
@@ -577,6 +606,7 @@ class WhatsAppCollector:
         chat_rows: list[ChatRow],
         existing_titles: list[str],
         excluded_titles: set[str],
+        include_groups: str,
         max_messages: int,
         limit: int = 15,
     ) -> list[dict[str, Any]]:
@@ -595,6 +625,9 @@ class WhatsAppCollector:
             chat = self._resolve_default_view_chat(row, contact=contact, group=group, chats_by_alias=chats_by_alias)
             jid = (chat or contact or group or {}).get("id")
             chat = chats_by_id.get(jid, chat) if jid else chat
+            is_group_chat = bool(group) or (isinstance(jid, str) and jid.endswith("@g.us"))
+            if not self._include_group_for_policy(is_group_chat, set(), set(), include_groups):
+                continue
             phone_or_history_id = None
             if contact:
                 phone_or_history_id = contact.get("phoneNumber")
@@ -664,6 +697,8 @@ class WhatsAppCollector:
         *,
         existing_threads: list[dict[str, Any]],
         excluded_labels: list[str],
+        allow_labels: list[str],
+        include_groups: str,
         max_messages: int,
         limit: int,
     ) -> list[dict[str, Any]]:
@@ -686,6 +721,7 @@ class WhatsAppCollector:
             if isinstance(row.get("value"), dict) and row["value"].get("id")
         }
         normalized_excluded_labels = self._normalized_label_set(excluded_labels)
+        normalized_allowed_labels = self._normalized_label_set(allow_labels)
         labels_for_jid = self._labels_for_jid(association_rows, labels_by_id)
         contacts_by_id = {
             row["value"]["id"]: row["value"]
@@ -741,6 +777,13 @@ class WhatsAppCollector:
             raw_labels = self._labels_for_thread(jid, labels_for_jid)
             normalized_labels = {self._normalize_label_slug(label) for label in raw_labels}
             if self._thread_has_only_excluded_labels(normalized_labels, normalized_excluded_labels):
+                continue
+            if not self._include_group_for_policy(
+                is_group_chat,
+                normalized_labels,
+                normalized_allowed_labels,
+                include_groups,
+            ):
                 continue
 
             contact = self._contact_for_chat(chat, contacts_by_id=contacts_by_id, contacts_by_alias=contacts_by_alias)
@@ -1122,6 +1165,44 @@ class WhatsAppCollector:
     @classmethod
     def _label_set_matches(cls, thread_labels: set[str], target_labels: set[str]) -> bool:
         return bool(cls._matching_labels(thread_labels, target_labels))
+
+    @staticmethod
+    def _normalized_group_policy(include_groups: str | None) -> str:
+        normalized = str(include_groups or "").strip()
+        if normalized in {
+            GROUP_INCLUDE_LABELED_ALWAYS,
+            "labeled-always",
+            "always-labeled",
+            "alwaysIncludeOnly",
+            "allow-labeled-only",
+        }:
+            return GROUP_INCLUDE_LABELED_ALWAYS
+        return GROUP_INCLUDE_STANDARD
+
+    @classmethod
+    def _include_group_for_policy(
+        cls,
+        is_group_chat: bool,
+        thread_labels: set[str],
+        allowed_labels: set[str],
+        include_groups: str | None,
+    ) -> bool:
+        if not is_group_chat:
+            return True
+        if cls._normalized_group_policy(include_groups) == GROUP_INCLUDE_STANDARD:
+            return True
+        return bool(allowed_labels) and cls._label_set_matches(thread_labels, allowed_labels)
+
+    @staticmethod
+    def _export_thread_recency_key(thread: dict[str, Any]) -> tuple[float, str]:
+        raw_date = thread.get("lastMessageAt")
+        timestamp = 0.0
+        if isinstance(raw_date, str) and raw_date.strip():
+            try:
+                timestamp = datetime.fromisoformat(raw_date.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                timestamp = 0.0
+        return (timestamp, str(thread.get("chatTitle") or ""))
 
     @staticmethod
     def _bounded_max_messages(max_messages: int | None) -> int:

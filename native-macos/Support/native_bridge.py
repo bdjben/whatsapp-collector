@@ -30,6 +30,7 @@ _bootstrap_paths()
 from whatsapp_collector.chrome_session import ChromeTarget, ChromeWhatsAppSession  # noqa: E402
 from whatsapp_collector.collector import (  # noqa: E402
     DEFAULT_ALL_VIEW_CHAT_LIMIT,
+    GROUP_INCLUDE_STANDARD,
     MAX_MESSAGE_LOOKBACK_HARD_LIMIT,
     WhatsAppCollector,
 )
@@ -92,6 +93,13 @@ def _int(value: Any, default: int) -> int:
         return default
 
 
+def _group_include(value: Any) -> str:
+    value = str(value or "").strip()
+    if value in {"labeledAlways", "labeled-always", "always-labeled", "alwaysIncludeOnly"}:
+        return "labeledAlways"
+    return GROUP_INCLUDE_STANDARD
+
+
 def _config(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "output_path": _path(payload.get("outputPath"), DEFAULT_UI_OUTPUT_PATH),
@@ -106,6 +114,7 @@ def _config(payload: dict[str, Any]) -> dict[str, Any]:
         "max_all_chats": max(1, _int(payload.get("maxAllChats"), DEFAULT_ALL_VIEW_CHAT_LIMIT)),
         "allow_labels": _normalize_label_list(payload.get("allowLabels")),
         "exclude_labels": _normalize_label_list(payload.get("excludeLabels")),
+        "include_groups": _group_include(payload.get("includeGroups")),
     }
 
 
@@ -116,6 +125,7 @@ def _schedule_payload(cfg: dict[str, Any]) -> dict[str, Any]:
         "accountLabel": cfg["account_label"],
         "allowLabels": list(cfg["allow_labels"]),
         "excludeLabels": list(cfg["exclude_labels"]),
+        "includeGroups": cfg["include_groups"],
         "displayName": cfg["display_name"],
         "profileDir": str(cfg["profile_dir"]),
         "outputPath": str(cfg["output_path"]),
@@ -165,6 +175,7 @@ def _run_export(cfg: dict[str, Any]) -> dict[str, Any]:
         max_all_chats=cfg["max_all_chats"],
         allow_labels=cfg["allow_labels"],
         exclude_labels=cfg["exclude_labels"],
+        include_groups=cfg["include_groups"],
     )
     _write_atomic_json(export, cfg["output_path"])
     summary = _read_export_summary(cfg["output_path"], parse_json=True)

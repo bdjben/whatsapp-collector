@@ -20,7 +20,7 @@ struct ExportPreviewView: View {
                         Divider()
                     }
                     HSplitView {
-                        threadList(export.threads)
+                        threadList(export.threads.sortedByRecency())
                             .frame(minWidth: 300, idealWidth: 360, maxWidth: 460)
                         threadDetail
                             .frame(minWidth: 460)
@@ -111,7 +111,7 @@ struct ExportPreviewView: View {
                     HStack {
                         Text(thread.lastMessageDirection ?? "unknown")
                         Text("·")
-                        Text("\(thread.messageCount) messages")
+                        Text(messageCountLabel(for: thread))
                     }
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
@@ -145,9 +145,10 @@ struct ExportPreviewView: View {
 
                     GroupBox("Latest Message") {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(thread.lastMessageText?.isEmpty == false ? thread.lastMessageText! : "No text captured")
+                            Text(latestMessageText(for: thread))
                                 .font(.body)
                                 .textSelection(.enabled)
+                                .foregroundStyle(latestMessageTextIsAvailable(for: thread) ? .primary : .secondary)
                             HStack {
                                 Text(thread.lastMessageSender ?? "Unknown sender")
                                 Text("·")
@@ -163,7 +164,13 @@ struct ExportPreviewView: View {
 
                     GroupBox("Recent Messages") {
                         VStack(alignment: .leading, spacing: 10) {
-                            ForEach((thread.recentMessages ?? thread.messages ?? []).prefix(20)) { message in
+                            let messages = Array(thread.previewMessages.prefix(20))
+                            if messages.isEmpty {
+                                Text("No text messages are available for this thread yet. Media-only, system, or encrypted rows may still appear in WhatsApp without readable text in the export.")
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
+                            ForEach(messages) { message in
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack {
                                         Text(message.sender ?? "Unknown")
@@ -176,9 +183,9 @@ struct ExportPreviewView: View {
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }
-                                    Text(message.text?.isEmpty == false ? message.text! : "[no text]")
+                                    Text(messageText(for: message))
                                         .textSelection(.enabled)
-                                        .foregroundStyle(message.textAvailable == false ? .secondary : .primary)
+                                        .foregroundStyle(messageTextIsAvailable(for: message) ? .primary : .secondary)
                                 }
                                 Divider()
                             }
@@ -195,11 +202,41 @@ struct ExportPreviewView: View {
 
     private func filteredThreads(_ threads: [ExportThread]) -> [ExportThread] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return threads }
-        return threads.filter { thread in
+        let sorted = threads.sortedByRecency()
+        guard !query.isEmpty else { return sorted }
+        return sorted.filter { thread in
             thread.title.localizedCaseInsensitiveContains(query)
                 || thread.labelLine.localizedCaseInsensitiveContains(query)
                 || (thread.lastMessageText ?? "").localizedCaseInsensitiveContains(query)
         }
+    }
+
+    private func messageCountLabel(for thread: ExportThread) -> String {
+        let count = thread.displayMessageCount
+        if count == 1 { return "1 recent message" }
+        if count > 1 { return "\(count) recent messages" }
+        return "No text messages"
+    }
+
+    private func latestMessageText(for thread: ExportThread) -> String {
+        let text = thread.lastMessageText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !text.isEmpty { return text }
+        return "No text message available for the latest row."
+    }
+
+    private func latestMessageTextIsAvailable(for thread: ExportThread) -> Bool {
+        let text = thread.lastMessageText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return !text.isEmpty
+    }
+
+    private func messageText(for message: ExportMessage) -> String {
+        let text = message.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !text.isEmpty { return text }
+        return "Text unavailable for this message."
+    }
+
+    private func messageTextIsAvailable(for message: ExportMessage) -> Bool {
+        let text = message.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return !text.isEmpty && message.textAvailable != false
     }
 }

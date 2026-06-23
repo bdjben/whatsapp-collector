@@ -7,7 +7,7 @@ struct DashboardView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 SectionHeader(
-                    title: "Collector Dashboard",
+                    title: "WhatsApp Collector Dashboard",
                     subtitle: "Launch the dedicated WhatsApp Web profile, run exports, and keep the AI-ready JSON fresh.",
                     systemImage: "message.badge"
                 )
@@ -16,6 +16,7 @@ struct DashboardView: View {
 
                 metrics
                 actions
+                browserReadiness
                 collectionSettings
                 paths
             }
@@ -91,6 +92,19 @@ struct DashboardView: View {
         }
     }
 
+    private var browserReadiness: some View {
+        GroupBox("Browser Setup") {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Use Launch / Login to open the dedicated Chrome profile, then make sure WhatsApp Web or WhatsApp Business Web is logged in there before running an export.")
+                Text("Keep that Chrome window open while exporting. The app reads WhatsApp through that profile’s DevTools connection and does not use the old localhost browser UI.")
+                    .foregroundStyle(.secondary)
+            }
+            .font(.callout)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 4)
+        }
+    }
+
     private var collectionSettings: some View {
         GroupBox {
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 14) {
@@ -124,6 +138,22 @@ struct DashboardView: View {
                         Stepper("", value: $store.configuration.maxAllChats, in: 1...500)
                             .labelsHidden()
                         Text("Additional unlabeled/recent chats to collect.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                GridRow {
+                    Text("Groups")
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Picker("Groups", selection: $store.configuration.includeGroups) {
+                            ForEach(GroupInclusionMode.allCases) { mode in
+                                Text(mode.title).tag(mode)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .frame(maxWidth: 420)
+                        Text(store.configuration.includeGroups.detail)
                             .foregroundStyle(.secondary)
                     }
                 }

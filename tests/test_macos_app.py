@@ -183,7 +183,8 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     assert "whatsapp-collector.pyz" in migration_source
     assert "WhatsAppCollectorMenu.swift" in migration_source
     assert "LSUIElement" in migration_source
+    assert "exportsFolderHasContent" in migration_source
     assert "trashItem" in migration_source
     assert "legacy-app-" in migration_source
-    assert store_source.index('alert.addButton(withTitle: "Not Now")') < store_source.index('alert.addButton(withTitle: "Back Up Exports and Move Old App to Trash")')
+    assert store_source.index('alert.addButton(withTitle: "Not Now")') < store_source.index('"Back Up Exports and Move Old App to Trash"')
     assert "alertSecondButtonReturn" in store_source
