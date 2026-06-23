@@ -181,6 +181,8 @@ class StubSession:
 def test_navigation_js_targets_all_and_collapsed_labels_filter() -> None:
     assert 'getElementById("labels-filter")' in LABELS_BODY_JS
     assert 'CHAT_LIST_RESET' in CHAT_LIST_RESET_JS
+    assert "aria-label')||'')==='Chats'" in CHAT_LIST_RESET_JS
+    assert "['Close','Back']" in CHAT_LIST_RESET_JS
     assert 'getElementById("all-filter")' in CHAT_LIST_BODY_JS
     assert 'scrollTop=0' in CHAT_LIST_RESET_JS
     assert '\\d{1,2}:\\d{2}(?:\\s?[AP]M)?' in CHAT_LIST_BODY_JS
@@ -443,6 +445,60 @@ def test_collect_labeled_threads_enforces_allowlist_and_lookback_cap() -> None:
 
     assert [thread.jid for thread in threads] == ["141394635137028@lid"]
     assert len(threads[0].recent_messages) == 1
+
+
+def test_dashboard_export_uses_opened_chat_fallback_for_labeled_visible_threads_without_indexeddb_text() -> None:
+    class NoPlaintextMessageSession(StubSession):
+        def run_async_json(self, script: str, result_var: str = "__hermes_async_result"):
+            payload = super().run_async_json(script, result_var=result_var)
+            if "allRecords.push({ key: cursor.key, value: cursor.value })" in script and '"message"' in script:
+                for row in payload:
+                    row["value"].pop("body", None)
+                    row["value"].pop("caption", None)
+                    row["value"].pop("text", None)
+                    row["value"].pop("matchedText", None)
+            return payload
+
+    class FallbackCollector(WhatsAppCollector):
+        def __init__(self) -> None:
+            super().__init__(session=NoPlaintextMessageSession())
+            self.opened_chats: list[str] = []
+
+        def _opened_chat_recent_messages_for_chat(self, chat_name: str, *, max_messages: int) -> list[dict]:
+            self.opened_chats.append(chat_name)
+            return [
+                {
+                    "messageId": "opened-1",
+                    "timestamp": "2026-04-18T08:12:00+00:00",
+                    "direction": "inbound",
+                    "sender": chat_name,
+                    "text": "Opened fallback text",
+                    "textAvailable": True,
+                    "messageType": "chat",
+                    "subtype": None,
+                }
+            ]
+
+    collector = FallbackCollector()
+
+    payload = collector.collect_dashboard_export(allow_labels=["Important"], max_messages=15, max_all_chats=1)
+
+    thread = next(item for item in payload["threads"] if item["chatTitle"] == "Example Contact")
+    assert collector.opened_chats[0] == "Example Contact"
+    assert thread["recentMessages"] == [
+        {
+            "messageId": "opened-1",
+            "timestamp": "2026-04-18T08:12:00+00:00",
+            "direction": "inbound",
+            "sender": "Example Contact",
+            "text": "Opened fallback text",
+            "textAvailable": True,
+            "messageType": "chat",
+            "subtype": None,
+        }
+    ]
+    assert thread["messages"] == thread["recentMessages"]
+    assert thread["lastMessageText"] == "Opened fallback text"
 
 
 def test_collect_labeled_threads_includes_all_labeled_chats_except_archive_label_only_or_excluded_label_only() -> None:
@@ -963,6 +1019,7 @@ def test_collect_dashboard_export_includes_recent_unlabeled_indexeddb_chat_absen
                             "t": 1781987078,
                             "type": "chat",
                             "from": "130266408456240@lid",
+                            "body": "Recent IndexedDB text",
                         },
                     },
                 ]
@@ -981,8 +1038,8 @@ def test_collect_dashboard_export_includes_recent_unlabeled_indexeddb_chat_absen
     assert tamar["lastMessageAt"] == "2026-06-20T20:24:38+00:00"
     assert tamar["lastMessageDirection"] == "inbound"
     assert tamar["lastMessageSender"] == "130266408456240@lid"
-    assert tamar["lastMessageText"] == ""
-    assert tamar["recentMessages"] == []
+    assert tamar["lastMessageText"] == "Recent IndexedDB text"
+    assert len(tamar["recentMessages"]) == 1
 
 
 def test_collect_dashboard_export_keeps_recent_direct_indexeddb_chats_when_groups_are_newer() -> None:
@@ -1006,8 +1063,19 @@ def test_collect_dashboard_export_keeps_recent_direct_indexeddb_chats_when_group
         def run_async_json(self, script: str, result_var: str = "__hermes_async_result"):
             if 'objectStoreNames' in script and 'model-storage' in script:
                 return {"stores": ["chat", "contact", "group-metadata", "label", "label-association", "message"]}
-            if '"label"' in script or '"label-association"' in script or '"message"' in script:
+            if '"label"' in script or '"label-association"' in script:
                 return []
+            if '"message"' in script:
+                return [
+                    {
+                        "key": "false_group-a@g.us_m1",
+                        "value": {"id": "false_group-a@g.us_m1", "t": 1782049000, "type": "chat", "from": "group-a@g.us", "body": "Group text"},
+                    },
+                    {
+                        "key": "false_130266408456240@lid_m1",
+                        "value": {"id": "false_130266408456240@lid_m1", "t": 1781987078, "type": "chat", "from": "130266408456240@lid", "body": "Direct text"},
+                    },
+                ]
             if '"contact"' in script:
                 return [
                     {
@@ -1152,6 +1220,8 @@ def test_collect_dashboard_export_skips_unlabeled_open_chat_runtime_failures_ins
                 return {"title": "WhatsApp Business", "url": "https://web.whatsapp.com/"}
             if "LABELS_BODY" in js:
                 return {"body": "Labels"}
+            if "CHAT_LIST_RESET" in js:
+                return {"ok": True}
             if "CHAT_LIST_BODY" in js:
                 return {
                     "rows": [
@@ -1184,26 +1254,7 @@ def test_collect_dashboard_export_skips_unlabeled_open_chat_runtime_failures_ins
 
     payload = WhatsAppCollector(session=FailingOpenedChatSession()).collect_dashboard_export(account_label="WhatsApp", allow_labels=[])
 
-    assert payload["threads"] == [
-        {
-            "threadKey": "1234567890@lid",
-            "chatTitle": "15550101@c.us",
-            "chatType": "direct",
-            "participants": [{"name": "15550101@c.us", "phone": "15550101@c.us"}],
-            "labelsRaw": ["Unlabeled"],
-            "labelsNormalized": ["unlabeled"],
-            "unread": False,
-            "starred": False,
-            "requiresResponse": False,
-            "lastMessageAt": "2026-04-20T13:54:23+00:00",
-            "lastMessageDirection": "inbound",
-            "lastMessageSender": "1234567890@lid",
-            "lastMessageText": "",
-            "sourceView": "indexeddb-recent",
-            "recentMessages": [],
-            "messages": [],
-        }
-    ]
+    assert payload["threads"] == []
 
 
 def test_collect_dashboard_export_uses_all_view_when_label_indexeddb_times_out() -> None:

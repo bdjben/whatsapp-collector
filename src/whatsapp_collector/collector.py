@@ -20,7 +20,7 @@ from whatsapp_collector.parsing import parse_chat_list, parse_labels
 
 PAGE_META_JS = 'JSON.stringify(Object.assign({PAGE_META:true},{title:document.title,url:location.href}))'
 LABELS_BODY_JS = '''JSON.stringify({LABELS_BODY:true,body:(()=>{const close=[...document.querySelectorAll('button,[role="button"]')].find(el=>el.getAttribute('aria-label')==='Close'); if(close){close.click();} const directLabels=document.getElementById("labels-filter")||[...document.querySelectorAll('button,[role="button"],a')].find(el=>((el.getAttribute('aria-label')||'')==='Labels')||((el.innerText||'').trim().startsWith('Labels'))); if(directLabels){directLabels.click(); return document.body.innerText;} const menu=[...document.querySelectorAll('button,[role="button"]')].find(el=>el.getAttribute('aria-label')==='Menu'); if(menu){menu.click(); const menuLabels=[...document.querySelectorAll('button,[role="button"],a')].find(el=>((el.getAttribute('aria-label')||'')==='Labels')||((el.innerText||'').trim().startsWith('Labels'))); if(menuLabels){menuLabels.click(); return document.body.innerText;}} const tools=[...document.querySelectorAll('button,[role="button"]')].find(el=>el.getAttribute('aria-label')==='Tools'); if(tools){tools.click(); const toolLabels=[...document.querySelectorAll('button,[role="button"],a')].find(el=>((el.getAttribute('aria-label')||'')==='Labels')||((el.innerText||'').trim().startsWith('Labels'))); if(toolLabels){toolLabels.click();}} return document.body.innerText;})()})'''
-CHAT_LIST_RESET_JS = r'''JSON.stringify({CHAT_LIST_RESET:true,...(()=>{const close=[...document.querySelectorAll('button,[role="button"]')].find(el=>el.getAttribute('aria-label')==='Close'); if(close){close.click();} const all=document.getElementById("all-filter")||[...document.querySelectorAll('button,[role="button"],a')].find(el=>(el.innerText||'').trim()==='All'); if(all){all.click();} const pane=document.querySelector('#pane-side'); if(pane){pane.scrollTop=0; pane.dispatchEvent(new Event('scroll',{bubbles:true}));} return {ok:true};})()})'''
+CHAT_LIST_RESET_JS = r'''(async()=>{const sleep=(ms)=>new Promise(resolve=>setTimeout(resolve,ms)); const clickFirst=(predicate)=>{const item=[...document.querySelectorAll('button,[role="button"],a')].find(predicate); if(item){item.click(); return true;} return false;}; const clickedChats=clickFirst(el=>(el.getAttribute('aria-label')||'')==='Chats'); if(clickedChats){await sleep(350);} for(let i=0;i<3;i++){const panelButton=[...document.querySelectorAll('button,[role="button"]')].find(el=>['Close','Back'].includes(el.getAttribute('aria-label')||'')); if(!panelButton){break;} panelButton.click(); await sleep(250);} const all=document.getElementById("all-filter")||[...document.querySelectorAll('button,[role="button"],a')].find(el=>(el.innerText||'').trim()==='All'); if(all){all.click(); await sleep(250);} const pane=document.querySelector('#pane-side'); if(pane){pane.scrollTop=0; pane.dispatchEvent(new Event('scroll',{bubbles:true}));} return JSON.stringify({CHAT_LIST_RESET:true,ok:true,clickedChats});})()'''
 CHAT_LIST_BODY_JS = r'''JSON.stringify({CHAT_LIST_BODY:true,...(()=>{const close=[...document.querySelectorAll('button,[role="button"]')].find(el=>el.getAttribute('aria-label')==='Close'); if(close){close.click();} const all=document.getElementById("all-filter")||[...document.querySelectorAll('button,[role="button"],a')].find(el=>(el.innerText||'').trim()==='All'); if(all){all.click();} const timestampPattern=/^(Today|Yesterday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|\d{1,2}:\d{2}(?:\s?[AP]M)?|\d{1,2}\/\d{1,2}\/\d{2,4})$/i; const unreadPattern=/^(\d+) unread messages?$/i; const rows=[...document.querySelectorAll('#pane-side [role="row"][data-testid^="list-item-"]')].map((row)=>{let lines=(row.innerText||'').split('\n').map(line=>line.replace(/\u200e/g,'').replace(/\u00a0/g,' ').trim()).filter(Boolean); let unreadCount=0; let unreadFlag=false; if(lines.length){const unreadMatch=lines[0].match(unreadPattern); if(unreadMatch){unreadCount=parseInt(unreadMatch[1],10)||0; unreadFlag=unreadCount>0; lines=lines.slice(1);} else if(/^unread$/i.test(lines[0])){unreadCount=1; unreadFlag=true; lines=lines.slice(1);} } if(lines.length && /^\d+$/.test(lines[lines.length-1])){const badgeCount=parseInt(lines[lines.length-1],10)||0; if(badgeCount>0){unreadCount=Math.max(unreadCount,badgeCount); unreadFlag=true;} lines=lines.slice(0,-1);} const timestampIndex=lines.findIndex((line,idx)=>idx>0&&timestampPattern.test(line)); if(timestampIndex <= 0){return null;} const chatName=lines[0]; const timestampLabel=lines[timestampIndex]; const preview=lines.slice(timestampIndex+1).join(' ').replace(/\s+/g,' ').trim(); return {chat_name:chatName,timestamp_label:timestampLabel,preview:preview,unread_count:unreadCount,unread_flag:unreadFlag};}).filter(Boolean); return {body:document.body.innerText,rows:rows};})()})'''
 MODEL_STORAGE_STORES_JS = '''window.__hermes_async_result = null;(function(){const req=indexedDB.open("model-storage");req.onerror=()=>{window.__hermes_async_result=JSON.stringify({error:String(req.error)});};req.onsuccess=()=>{const db=req.result;window.__hermes_async_result=JSON.stringify({stores:Array.from(db.objectStoreNames)});db.close();};})();"started"'''
 
@@ -297,6 +297,7 @@ class WhatsAppCollector:
         forced_labels = list(allow_labels or [])
         snapshot = self.collect_snapshot()
         export_warnings: list[str] = []
+        message_capture_skipped_count = 0
         try:
             threads = (
                 self.collect_labeled_threads(
@@ -317,21 +318,22 @@ class WhatsAppCollector:
             clean_labels = [self._clean_label_name(label) for label in thread.labels]
             if not clean_labels:
                 continue
+            recent_messages = self._serialize_recent_messages(thread.recent_messages)
+            if not recent_messages and thread.visible_in_chat_list:
+                try:
+                    recent_messages = self._opened_chat_recent_messages_for_chat(thread.display_name, max_messages=max_messages)
+                except RuntimeError:
+                    recent_messages = []
             last_message_at, last_direction, last_sender, last_text = self._latest_thread_summary(thread)
-
-            recent_messages = [
-                {
-                    "messageId": message.message_id,
-                    "timestamp": message.iso_timestamp,
-                    "direction": message.direction,
-                    "sender": message.sender,
-                    "text": message.text,
-                    "textAvailable": message.text_available,
-                    "messageType": message.message_type,
-                    "subtype": message.subtype,
-                }
-                for message in thread.recent_messages
-            ]
+            if recent_messages:
+                latest_message = recent_messages[0]
+                last_message_at = latest_message.get("timestamp") or last_message_at
+                last_direction = str(latest_message.get("direction") or last_direction)
+                last_sender = latest_message.get("sender") or last_sender
+                last_text = str(latest_message.get("text") or last_text)
+            else:
+                message_capture_skipped_count += 1
+                continue
             exported_threads.append(
                 {
                     "threadKey": thread.jid,
@@ -399,7 +401,11 @@ class WhatsAppCollector:
             "threads": exported_threads,
         }
         if export_warnings:
+            if message_capture_skipped_count:
+                export_warnings.append(f"message-capture-skipped:{message_capture_skipped_count}")
             payload["exportWarnings"] = export_warnings
+        elif message_capture_skipped_count:
+            payload["exportWarnings"] = [f"message-capture-skipped:{message_capture_skipped_count}"]
         return payload
 
     def _model_storage_stores(self) -> list[str]:
@@ -640,18 +646,8 @@ class WhatsAppCollector:
             candidate_message_keys = self._candidate_message_keys_for_default_view_row(row, contact=contact, group=group, chat=chat)
             candidate_messages = self._collect_candidate_messages(candidate_message_keys, messages_by_jid)
             if jid and any(self._extract_message_text(message) for message in candidate_messages):
-                recent_messages = [
-                    {
-                        "messageId": message.message_id,
-                        "timestamp": message.iso_timestamp,
-                        "direction": message.direction,
-                        "sender": message.sender,
-                        "text": message.text,
-                        "textAvailable": message.text_available,
-                        "messageType": message.message_type,
-                        "subtype": message.subtype,
-                    }
-                    for message in self._recent_messages_for_thread(
+                recent_messages = self._serialize_recent_messages(
+                    self._recent_messages_for_thread(
                         jid=jid,
                         display_name=row.chat_name,
                         phone_or_history_id=phone_or_history_id,
@@ -659,7 +655,7 @@ class WhatsAppCollector:
                         preview=row.preview,
                         max_messages=max_messages,
                     )
-                ]
+                )
             if not recent_messages:
                 try:
                     recent_messages = self._opened_chat_recent_messages_for_chat(row.chat_name, max_messages=max_messages)
@@ -803,18 +799,8 @@ class WhatsAppCollector:
                 self._candidate_message_keys_for_chat(chat, contact=contact, group=group),
                 messages_by_jid,
             )
-            recent_messages = [
-                {
-                    "messageId": message.message_id,
-                    "timestamp": message.iso_timestamp,
-                    "direction": message.direction,
-                    "sender": message.sender,
-                    "text": message.text,
-                    "textAvailable": message.text_available,
-                    "messageType": message.message_type,
-                    "subtype": message.subtype,
-                }
-                for message in self._recent_messages_for_thread(
+            recent_messages = self._serialize_recent_messages(
+                self._recent_messages_for_thread(
                     jid=jid,
                     display_name=display_name,
                     phone_or_history_id=phone_or_history_id,
@@ -822,7 +808,12 @@ class WhatsAppCollector:
                     preview="",
                     max_messages=max_messages,
                 )
-            ]
+            )
+            if not recent_messages:
+                try:
+                    recent_messages = self._opened_chat_recent_messages_for_chat(display_name, max_messages=max_messages)
+                except RuntimeError:
+                    recent_messages = []
             latest_raw = self._latest_raw_message(candidate_messages)
             latest_message = recent_messages[0] if recent_messages else None
             last_message_at = (
@@ -838,6 +829,8 @@ class WhatsAppCollector:
                 last_sender = latest_message.get("sender")
                 last_text = str(latest_message.get("text") or "")
             else:
+                if not latest_raw:
+                    continue
                 last_direction = self._message_direction(latest_raw or {}) if latest_raw else "unknown"
                 last_sender = (
                     self._message_sender(latest_raw, display_name=display_name, direction=last_direction)
@@ -845,6 +838,8 @@ class WhatsAppCollector:
                     else None
                 )
                 last_text = ""
+                if not last_text:
+                    continue
 
             labels_raw = raw_labels or ["Unlabeled"]
             labels_normalized = [self._normalize_label_slug(label) for label in labels_raw]
@@ -880,7 +875,26 @@ class WhatsAppCollector:
                 break
         return recent_exports
 
+    @staticmethod
+    def _serialize_recent_messages(messages: list[RecentMessage]) -> list[dict[str, Any]]:
+        return [
+            {
+                "messageId": message.message_id,
+                "timestamp": message.iso_timestamp,
+                "direction": message.direction,
+                "sender": message.sender,
+                "text": message.text,
+                "textAvailable": message.text_available,
+                "messageType": message.message_type,
+                "subtype": message.subtype,
+            }
+            for message in messages
+        ]
+
     def _opened_chat_recent_messages_for_chat(self, chat_name: str, *, max_messages: int) -> list[dict[str, Any]]:
+        if not hasattr(self.session, "click_point"):
+            raise RuntimeError("Opened-chat message capture requires a DevTools-backed Chrome session")
+        self._reset_chat_list_to_top()
         click_expression = self._chat_row_click_point_expression(chat_name)
         self.session.click_point(click_expression)
         payload = self.session.run_json(self._opened_chat_recent_messages_js(max_messages=max_messages))
@@ -922,7 +936,7 @@ class WhatsAppCollector:
 
     @staticmethod
     def _chat_row_click_point_expression(chat_name: str) -> str:
-        return f'''(()=>{{const targetTitle={json.dumps(chat_name)}; const titleEl=[...document.querySelectorAll('#pane-side [title]')].find(el => ((el.getAttribute('title')||'').trim()===targetTitle)); if(!titleEl) return null; const clickable=titleEl.closest('[role="gridcell"]')||titleEl.closest('[data-testid="cell-frame-container"]')||titleEl; clickable.scrollIntoView({{block:'center'}}); const rect=clickable.getBoundingClientRect(); return {{x: rect.left + rect.width/2, y: rect.top + rect.height/2}};}})()'''
+        return f'''(()=>{{const targetTitle={json.dumps(chat_name)}; const titleEl=[...document.querySelectorAll('#pane-side [data-testid="cell-frame-title"] [title], #pane-side [data-testid^="list-item-"] [title]')].find(el => ((el.getAttribute('title')||'').trim()===targetTitle)); if(!titleEl) return null; const clickable=titleEl.closest('[data-testid^="list-item-"]')||titleEl.closest('[data-testid="cell-frame-container"]')||titleEl.closest('[role="row"]')||titleEl; clickable.scrollIntoView({{block:'center'}}); const rect=clickable.getBoundingClientRect(); return {{x: rect.left + rect.width/2, y: rect.top + rect.height/2}};}})()'''
 
     @staticmethod
     def _opened_chat_recent_messages_js(*, max_messages: int) -> str:
