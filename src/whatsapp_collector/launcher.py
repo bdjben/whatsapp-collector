@@ -162,8 +162,8 @@ print(String(data: data, encoding: .utf8)!)
     return {item["name"]: DisplayFrame(**item) for item in payload}
 
 
-def marker_data_url(marker_title: str = DEFAULT_MARKER_TITLE) -> str:
-    html = f"<html><head><title>{marker_title}</title></head><body>{marker_title}</body></html>"
+def marker_data_url(marker_title: str = DEFAULT_MARKER_TITLE, marker_slug: str = DEFAULT_MARKER_URL_SUBSTRING) -> str:
+    html = f"<html><head><title>{marker_title}</title></head><body data-marker=\"{marker_slug}\">{marker_title}</body></html>"
     return "data:text/html," + urllib.parse.quote(html, safe="")
 
 
@@ -373,6 +373,7 @@ def ensure_dedicated_whatsapp_window(
         launched = True
         bridge.wait_until_ready(attempts=wait_attempts, delay_seconds=delay_seconds)
         bridge.wait_until_page_targets_exist(attempts=wait_attempts, delay_seconds=delay_seconds)
+        bridge.wait_until_target_url_exists(attempts=wait_attempts, delay_seconds=delay_seconds)
 
     if debug_port_has_profile_conflict(debug_port, profile_dir):
         relaunch_window()
@@ -380,6 +381,7 @@ def ensure_dedicated_whatsapp_window(
         try:
             bridge.wait_until_ready(attempts=1, delay_seconds=delay_seconds)
             bridge.wait_until_page_targets_exist(attempts=1, delay_seconds=delay_seconds)
+            bridge.wait_until_target_url_exists(attempts=1, delay_seconds=delay_seconds)
         except RuntimeError:
             relaunch_window()
 

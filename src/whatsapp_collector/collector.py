@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import re
@@ -19,6 +20,7 @@ from whatsapp_collector.parsing import parse_chat_list, parse_labels
 
 PAGE_META_JS = 'JSON.stringify(Object.assign({PAGE_META:true},{title:document.title,url:location.href}))'
 LABELS_BODY_JS = '''JSON.stringify({LABELS_BODY:true,body:(()=>{const close=[...document.querySelectorAll('button,[role="button"]')].find(el=>el.getAttribute('aria-label')==='Close'); if(close){close.click();} const directLabels=document.getElementById("labels-filter")||[...document.querySelectorAll('button,[role="button"],a')].find(el=>((el.getAttribute('aria-label')||'')==='Labels')||((el.innerText||'').trim().startsWith('Labels'))); if(directLabels){directLabels.click(); return document.body.innerText;} const menu=[...document.querySelectorAll('button,[role="button"]')].find(el=>el.getAttribute('aria-label')==='Menu'); if(menu){menu.click(); const menuLabels=[...document.querySelectorAll('button,[role="button"],a')].find(el=>((el.getAttribute('aria-label')||'')==='Labels')||((el.innerText||'').trim().startsWith('Labels'))); if(menuLabels){menuLabels.click(); return document.body.innerText;}} const tools=[...document.querySelectorAll('button,[role="button"]')].find(el=>el.getAttribute('aria-label')==='Tools'); if(tools){tools.click(); const toolLabels=[...document.querySelectorAll('button,[role="button"],a')].find(el=>((el.getAttribute('aria-label')||'')==='Labels')||((el.innerText||'').trim().startsWith('Labels'))); if(toolLabels){toolLabels.click();}} return document.body.innerText;})()})'''
+CHAT_LIST_RESET_JS = r'''JSON.stringify({CHAT_LIST_RESET:true,...(()=>{const close=[...document.querySelectorAll('button,[role="button"]')].find(el=>el.getAttribute('aria-label')==='Close'); if(close){close.click();} const all=document.getElementById("all-filter")||[...document.querySelectorAll('button,[role="button"],a')].find(el=>(el.innerText||'').trim()==='All'); if(all){all.click();} const pane=document.querySelector('#pane-side'); if(pane){pane.scrollTop=0; pane.dispatchEvent(new Event('scroll',{bubbles:true}));} return {ok:true};})()})'''
 CHAT_LIST_BODY_JS = r'''JSON.stringify({CHAT_LIST_BODY:true,...(()=>{const close=[...document.querySelectorAll('button,[role="button"]')].find(el=>el.getAttribute('aria-label')==='Close'); if(close){close.click();} const all=document.getElementById("all-filter")||[...document.querySelectorAll('button,[role="button"],a')].find(el=>(el.innerText||'').trim()==='All'); if(all){all.click();} const timestampPattern=/^(Today|Yesterday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|\d{1,2}:\d{2}(?:\s?[AP]M)?|\d{1,2}\/\d{1,2}\/\d{2,4})$/i; const unreadPattern=/^(\d+) unread messages?$/i; const rows=[...document.querySelectorAll('#pane-side [role="row"][data-testid^="list-item-"]')].map((row)=>{let lines=(row.innerText||'').split('\n').map(line=>line.replace(/\u200e/g,'').replace(/\u00a0/g,' ').trim()).filter(Boolean); let unreadCount=0; let unreadFlag=false; if(lines.length){const unreadMatch=lines[0].match(unreadPattern); if(unreadMatch){unreadCount=parseInt(unreadMatch[1],10)||0; unreadFlag=unreadCount>0; lines=lines.slice(1);} else if(/^unread$/i.test(lines[0])){unreadCount=1; unreadFlag=true; lines=lines.slice(1);} } if(lines.length && /^\d+$/.test(lines[lines.length-1])){const badgeCount=parseInt(lines[lines.length-1],10)||0; if(badgeCount>0){unreadCount=Math.max(unreadCount,badgeCount); unreadFlag=true;} lines=lines.slice(0,-1);} const timestampIndex=lines.findIndex((line,idx)=>idx>0&&timestampPattern.test(line)); if(timestampIndex <= 0){return null;} const chatName=lines[0]; const timestampLabel=lines[timestampIndex]; const preview=lines.slice(timestampIndex+1).join(' ').replace(/\s+/g,' ').trim(); return {chat_name:chatName,timestamp_label:timestampLabel,preview:preview,unread_count:unreadCount,unread_flag:unreadFlag};}).filter(Boolean); return {body:document.body.innerText,rows:rows};})()})'''
 MODEL_STORAGE_STORES_JS = '''window.__hermes_async_result = null;(function(){const req=indexedDB.open("model-storage");req.onerror=()=>{window.__hermes_async_result=JSON.stringify({error:String(req.error)});};req.onsuccess=()=>{const db=req.result;window.__hermes_async_result=JSON.stringify({stores:Array.from(db.objectStoreNames)});db.close();};})();"started"'''
 
@@ -31,12 +33,37 @@ DEFAULT_ALL_VIEW_CHAT_LIMIT = 15
 class WhatsAppCollector:
     def __init__(self, session: ChromeWhatsAppSession | None = None) -> None:
         self.session = session or ChromeWhatsAppSession()
+        self._idb_read_cache: dict[str, list[dict[str, Any]]] | None = None
 
     def collect_labels(self) -> list[LabelStat]:
         payload = self.session.run_json(LABELS_BODY_JS)
         return [LabelStat(**item) for item in parse_labels(payload["body"])]
 
+    def collect_label_names_from_indexeddb(self) -> list[str]:
+        stores = set(self._model_storage_stores())
+        if "label" not in stores:
+            return []
+        labels: list[str] = []
+        seen: set[str] = set()
+        for row in self._idb_read_all("label"):
+            value = row.get("value")
+            if not isinstance(value, dict):
+                continue
+            name = value.get("name")
+            if not isinstance(name, str):
+                continue
+            clean = self._clean_label_name(name)
+            if not clean:
+                continue
+            key = clean.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            labels.append(clean)
+        return sorted(labels, key=str.casefold)
+
     def collect_chat_list(self) -> list[ChatRow]:
+        self._reset_chat_list_to_top()
         payload = self.session.run_json(CHAT_LIST_BODY_JS)
         structured_rows = payload.get("rows") if isinstance(payload, dict) else None
         if isinstance(structured_rows, list) and structured_rows:
@@ -57,6 +84,12 @@ class WhatsAppCollector:
             if rows:
                 return rows
         return [ChatRow(**item) for item in parse_chat_list(payload["body"])]
+
+    def _reset_chat_list_to_top(self) -> None:
+        try:
+            self.session.run_json(CHAT_LIST_RESET_JS)
+        except Exception:
+            return
 
     def collect_snapshot(self) -> Snapshot:
         page = self.session.run_json(PAGE_META_JS)
@@ -222,16 +255,39 @@ class WhatsAppCollector:
         max_messages: int = MAX_MESSAGE_LOOKBACK_HARD_LIMIT,
         max_all_chats: int = DEFAULT_ALL_VIEW_CHAT_LIMIT,
     ) -> dict[str, Any]:
+        with self._cached_idb_reads():
+            return self._collect_dashboard_export(
+                account_label=account_label,
+                allow_labels=allow_labels,
+                exclude_labels=exclude_labels,
+                max_messages=max_messages,
+                max_all_chats=max_all_chats,
+            )
+
+    def _collect_dashboard_export(
+        self,
+        *,
+        account_label: str = "WhatsApp",
+        allow_labels: list[str] | None = None,
+        exclude_labels: list[str] | None = None,
+        max_messages: int = MAX_MESSAGE_LOOKBACK_HARD_LIMIT,
+        max_all_chats: int = DEFAULT_ALL_VIEW_CHAT_LIMIT,
+    ) -> dict[str, Any]:
         max_messages = self._bounded_max_messages(max_messages)
         max_all_chats = max(1, int(max_all_chats))
         excluded_labels = self._effective_excluded_labels(exclude_labels)
         snapshot = self.collect_snapshot()
-        threads = self.collect_labeled_threads(
-            allow_labels=allow_labels,
-            exclude_labels=excluded_labels,
-            max_messages=max_messages,
-            snapshot=snapshot,
-        )
+        export_warnings: list[str] = []
+        try:
+            threads = self.collect_labeled_threads(
+                allow_labels=allow_labels,
+                exclude_labels=excluded_labels,
+                max_messages=max_messages,
+                snapshot=snapshot,
+            )
+        except (RuntimeError, TimeoutError, ValueError) as exc:
+            threads = []
+            export_warnings.append(f"labeled-thread-export-skipped:{type(exc).__name__}:{exc}")
         exported_threads = []
         for thread in threads:
             clean_labels = [self._clean_label_name(label) for label in thread.labels]
@@ -276,7 +332,11 @@ class WhatsAppCollector:
                     "messages": list(recent_messages),
                 }
             )
-        excluded_recent_chat_names = self._excluded_recent_chat_names(excluded_labels)
+        try:
+            excluded_recent_chat_names = self._excluded_recent_chat_names(excluded_labels)
+        except (RuntimeError, TimeoutError, ValueError) as exc:
+            excluded_recent_chat_names = set()
+            export_warnings.append(f"excluded-label-filter-skipped:{type(exc).__name__}:{exc}")
         refreshed_chat_rows = self.collect_chat_list()
         planned_chat_rows = self._plan_all_view_rows(snapshot.chat_list, refreshed_chat_rows, all_view_chat_limit=max_all_chats)
         exported_threads.extend(
@@ -288,7 +348,15 @@ class WhatsAppCollector:
                 limit=max_all_chats,
             )
         )
-        return {
+        exported_threads.extend(
+            self._recent_indexeddb_chat_exports(
+                existing_threads=exported_threads,
+                excluded_labels=excluded_labels,
+                max_messages=max_messages,
+                limit=max_all_chats,
+            )
+        )
+        payload = {
             "source": "whatsapp",
             "exportedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
             "account": {
@@ -301,18 +369,40 @@ class WhatsAppCollector:
             "maxAllViewChats": max_all_chats,
             "threads": exported_threads,
         }
+        if export_warnings:
+            payload["exportWarnings"] = export_warnings
+        return payload
 
     def _model_storage_stores(self) -> list[str]:
         payload = self.session.run_async_json(MODEL_STORAGE_STORES_JS)
         return list(payload["stores"])
 
+    @contextmanager
+    def _cached_idb_reads(self):
+        previous_cache = self._idb_read_cache
+        self._idb_read_cache = {}
+        try:
+            yield
+        finally:
+            self._idb_read_cache = previous_cache
+
+    def _cached_idb_rows_if_loaded(self, store_name: str) -> list[dict[str, Any]]:
+        if self._idb_read_cache is None:
+            return []
+        return self._idb_read_cache.get(store_name, [])
+
     def _idb_read_all(self, store_name: str) -> list[dict[str, Any]]:
+        if self._idb_read_cache is not None and store_name in self._idb_read_cache:
+            return self._idb_read_cache[store_name]
         quoted_store = store_name.replace('\\', '\\\\').replace('"', '\\"')
         script = f'''window.__hermes_async_result = null;(function(){{const req=indexedDB.open("model-storage");req.onerror=()=>{{window.__hermes_async_result=JSON.stringify({{error:String(req.error)}});}};req.onsuccess=()=>{{const db=req.result;const tx=db.transaction("{quoted_store}","readonly");const os=tx.objectStore("{quoted_store}");const allRecords=[];const cursorReq=os.openCursor();cursorReq.onerror=()=>{{window.__hermes_async_result=JSON.stringify({{error:String(cursorReq.error)}});db.close();}};cursorReq.onsuccess=(event)=>{{const cursor=event.target.result;if(cursor){{allRecords.push({{ key: cursor.key, value: cursor.value }});cursor.continue();}} else {{window.__hermes_async_result=JSON.stringify(allRecords);db.close();}}}};}};}})();"started"'''
         payload = self.session.run_async_json(script)
         if isinstance(payload, dict) and payload.get("error"):
             raise ValueError(f"IndexedDB read failed for {store_name}: {payload['error']}")
-        return list(payload)
+        rows = list(payload)
+        if self._idb_read_cache is not None:
+            self._idb_read_cache[store_name] = rows
+        return rows
 
     @staticmethod
     def _normalized_chat_identity(value: str) -> str:
@@ -366,6 +456,84 @@ class WhatsAppCollector:
             display_name = self._resolve_display_name(jid, contacts_by_id.get(jid, {}), groups_by_id.get(jid, {}))
             excluded_names.add(self._normalized_chat_identity(display_name))
         return excluded_names
+
+    def _labels_for_jid(
+        self,
+        association_rows: list[dict[str, Any]],
+        labels_by_id: dict[str, dict[str, Any]],
+    ) -> dict[str, set[str]]:
+        labels_for_jid: dict[str, set[str]] = defaultdict(set)
+        for row in association_rows:
+            value = row.get("value")
+            if not isinstance(value, dict) or value.get("type") != "jid":
+                continue
+            association_id = value.get("associationId")
+            label = labels_by_id.get(value.get("labelId"))
+            if not isinstance(association_id, str) or not label:
+                continue
+            label_name = label.get("name")
+            if isinstance(label_name, str) and label_name.strip():
+                labels_for_jid[association_id].add(self._clean_label_name(label_name))
+        return labels_for_jid
+
+    def _labels_for_thread(self, jid: str, labels_for_jid: dict[str, set[str]]) -> list[str]:
+        return sorted({self._clean_label_name(label) for label in labels_for_jid.get(jid, set()) if label})
+
+    def _contact_for_chat(
+        self,
+        chat: dict[str, Any],
+        *,
+        contacts_by_id: dict[str, dict[str, Any]],
+        contacts_by_alias: dict[str, dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        for candidate in [chat.get("id"), chat.get("historyChatId"), chat.get("accountLid")]:
+            if isinstance(candidate, str) and candidate in contacts_by_id:
+                return contacts_by_id[candidate]
+            for alias in self._alias_keys_for_value(candidate):
+                match = contacts_by_alias.get(alias)
+                if match:
+                    return match
+        return None
+
+    def _group_for_chat(
+        self,
+        chat: dict[str, Any],
+        *,
+        groups_by_id: dict[str, dict[str, Any]],
+        groups_by_alias: dict[str, dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        for candidate in [chat.get("id"), chat.get("historyChatId"), chat.get("accountLid")]:
+            if isinstance(candidate, str) and candidate in groups_by_id:
+                return groups_by_id[candidate]
+            for alias in self._alias_keys_for_value(candidate):
+                match = groups_by_alias.get(alias)
+                if match:
+                    return match
+        return None
+
+    @staticmethod
+    def _resolve_chat_display_name(
+        jid: str,
+        *,
+        contact: dict[str, Any] | None,
+        group: dict[str, Any] | None,
+        chat: dict[str, Any],
+    ) -> str:
+        contact = contact or {}
+        group = group or {}
+        return (
+            contact.get("name")
+            or contact.get("shortName")
+            or group.get("subject")
+            or contact.get("displayNameLID")
+            or contact.get("phoneNumber")
+            or chat.get("formattedTitle")
+            or chat.get("title")
+            or chat.get("name")
+            or chat.get("historyChatId")
+            or chat.get("accountLid")
+            or jid
+        )
 
     @staticmethod
     def _is_trackable_all_view_row(row: ChatRow) -> bool:
@@ -489,6 +657,184 @@ class WhatsAppCollector:
                     "messages": [dict(message) for message in recent_messages],
                 }
             )
+        return recent_exports
+
+    def _recent_indexeddb_chat_exports(
+        self,
+        *,
+        existing_threads: list[dict[str, Any]],
+        excluded_labels: list[str],
+        max_messages: int,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        try:
+            label_rows = self._idb_read_all("label")
+            association_rows = self._idb_read_all("label-association")
+        except (RuntimeError, TimeoutError, ValueError):
+            label_rows = []
+            association_rows = []
+        try:
+            contact_rows = self._idb_read_all("contact")
+            group_rows = self._idb_read_all("group-metadata")
+            chat_rows = self._idb_read_all("chat")
+        except (RuntimeError, TimeoutError, ValueError):
+            return []
+
+        labels_by_id = {
+            row["value"]["id"]: row["value"]
+            for row in label_rows
+            if isinstance(row.get("value"), dict) and row["value"].get("id")
+        }
+        normalized_excluded_labels = self._normalized_label_set(excluded_labels)
+        labels_for_jid = self._labels_for_jid(association_rows, labels_by_id)
+        contacts_by_id = {
+            row["value"]["id"]: row["value"]
+            for row in contact_rows
+            if isinstance(row.get("value"), dict) and row["value"].get("id")
+        }
+        groups_by_id = {
+            row["value"]["id"]: row["value"]
+            for row in group_rows
+            if isinstance(row.get("value"), dict) and row["value"].get("id")
+        }
+        contacts_by_alias = self._contacts_by_normalized_name(contact_rows)
+        groups_by_alias = self._groups_by_normalized_name(group_rows)
+        message_rows = self._cached_idb_rows_if_loaded("message")
+        messages_by_jid = self._group_messages_by_jid(message_rows)
+
+        seen_thread_keys = {
+            str(thread.get("threadKey") or "").strip()
+            for thread in existing_threads
+            if str(thread.get("threadKey") or "").strip()
+        }
+        seen_titles = {
+            self._normalized_chat_identity(str(thread.get("chatTitle") or ""))
+            for thread in existing_threads
+            if str(thread.get("chatTitle") or "").strip()
+        }
+        recent_exports: list[dict[str, Any]] = []
+        recent_direct_count = 0
+        recent_group_count = 0
+
+        sorted_chat_rows = sorted(
+            [
+                row
+                for row in chat_rows
+                if isinstance(row.get("value"), dict) and row["value"].get("id")
+            ],
+            key=lambda row: ((row["value"].get("t") or 0), str(row["value"].get("id") or "")),
+            reverse=True,
+        )
+
+        for row in sorted_chat_rows:
+            chat = row["value"]
+            jid = str(chat.get("id") or "").strip()
+            if not jid or jid in seen_thread_keys:
+                continue
+            is_group_chat = jid.endswith("@g.us")
+            if is_group_chat:
+                if recent_group_count >= limit:
+                    continue
+            elif recent_direct_count >= limit:
+                continue
+
+            raw_labels = self._labels_for_thread(jid, labels_for_jid)
+            normalized_labels = {self._normalize_label_slug(label) for label in raw_labels}
+            if self._thread_has_only_excluded_labels(normalized_labels, normalized_excluded_labels):
+                continue
+
+            contact = self._contact_for_chat(chat, contacts_by_id=contacts_by_id, contacts_by_alias=contacts_by_alias)
+            group = self._group_for_chat(chat, groups_by_id=groups_by_id, groups_by_alias=groups_by_alias)
+            display_name = self._resolve_chat_display_name(jid, contact=contact, group=group, chat=chat)
+            normalized_display_name = self._normalized_chat_identity(display_name)
+            if not normalized_display_name or normalized_display_name == "you" or normalized_display_name in seen_titles:
+                continue
+
+            phone_or_history_id = None
+            if contact:
+                phone_or_history_id = contact.get("phoneNumber")
+            if not phone_or_history_id:
+                phone_or_history_id = chat.get("historyChatId") or chat.get("accountLid")
+
+            candidate_messages = self._collect_candidate_messages(
+                self._candidate_message_keys_for_chat(chat, contact=contact, group=group),
+                messages_by_jid,
+            )
+            recent_messages = [
+                {
+                    "messageId": message.message_id,
+                    "timestamp": message.iso_timestamp,
+                    "direction": message.direction,
+                    "sender": message.sender,
+                    "text": message.text,
+                    "textAvailable": message.text_available,
+                    "messageType": message.message_type,
+                    "subtype": message.subtype,
+                }
+                for message in self._recent_messages_for_thread(
+                    jid=jid,
+                    display_name=display_name,
+                    phone_or_history_id=phone_or_history_id,
+                    messages=candidate_messages,
+                    preview="",
+                    max_messages=max_messages,
+                )
+            ]
+            latest_raw = self._latest_raw_message(candidate_messages)
+            latest_message = recent_messages[0] if recent_messages else None
+            last_message_at = (
+                (latest_message or {}).get("timestamp")
+                or self._format_timestamp((latest_raw or {}).get("t"))
+                or self._format_timestamp(chat.get("t"))
+            )
+            if not last_message_at:
+                continue
+
+            if latest_message:
+                last_direction = str(latest_message.get("direction") or "")
+                last_sender = latest_message.get("sender")
+                last_text = str(latest_message.get("text") or "")
+            else:
+                last_direction = self._message_direction(latest_raw or {}) if latest_raw else "unknown"
+                last_sender = (
+                    self._message_sender(latest_raw, display_name=display_name, direction=last_direction)
+                    if latest_raw
+                    else None
+                )
+                last_text = ""
+
+            labels_raw = raw_labels or ["Unlabeled"]
+            labels_normalized = [self._normalize_label_slug(label) for label in labels_raw]
+            unread = int(chat.get("unreadCount") or 0) > 0
+            requires_response = unread or bool({"follow-up", "important"} & set(labels_normalized))
+            recent_exports.append(
+                {
+                    "threadKey": jid,
+                    "chatTitle": display_name,
+                    "chatType": "group" if is_group_chat else "direct",
+                    "participants": [{"name": display_name, "phone": phone_or_history_id}],
+                    "labelsRaw": labels_raw,
+                    "labelsNormalized": labels_normalized,
+                    "unread": unread,
+                    "starred": False,
+                    "requiresResponse": requires_response,
+                    "lastMessageAt": last_message_at,
+                    "lastMessageDirection": last_direction,
+                    "lastMessageSender": last_sender,
+                    "lastMessageText": last_text,
+                    "sourceView": "indexeddb-recent",
+                    "recentMessages": recent_messages,
+                    "messages": [dict(message) for message in recent_messages],
+                }
+            )
+            if is_group_chat:
+                recent_group_count += 1
+            else:
+                recent_direct_count += 1
+            seen_thread_keys.add(jid)
+            seen_titles.add(normalized_display_name)
+            if recent_direct_count >= limit and recent_group_count >= limit:
+                break
         return recent_exports
 
     def _opened_chat_recent_messages_for_chat(self, chat_name: str, *, max_messages: int) -> list[dict[str, Any]]:
@@ -667,6 +1013,24 @@ class WhatsAppCollector:
                 keys.append(candidate)
         return keys
 
+    @classmethod
+    def _candidate_message_keys_for_chat(
+        cls,
+        chat: dict[str, Any],
+        *,
+        contact: dict[str, Any] | None,
+        group: dict[str, Any] | None,
+    ) -> list[str]:
+        keys: list[str] = []
+        seen: set[str] = set()
+        for value in [contact or {}, group or {}, chat]:
+            for key in ["id", "phoneNumber", "historyChatId", "accountLid", "name", "shortName", "displayNameLID", "subject", "formattedTitle", "title"]:
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate.strip() and candidate not in seen:
+                    seen.add(candidate)
+                    keys.append(candidate)
+        return keys
+
     @staticmethod
     def _collect_candidate_messages(candidate_keys: list[str], messages_by_jid: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
         collected: list[dict[str, Any]] = []
@@ -681,11 +1045,19 @@ class WhatsAppCollector:
                 collected.append(message)
         return collected
 
+    @staticmethod
+    def _latest_raw_message(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+        ordered = sorted(messages, key=lambda item: item.get("t") or 0, reverse=True)
+        return ordered[0] if ordered else None
+
     def _default_view_lookup_maps(self) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]]:
-        contact_rows = self._idb_read_all("contact")
-        group_rows = self._idb_read_all("group-metadata")
-        chat_rows = self._idb_read_all("chat")
-        message_rows = self._idb_read_all("message")
+        try:
+            contact_rows = self._idb_read_all("contact")
+            group_rows = self._idb_read_all("group-metadata")
+            chat_rows = self._idb_read_all("chat")
+            message_rows = self._idb_read_all("message")
+        except (RuntimeError, TimeoutError, ValueError):
+            return {}, {}, {}, {}, {}
         contacts_by_name = self._contacts_by_normalized_name(contact_rows)
         groups_by_name = self._groups_by_normalized_name(group_rows)
         chats_by_id = {row["value"]["id"]: row["value"] for row in chat_rows}

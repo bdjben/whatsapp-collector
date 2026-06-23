@@ -8,6 +8,7 @@ from whatsapp_collector.scheduler import (
     LAUNCH_AGENT_LABEL,
     ScheduleConfig,
     build_launch_agent_plist,
+    build_native_schedule_script,
     build_schedule_script,
     schedule_status_payload,
 )
@@ -23,10 +24,16 @@ def test_schedule_script_opens_menu_bar_app_and_posts_export_payload(tmp_path: P
     )
 
     assert 'open -g -a "WhatsApp Collector"' in script
-    assert "http://127.0.0.1:8765/api/status" in script
+    assert "http://127.0.0.1:8765/api/schedule" in script
+    assert "--max-time 2" in script
+    assert "http://127.0.0.1:8765/api/window/ensure" in script
     assert "http://127.0.0.1:8765/api/export/run" in script
     assert "--data-binary" in script
+    assert "mktemp -t whatsapp-collector-export" in script
+    assert "WhatsApp Collector scheduled export HTTP" in script
+    assert "restoredLastGood" in script
     assert str(payload_path) in script
+    assert "/Users/assistant/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json" not in script
     assert "crontab" not in script
 
 
@@ -49,6 +56,31 @@ def test_launch_agent_plist_runs_scheduler_script_every_interval(tmp_path: Path)
     assert info["RunAtLoad"] is True
     assert info["StandardOutPath"] == str(stdout_path)
     assert info["StandardErrorPath"] == str(stderr_path)
+
+
+def test_native_schedule_script_runs_bridge_without_localhost(tmp_path: Path) -> None:
+    bridge_path = tmp_path / "native_bridge.py"
+    payload_path = tmp_path / "payload.json"
+    bridge_path.write_text("#!/usr/bin/env python3\n")
+    payload_path.write_text(json.dumps({"maxMessages": 15, "outputPath": "/tmp/export.json"}))
+
+    script = build_native_schedule_script(
+        bridge_path=bridge_path,
+        payload_path=payload_path,
+        python_executable="/opt/homebrew/bin/python3",
+        resource_dir=tmp_path / "Resources",
+        repo_root=tmp_path,
+    )
+
+    assert "native://bridge" not in script
+    assert "127.0.0.1" not in script
+    assert "curl" not in script
+    assert '"$PYTHON" "$BRIDGE_PATH" ensure-window' in script
+    assert '"$PYTHON" "$BRIDGE_PATH" run-export' in script
+    assert "WA_COLLECTOR_NATIVE_RESOURCE_DIR" in script
+    assert "WA_COLLECTOR_REPO_ROOT" in script
+    assert "restoredLastGood" in script
+    assert str(payload_path) in script
 
 
 def test_schedule_status_payload_is_user_readable(tmp_path: Path) -> None:

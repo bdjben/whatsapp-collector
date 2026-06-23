@@ -343,7 +343,11 @@ def default_collect_labels(
     target = ChromeTarget(marker_title=marker_title, marker_url_substring=marker_url_substring, target_url_substring=target_url)
     session = ChromeWhatsAppSession(target=target, debug_port=debug_port)
     collector = WhatsAppCollector(session=session)
-    return [label.name for label in collector.collect_labels()]
+    try:
+        labels = collector.collect_label_names_from_indexeddb()
+    except Exception:
+        labels = []
+    return labels or [label.name for label in collector.collect_labels()]
 
 
 def create_app_handler(
@@ -364,7 +368,7 @@ def create_app_handler(
                 self._send_html(render_dashboard_html(config))
                 return
             if self.path == "/api/status":
-                self._send_json({"ok": True, "checkedAt": _now(), "config": _public_config(config), "export": _read_export_summary(config.output_path)})
+                self._send_json({"ok": True, "checkedAt": _now(), "config": _public_config(config), "export": _read_export_summary(config.output_path, parse_json=False)})
                 return
             if self.path == "/api/schedule":
                 self._send_json({"ok": True, "checkedAt": _now(), "schedule": schedule_status()})
@@ -407,7 +411,11 @@ def create_app_handler(
                         target_url=effective.target_url,
                     )
                     _write_atomic_json(export, effective.output_path)
-                    self._send_json({"ok": True, "export": _read_export_summary(effective.output_path), "threadCount": len(export.get("threads", []))})
+                    thread_count = len(export.get("threads", [])) if isinstance(export.get("threads"), list) else 0
+                    summary = _read_export_summary(effective.output_path, parse_json=False)
+                    summary["threadCount"] = thread_count
+                    summary["exportedAt"] = export.get("exportedAt")
+                    self._send_json({"ok": True, "export": summary, "threadCount": thread_count})
                     return
                 if self.path == "/api/labels/prepopulate":
                     labels = _normalize_label_list(
@@ -538,11 +546,10 @@ def _interval_minutes_from_payload(payload: dict[str, Any]) -> int:
     return max(1, min(int(payload.get("intervalMinutes") or 15), 24 * 60))
 
 
-def _read_export_summary(output_path: Path) -> dict[str, Any]:
+def _read_export_summary(output_path: Path, *, parse_json: bool = True) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "path": str(output_path),
         "exists": output_path.exists(),
-        "threadCount": 0,
         "sizeBytes": 0,
         "updatedAt": None,
     }
@@ -551,6 +558,8 @@ def _read_export_summary(output_path: Path) -> dict[str, Any]:
     stat = output_path.stat()
     summary["sizeBytes"] = stat.st_size
     summary["updatedAt"] = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).replace(microsecond=0).isoformat()
+    if not parse_json:
+        return summary
     try:
         payload = json.loads(output_path.read_text())
     except Exception as exc:

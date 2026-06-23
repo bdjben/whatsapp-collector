@@ -28,6 +28,11 @@ class ScheduleConfig:
     interval_minutes: int
     ui_url: str
     payload: dict[str, Any]
+    mode: str = "web"
+    bridge_path: Path | None = None
+    python_executable: str | None = None
+    resource_dir: Path | None = None
+    repo_root: Path | None = None
     plist_path: Path = SCHEDULE_PLIST_PATH
     script_path: Path = SCHEDULE_SCRIPT_PATH
     payload_path: Path = SCHEDULE_PAYLOAD_PATH
@@ -35,22 +40,39 @@ class ScheduleConfig:
     stderr_path: Path = SCHEDULE_STDERR_PATH
 
 
-def default_schedule_config(*, ui_url: str = "http://127.0.0.1:8765", payload: dict[str, Any] | None = None, interval_minutes: int = DEFAULT_INTERVAL_MINUTES) -> ScheduleConfig:
+def default_schedule_config(
+    *,
+    ui_url: str = "http://127.0.0.1:8765",
+    payload: dict[str, Any] | None = None,
+    interval_minutes: int = DEFAULT_INTERVAL_MINUTES,
+    mode: str = "web",
+    bridge_path: Path | None = None,
+    python_executable: str | None = None,
+    resource_dir: Path | None = None,
+    repo_root: Path | None = None,
+) -> ScheduleConfig:
     return ScheduleConfig(
         interval_minutes=_bounded_interval_minutes(interval_minutes),
         ui_url=ui_url.rstrip("/"),
         payload=dict(payload or {}),
+        mode=mode,
+        bridge_path=bridge_path,
+        python_executable=python_executable,
+        resource_dir=resource_dir,
+        repo_root=repo_root,
     )
 
 
 def build_schedule_script(*, ui_url: str, payload_path: Path) -> str:
-    status_url = f"{ui_url.rstrip('/')}/api/status"
+    ready_url = f"{ui_url.rstrip('/')}/api/schedule"
+    window_ensure_url = f"{ui_url.rstrip('/')}/api/window/ensure"
     export_url = f"{ui_url.rstrip('/')}/api/export/run"
     return f"""#!/bin/sh
 set -eu
 
 APP_NAME={shlex.quote(APP_NAME)}
-STATUS_URL={shlex.quote(status_url)}
+READY_URL={shlex.quote(ready_url)}
+WINDOW_ENSURE_URL={shlex.quote(window_ensure_url)}
 EXPORT_URL={shlex.quote(export_url)}
 PAYLOAD_PATH={shlex.quote(str(payload_path))}
 
@@ -59,16 +81,157 @@ PAYLOAD_PATH={shlex.quote(str(payload_path))}
 
 attempt=0
 while [ "$attempt" -lt 60 ]; do
-  if /usr/bin/curl -fsS "$STATUS_URL" >/dev/null 2>&1; then
+  if /usr/bin/curl --max-time 2 -fsS "$READY_URL" >/dev/null 2>&1; then
     break
   fi
   attempt=$((attempt + 1))
   /bin/sleep 1
 done
 
-/usr/bin/curl -fsS -X POST "$EXPORT_URL" \
-  -H 'Content-Type: application/json' \
-  --data-binary @"$PAYLOAD_PATH"
+post_json() {{
+  url="$1"
+  output_path="$2"
+  http_code=$(/usr/bin/curl -sS -X POST "$url" \
+    -H 'Content-Type: application/json' \
+    --data-binary @"$PAYLOAD_PATH" \
+    -o "$output_path" \
+    -w '%{{http_code}}')
+  case "$http_code" in
+    2*) return 0 ;;
+    *)
+      echo "WhatsApp Collector scheduled export HTTP $http_code from $url" >&2
+      /bin/cat "$output_path" >&2
+      return 22
+      ;;
+  esac
+}}
+
+ensure_response="$(/usr/bin/mktemp -t whatsapp-collector-ensure)"
+tmp_response="$(/usr/bin/mktemp -t whatsapp-collector-export)"
+cleanup() {{
+  /bin/rm -f "$ensure_response" "$tmp_response"
+}}
+trap cleanup EXIT
+
+post_json "$WINDOW_ENSURE_URL" "$ensure_response"
+post_json "$EXPORT_URL" "$tmp_response"
+/bin/cat "$tmp_response"
+
+/usr/bin/python3 - "$tmp_response" "$PAYLOAD_PATH" <<'PY'
+import json
+import shutil
+import sys
+from pathlib import Path
+
+response_path = Path(sys.argv[1])
+payload_path = Path(sys.argv[2])
+response = json.loads(response_path.read_text())
+payload = json.loads(payload_path.read_text())
+
+export_summary = response.get("export") or {{}}
+count = int(response.get("threadCount") or export_summary.get("threadCount") or 0)
+if count > 0:
+    raise SystemExit(0)
+
+export_path_raw = export_summary.get("path") or payload.get("outputPath")
+if not export_path_raw:
+    raise SystemExit("WhatsApp export returned zero threads and no output path was available for last-good restore")
+
+export_path = Path(str(export_path_raw)).expanduser()
+backup_dir = export_path.parent / "backup"
+latest_good = None
+for candidate in sorted(backup_dir.glob(f"{{export_path.stem}}.*{{export_path.suffix}}"), reverse=True):
+    try:
+        data = json.loads(candidate.read_text())
+    except Exception:
+        continue
+    threads = data.get("threads")
+    if isinstance(threads, list) and len(threads) > 0:
+        latest_good = candidate
+        break
+
+if latest_good:
+    shutil.copy2(latest_good, export_path)
+    print(f"\\nrestoredLastGood={{latest_good}}", file=sys.stderr)
+raise SystemExit("WhatsApp export returned zero threads; restored last good export when available and refusing to report success")
+PY
+"""
+
+
+def build_native_schedule_script(
+    *,
+    bridge_path: Path,
+    payload_path: Path,
+    python_executable: str,
+    resource_dir: Path | None = None,
+    repo_root: Path | None = None,
+) -> str:
+    resource_dir = resource_dir or bridge_path.parent
+    repo_root_export = ""
+    if repo_root:
+        repo_root_export = f"WA_COLLECTOR_REPO_ROOT={shlex.quote(str(repo_root))}\nexport WA_COLLECTOR_REPO_ROOT\n"
+    return f"""#!/bin/sh
+set -eu
+
+PYTHON={shlex.quote(str(python_executable))}
+BRIDGE_PATH={shlex.quote(str(bridge_path))}
+PAYLOAD_PATH={shlex.quote(str(payload_path))}
+WA_COLLECTOR_NATIVE_RESOURCE_DIR={shlex.quote(str(resource_dir))}
+export WA_COLLECTOR_NATIVE_RESOURCE_DIR
+PYTHONDONTWRITEBYTECODE=1
+export PYTHONDONTWRITEBYTECODE
+{repo_root_export}
+# Run the native bridge directly. No localhost web server or app process is required.
+
+ensure_response="$(/usr/bin/mktemp -t whatsapp-collector-native-ensure)"
+tmp_response="$(/usr/bin/mktemp -t whatsapp-collector-native-export)"
+cleanup() {{
+  /bin/rm -f "$ensure_response" "$tmp_response"
+}}
+trap cleanup EXIT
+
+"$PYTHON" "$BRIDGE_PATH" ensure-window < "$PAYLOAD_PATH" > "$ensure_response"
+"$PYTHON" "$BRIDGE_PATH" run-export < "$PAYLOAD_PATH" > "$tmp_response"
+/bin/cat "$tmp_response"
+
+/usr/bin/python3 - "$tmp_response" "$PAYLOAD_PATH" <<'PY'
+import json
+import shutil
+import sys
+from pathlib import Path
+
+response_path = Path(sys.argv[1])
+payload_path = Path(sys.argv[2])
+response = json.loads(response_path.read_text())
+payload = json.loads(payload_path.read_text())
+
+export_summary = response.get("export") or {{}}
+count = int(response.get("threadCount") or export_summary.get("threadCount") or 0)
+if count > 0:
+    raise SystemExit(0)
+
+export_path_raw = export_summary.get("path") or payload.get("outputPath")
+if not export_path_raw:
+    raise SystemExit("WhatsApp export returned zero threads and no output path was available for last-good restore")
+
+export_path = Path(str(export_path_raw)).expanduser()
+backup_dir = export_path.parent / "backup"
+latest_good = None
+for candidate in sorted(backup_dir.glob(f"{{export_path.stem}}.*{{export_path.suffix}}"), reverse=True):
+    try:
+        data = json.loads(candidate.read_text())
+    except Exception:
+        continue
+    threads = data.get("threads")
+    if isinstance(threads, list) and len(threads) > 0:
+        latest_good = candidate
+        break
+
+if latest_good:
+    shutil.copy2(latest_good, export_path)
+    print(f"\\nrestoredLastGood={{latest_good}}", file=sys.stderr)
+raise SystemExit("WhatsApp export returned zero threads; restored last good export when available and refusing to report success")
+PY
 """
 
 
@@ -86,6 +249,33 @@ def build_launch_agent_plist(*, interval_minutes: int, script_path: Path, stdout
 
 def install_schedule(*, ui_url: str, payload: dict[str, Any], interval_minutes: int) -> dict[str, Any]:
     config = default_schedule_config(ui_url=ui_url, payload=payload, interval_minutes=interval_minutes)
+    _write_schedule_files(config)
+    _run(["plutil", "-lint", str(config.plist_path)])
+    _launchctl(["bootout", _launchctl_domain(), str(config.plist_path)], check=False)
+    _launchctl(["bootstrap", _launchctl_domain(), str(config.plist_path)], check=True)
+    _launchctl(["kickstart", "-k", f"{_launchctl_domain()}/{LAUNCH_AGENT_LABEL}"], check=False)
+    return schedule_status_payload(config, loaded=is_schedule_loaded())
+
+
+def install_native_schedule(
+    *,
+    bridge_path: Path,
+    python_executable: str,
+    payload: dict[str, Any],
+    interval_minutes: int,
+    resource_dir: Path | None = None,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    config = default_schedule_config(
+        ui_url="native://bridge",
+        payload=payload,
+        interval_minutes=interval_minutes,
+        mode="native",
+        bridge_path=bridge_path,
+        python_executable=python_executable,
+        resource_dir=resource_dir,
+        repo_root=repo_root,
+    )
     _write_schedule_files(config)
     _run(["plutil", "-lint", str(config.plist_path)])
     _launchctl(["bootout", _launchctl_domain(), str(config.plist_path)], check=False)
@@ -122,9 +312,14 @@ def schedule_status_payload(config: ScheduleConfig, *, loaded: bool) -> dict[str
         "enabled": enabled,
         "loaded": bool(loaded),
         "label": LAUNCH_AGENT_LABEL,
+        "mode": config.mode,
         "intervalMinutes": config.interval_minutes,
         "uiUrl": config.ui_url,
         "payload": config.payload,
+        "bridgePath": str(config.bridge_path) if config.bridge_path else None,
+        "pythonExecutable": config.python_executable,
+        "resourceDir": str(config.resource_dir) if config.resource_dir else None,
+        "repoRoot": str(config.repo_root) if config.repo_root else None,
         "plistPath": str(config.plist_path),
         "scriptPath": str(config.script_path),
         "payloadPath": str(config.payload_path),
@@ -145,6 +340,11 @@ def load_schedule_config() -> ScheduleConfig:
         ui_url=str(state.get("uiUrl") or "http://127.0.0.1:8765"),
         payload=dict(state.get("payload") or {}),
         interval_minutes=int(state.get("intervalMinutes") or DEFAULT_INTERVAL_MINUTES),
+        mode=str(state.get("mode") or "web"),
+        bridge_path=Path(state["bridgePath"]) if state.get("bridgePath") else None,
+        python_executable=str(state["pythonExecutable"]) if state.get("pythonExecutable") else None,
+        resource_dir=Path(state["resourceDir"]) if state.get("resourceDir") else None,
+        repo_root=Path(state["repoRoot"]) if state.get("repoRoot") else None,
     )
 
 
@@ -157,7 +357,19 @@ def _write_schedule_files(config: ScheduleConfig) -> None:
     for directory in (SUPPORT_DIR, LOG_DIR, LAUNCH_AGENTS_DIR):
         directory.mkdir(parents=True, exist_ok=True)
     config.payload_path.write_text(json.dumps(config.payload, indent=2, ensure_ascii=False) + "\n")
-    config.script_path.write_text(build_schedule_script(ui_url=config.ui_url, payload_path=config.payload_path))
+    if config.mode == "native":
+        if config.bridge_path is None or not config.python_executable:
+            raise ValueError("Native schedules require a bridge path and Python executable")
+        script = build_native_schedule_script(
+            bridge_path=config.bridge_path,
+            payload_path=config.payload_path,
+            python_executable=config.python_executable,
+            resource_dir=config.resource_dir,
+            repo_root=config.repo_root,
+        )
+    else:
+        script = build_schedule_script(ui_url=config.ui_url, payload_path=config.payload_path)
+    config.script_path.write_text(script)
     config.script_path.chmod(0o755)
     config.plist_path.write_bytes(
         build_launch_agent_plist(
@@ -172,7 +384,12 @@ def _write_schedule_files(config: ScheduleConfig) -> None:
             {
                 "intervalMinutes": config.interval_minutes,
                 "uiUrl": config.ui_url,
+                "mode": config.mode,
                 "payload": config.payload,
+                "bridgePath": str(config.bridge_path) if config.bridge_path else None,
+                "pythonExecutable": config.python_executable,
+                "resourceDir": str(config.resource_dir) if config.resource_dir else None,
+                "repoRoot": str(config.repo_root) if config.repo_root else None,
                 "plistPath": str(config.plist_path),
                 "scriptPath": str(config.script_path),
                 "payloadPath": str(config.payload_path),

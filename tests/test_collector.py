@@ -1,5 +1,6 @@
 from whatsapp_collector.collector import (
     CHAT_LIST_BODY_JS,
+    CHAT_LIST_RESET_JS,
     DEFAULT_EXCLUDED_LABELS,
     LABELS_BODY_JS,
     WhatsAppCollector,
@@ -179,7 +180,9 @@ class StubSession:
 
 def test_navigation_js_targets_all_and_collapsed_labels_filter() -> None:
     assert 'getElementById("labels-filter")' in LABELS_BODY_JS
+    assert 'CHAT_LIST_RESET' in CHAT_LIST_RESET_JS
     assert 'getElementById("all-filter")' in CHAT_LIST_BODY_JS
+    assert 'scrollTop=0' in CHAT_LIST_RESET_JS
     assert '\\d{1,2}:\\d{2}(?:\\s?[AP]M)?' in CHAT_LIST_BODY_JS
 
 
@@ -278,6 +281,16 @@ def test_collect_snapshot_returns_structured_models() -> None:
             ),
         ],
     )
+
+
+def test_collect_label_names_from_indexeddb_reads_label_store_without_ui_navigation() -> None:
+    session = StubSession()
+    collector = WhatsAppCollector(session=session)
+
+    labels = collector.collect_label_names_from_indexeddb()
+
+    assert labels == ["Excluded Label", "Follow Up", "Important"]
+    assert not any("LABELS_BODY" in call for call in session.calls)
 
 
 def test_collect_chat_list_prefers_structured_dom_rows_for_all_view_order() -> None:
@@ -864,6 +877,185 @@ def test_collect_dashboard_export_opens_chat_and_uses_true_message_ids_when_inde
     assert session.clicked
 
 
+def test_collect_dashboard_export_includes_recent_unlabeled_indexeddb_chat_absent_from_visible_dom() -> None:
+    class RecentIndexedDbOnlySession:
+        def click_point(self, expression: str):
+            return {"x": 10, "y": 20}
+
+        def run_json(self, js: str):
+            if "PAGE_META" in js:
+                return {"title": "WhatsApp Business", "url": "https://web.whatsapp.com/"}
+            if "LABELS_BODY" in js:
+                return {"body": "Labels"}
+            if "CHAT_LIST_RESET" in js:
+                return {"ok": True}
+            if "CHAT_LIST_BODY" in js:
+                return {
+                    "rows": [
+                        {
+                            "chat_name": "Older Visible Chat",
+                            "timestamp_label": "5/19/2026",
+                            "preview": "Visible but stale",
+                            "unread_count": 0,
+                            "unread_flag": False,
+                        },
+                    ],
+                    "body": "All",
+                }
+            if "OPENED_CHAT_RECENT_MESSAGES" in js:
+                raise RuntimeError("visible fallback open failed")
+            raise AssertionError(f"Unexpected js: {js}")
+
+        def run_async_json(self, script: str, result_var: str = "__hermes_async_result"):
+            if 'objectStoreNames' in script and 'model-storage' in script:
+                return {"stores": ["chat", "contact", "group-metadata", "label", "label-association", "message"]}
+            if '"label"' in script or '"label-association"' in script or '"group-metadata"' in script:
+                return []
+            if '"contact"' in script:
+                return [
+                    {
+                        "key": "130266408456240@lid",
+                        "value": {
+                            "id": "130266408456240@lid",
+                            "name": "Tamar Simon",
+                            "shortName": "Tamar",
+                            "phoneNumber": "19176706824@c.us",
+                        },
+                    },
+                    {
+                        "key": "old-visible@lid",
+                        "value": {
+                            "id": "old-visible@lid",
+                            "name": "Older Visible Chat",
+                            "phoneNumber": "15550100@c.us",
+                        },
+                    },
+                ]
+            if '"chat"' in script:
+                return [
+                    {
+                        "key": "130266408456240@lid",
+                        "value": {
+                            "id": "130266408456240@lid",
+                            "historyChatId": "19176706824@c.us",
+                            "accountLid": "130266408456240@lid",
+                            "t": 1781987078,
+                            "unreadCount": 0,
+                        },
+                    },
+                    {
+                        "key": "old-visible@lid",
+                        "value": {
+                            "id": "old-visible@lid",
+                            "historyChatId": "15550100@c.us",
+                            "t": 1776500000,
+                            "unreadCount": 0,
+                        },
+                    },
+                ]
+            if '"message"' in script:
+                return [
+                    {
+                        "key": "false_130266408456240@lid_3A10D07C58D1942520BA",
+                        "value": {
+                            "id": "false_130266408456240@lid_3A10D07C58D1942520BA",
+                            "t": 1781987078,
+                            "type": "chat",
+                            "from": "130266408456240@lid",
+                        },
+                    },
+                ]
+            raise AssertionError(f"Unexpected async script: {script[:200]}")
+
+    payload = WhatsAppCollector(session=RecentIndexedDbOnlySession()).collect_dashboard_export(
+        account_label="WhatsApp",
+        allow_labels=[],
+        max_all_chats=5,
+    )
+
+    tamar = next(thread for thread in payload["threads"] if thread["chatTitle"] == "Tamar Simon")
+    assert tamar["threadKey"] == "130266408456240@lid"
+    assert tamar["labelsRaw"] == ["Unlabeled"]
+    assert tamar["sourceView"] == "indexeddb-recent"
+    assert tamar["lastMessageAt"] == "2026-06-20T20:24:38+00:00"
+    assert tamar["lastMessageDirection"] == "inbound"
+    assert tamar["lastMessageSender"] == "130266408456240@lid"
+    assert tamar["lastMessageText"] == ""
+    assert tamar["recentMessages"] == []
+
+
+def test_collect_dashboard_export_keeps_recent_direct_indexeddb_chats_when_groups_are_newer() -> None:
+    class NewerGroupsSession:
+        def click_point(self, expression: str):
+            return {"x": 10, "y": 20}
+
+        def run_json(self, js: str):
+            if "PAGE_META" in js:
+                return {"title": "WhatsApp Business", "url": "https://web.whatsapp.com/"}
+            if "LABELS_BODY" in js:
+                return {"body": "Labels"}
+            if "CHAT_LIST_RESET" in js:
+                return {"ok": True}
+            if "CHAT_LIST_BODY" in js:
+                return {"rows": [], "body": "All"}
+            if "OPENED_CHAT_RECENT_MESSAGES" in js:
+                raise RuntimeError("no visible rows")
+            raise AssertionError(f"Unexpected js: {js}")
+
+        def run_async_json(self, script: str, result_var: str = "__hermes_async_result"):
+            if 'objectStoreNames' in script and 'model-storage' in script:
+                return {"stores": ["chat", "contact", "group-metadata", "label", "label-association", "message"]}
+            if '"label"' in script or '"label-association"' in script or '"message"' in script:
+                return []
+            if '"contact"' in script:
+                return [
+                    {
+                        "key": "130266408456240@lid",
+                        "value": {
+                            "id": "130266408456240@lid",
+                            "name": "Tamar Simon",
+                            "phoneNumber": "19176706824@c.us",
+                        },
+                    },
+                ]
+            if '"group-metadata"' in script:
+                return [
+                    {"key": "group-a@g.us", "value": {"id": "group-a@g.us", "subject": "Newer Group A"}},
+                    {"key": "group-b@g.us", "value": {"id": "group-b@g.us", "subject": "Newer Group B"}},
+                ]
+            if '"chat"' in script:
+                return [
+                    {
+                        "key": "group-a@g.us",
+                        "value": {"id": "group-a@g.us", "t": 1782049000, "unreadCount": 0},
+                    },
+                    {
+                        "key": "group-b@g.us",
+                        "value": {"id": "group-b@g.us", "t": 1782048000, "unreadCount": 0},
+                    },
+                    {
+                        "key": "130266408456240@lid",
+                        "value": {
+                            "id": "130266408456240@lid",
+                            "historyChatId": "19176706824@c.us",
+                            "accountLid": "130266408456240@lid",
+                            "t": 1781987078,
+                            "unreadCount": 0,
+                        },
+                    },
+                ]
+            raise AssertionError(f"Unexpected async script: {script[:200]}")
+
+    payload = WhatsAppCollector(session=NewerGroupsSession()).collect_dashboard_export(
+        account_label="WhatsApp",
+        allow_labels=[],
+        max_all_chats=1,
+    )
+
+    indexeddb_titles = [thread["chatTitle"] for thread in payload["threads"] if thread.get("sourceView") == "indexeddb-recent"]
+    assert indexeddb_titles == ["Newer Group A", "Tamar Simon"]
+
+
 def test_collect_dashboard_export_skips_unlabeled_open_chat_runtime_failures_instead_of_failing_export() -> None:
     class FailingOpenedChatSession:
         def click_point(self, expression: str):
@@ -906,7 +1098,164 @@ def test_collect_dashboard_export_skips_unlabeled_open_chat_runtime_failures_ins
 
     payload = WhatsAppCollector(session=FailingOpenedChatSession()).collect_dashboard_export(account_label="WhatsApp", allow_labels=[])
 
-    assert payload["threads"] == []
+    assert payload["threads"] == [
+        {
+            "threadKey": "1234567890@lid",
+            "chatTitle": "15550101@c.us",
+            "chatType": "direct",
+            "participants": [{"name": "15550101@c.us", "phone": "15550101@c.us"}],
+            "labelsRaw": ["Unlabeled"],
+            "labelsNormalized": ["unlabeled"],
+            "unread": False,
+            "starred": False,
+            "requiresResponse": False,
+            "lastMessageAt": "2026-04-20T13:54:23+00:00",
+            "lastMessageDirection": "inbound",
+            "lastMessageSender": "1234567890@lid",
+            "lastMessageText": "",
+            "sourceView": "indexeddb-recent",
+            "recentMessages": [],
+            "messages": [],
+        }
+    ]
+
+
+def test_collect_dashboard_export_uses_all_view_when_label_indexeddb_times_out() -> None:
+    class LabelTimeoutSession:
+        def run_json(self, js: str):
+            if "PAGE_META" in js:
+                return {"title": "WhatsApp Business", "url": "https://web.whatsapp.com/"}
+            if "LABELS_BODY" in js:
+                return {"body": "Labels"}
+            if "CHAT_LIST_BODY" in js:
+                return {
+                    "rows": [
+                        {
+                            "chat_name": "Example Lead",
+                            "timestamp_label": "Today",
+                            "preview": "Need help with an OpenClaw dashboard",
+                            "unread_count": 1,
+                            "unread_flag": True,
+                        },
+                    ],
+                    "body": "All",
+                }
+            raise AssertionError(f"Unexpected js: {js}")
+
+        def run_async_json(self, script: str, result_var: str = "__hermes_async_result"):
+            if 'objectStoreNames' in script and 'model-storage' in script:
+                return {"stores": ["chat", "contact", "group-metadata", "label", "label-association", "message"]}
+            if '"label"' in script:
+                raise RuntimeError("Timed out waiting for Chrome async result variable __hermes_async_result")
+            if '"label-association"' in script or '"group-metadata"' in script:
+                return []
+            if '"contact"' in script:
+                return [
+                    {
+                        "key": "15550101@s.whatsapp.net",
+                        "value": {
+                            "id": "15550101@s.whatsapp.net",
+                            "name": "Example Lead",
+                            "phoneNumber": "15550101@c.us",
+                        },
+                    }
+                ]
+            if '"chat"' in script:
+                return [
+                    {
+                        "key": "1234567890@lid",
+                        "value": {
+                            "id": "1234567890@lid",
+                            "historyChatId": "15550101@c.us",
+                            "t": 1776693263,
+                            "unreadCount": 1,
+                        },
+                    }
+                ]
+            if '"message"' in script:
+                return [
+                    {
+                        "key": "false_1234567890@lid_3EB0META",
+                        "value": {
+                            "id": "false_1234567890@lid_3EB0META",
+                            "t": 1776693263,
+                            "type": "chat",
+                            "from": "15550101@c.us",
+                            "body": "Need help with an OpenClaw dashboard",
+                        },
+                    }
+                ]
+            raise AssertionError(f"Unexpected async script: {script[:200]}")
+
+    payload = WhatsAppCollector(session=LabelTimeoutSession()).collect_dashboard_export(account_label="WhatsApp", allow_labels=[])
+
+    assert payload["threads"][0]["chatTitle"] == "Example Lead"
+    assert payload["threads"][0]["labelsRaw"] == ["Unlabeled"]
+    assert payload["threads"][0]["recentMessages"][0]["text"] == "Need help with an OpenClaw dashboard"
+    assert any(warning.startswith("labeled-thread-export-skipped:RuntimeError") for warning in payload["exportWarnings"])
+    assert any(warning.startswith("excluded-label-filter-skipped:RuntimeError") for warning in payload["exportWarnings"])
+
+
+def test_collect_dashboard_export_opens_visible_chat_when_default_lookup_maps_timeout() -> None:
+    class DefaultLookupTimeoutSession:
+        def __init__(self) -> None:
+            self.clicked = []
+
+        def click_point(self, expression: str):
+            self.clicked.append(expression)
+            return {"x": 100, "y": 200}
+
+        def run_json(self, js: str):
+            if "PAGE_META" in js:
+                return {"title": "WhatsApp Business", "url": "https://web.whatsapp.com/"}
+            if "LABELS_BODY" in js:
+                return {"body": "Labels"}
+            if "CHAT_LIST_BODY" in js:
+                return {
+                    "rows": [
+                        {
+                            "chat_name": "Example Lead",
+                            "timestamp_label": "Today",
+                            "preview": "Can you help with OpenClaw?",
+                            "unread_count": 1,
+                            "unread_flag": True,
+                        },
+                    ],
+                    "body": "All",
+                }
+            if "OPENED_CHAT_RECENT_MESSAGES" in js:
+                return {
+                    "openedChatTitle": "Example Lead",
+                    "messages": [
+                        {
+                            "id": "false_visible_msg",
+                            "t": 1776693263,
+                            "type": "chat",
+                            "from": "15550101@c.us",
+                            "body": "Can you help with OpenClaw?",
+                        }
+                    ],
+                }
+            raise AssertionError(f"Unexpected js: {js}")
+
+        def run_async_json(self, script: str, result_var: str = "__hermes_async_result"):
+            if 'objectStoreNames' in script and 'model-storage' in script:
+                return {"stores": ["chat", "contact", "group-metadata", "label", "label-association", "message"]}
+            if '"label"' in script or '"label-association"' in script or '"group-metadata"' in script:
+                return []
+            if '"contact"' in script:
+                raise TimeoutError("Timed out waiting for Chrome async result variable __hermes_async_result")
+            if '"chat"' in script or '"message"' in script:
+                return []
+            raise AssertionError(f"Unexpected async script: {script[:200]}")
+
+    session = DefaultLookupTimeoutSession()
+    payload = WhatsAppCollector(session=session).collect_dashboard_export(account_label="WhatsApp", allow_labels=[])
+
+    assert payload["threads"][0]["chatTitle"] == "Example Lead"
+    assert payload["threads"][0]["threadKey"] == "visible:example-lead"
+    assert payload["threads"][0]["recentMessages"][0]["messageId"] == "false_visible_msg"
+    assert session.clicked
 
 
 def test_collect_dashboard_export_resolves_unlabeled_threads_via_chat_aliases_and_phone_digits_without_preview_fallback() -> None:

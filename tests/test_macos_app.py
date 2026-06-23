@@ -16,31 +16,38 @@ def _load_builder():
     return module
 
 
-def test_macos_app_builder_creates_menu_bar_bundle_scaffold(tmp_path: Path) -> None:
-    builder = _load_builder()
+def _make_project(tmp_path: Path) -> Path:
     project = tmp_path / "project"
-    dist = tmp_path / "dist"
-    (project / "dist").mkdir(parents=True)
-    (project / "dist" / "whatsapp-collector.pyz").write_text("#!/usr/bin/env python3\n")
+    (project / "native-macos" / "Support").mkdir(parents=True)
+    (project / "native-macos" / "Package.swift").write_text("// swift package marker\n")
+    (project / "native-macos" / "Support" / "native_bridge.py").write_text("#!/usr/bin/env python3\n")
+    (project / "native-macos" / "Support" / "generate_icon.swift").write_text("// icon generator marker\n")
+    (project / "src" / "whatsapp_collector").mkdir(parents=True)
+    (project / "src" / "whatsapp_collector" / "__init__.py").write_text("")
+    (project / "src" / "whatsapp_collector" / "collector.py").write_text("# collector marker\n")
+    return project
 
-    app_path = builder.build_macos_app(project, dist, compile_app=False)
+
+def test_macos_app_builder_creates_native_bundle_scaffold(tmp_path: Path) -> None:
+    builder = _load_builder()
+    project = _make_project(tmp_path)
+    dist = tmp_path / "dist"
+
+    app_path = builder.build_macos_app(project, dist, compile_app=False, sign_app=False)
 
     assert app_path.name == "WhatsApp Collector.app"
     info = plistlib.loads((app_path / "Contents" / "Info.plist").read_bytes())
     assert info["CFBundleName"] == "WhatsApp Collector"
-    assert info["LSUIElement"] is True
-    assert info["CFBundleIconFile"] == "WhatsAppCollector"
-    assert (app_path / "Contents" / "Resources" / "whatsapp-collector.pyz").exists()
-    assert (app_path / "Contents" / "Resources" / "WhatsAppCollectorIcon.svg").exists()
-    swift_source = (app_path / "Contents" / "Resources" / "WhatsAppCollectorMenu.swift").read_text()
-    assert "NSStatusBar.system.statusItem" in swift_source
-    assert "Open WhatsApp Collector UI" in swift_source
-    assert "Show Output Folder" in swift_source
-    assert "Copy Output JSON Path" in swift_source
-    assert "Copy AI Harness Prompt" in swift_source
-    assert "most recent WhatsApp Collector export is at" in swift_source
-    assert "~/Documents/WhatsApp Collector/Exports" in swift_source
-    assert "W↗" in swift_source
+    assert info["CFBundleExecutable"] == "WhatsAppCollectorNative"
+    assert info["CFBundleIconFile"] == "AppIcon"
+    assert info["LSMinimumSystemVersion"] == "14.0"
+    assert "LSUIElement" not in info
+    assert info["SUFeedURL"] == "https://github.com/bdjben/whatsapp-collector/releases/latest/download/appcast.xml"
+    assert info["SUPublicEDKey"] == "5rau7VI4KCvnHSD4dI1xXTSek9PijJJgOFgsRjcIb58="
+    assert info["SUEnableAutomaticChecks"] is True
+    assert (app_path / "Contents" / "Resources" / "native_bridge.py").exists()
+    assert (app_path / "Contents" / "Resources" / "python" / "whatsapp_collector" / "collector.py").exists()
+    assert not (app_path / "Contents" / "Resources" / "whatsapp-collector.pyz").exists()
 
 
 def test_macos_app_builder_uses_accessible_document_output_folder() -> None:
@@ -50,14 +57,13 @@ def test_macos_app_builder_uses_accessible_document_output_folder() -> None:
     assert builder.DEFAULT_APP_OUTPUT_JSON == "~/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json"
     assert builder.DEFAULT_APP_PROFILE_DIR == "~/Library/Application Support/WhatsApp Collector/Chrome Profile"
     assert builder.DMG_NAME == "WhatsApp-Collector-macOS.dmg"
+    assert builder.SPARKLE_FEED_URL.endswith("/appcast.xml")
 
 
 def test_macos_app_builder_signs_bundle_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     builder = _load_builder()
-    project = tmp_path / "project"
+    project = _make_project(tmp_path)
     dist = tmp_path / "dist"
-    (project / "dist").mkdir(parents=True)
-    (project / "dist" / "whatsapp-collector.pyz").write_text("#!/usr/bin/env python3\n")
     calls: list[list[str]] = []
 
     def fake_run(command, **kwargs):
@@ -78,11 +84,9 @@ def test_macos_app_builder_signs_bundle_by_default(tmp_path: Path, monkeypatch: 
 
 def test_macos_app_builder_can_use_developer_id_identity_with_hardened_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     builder = _load_builder()
-    project = tmp_path / "project"
+    project = _make_project(tmp_path)
     dist = tmp_path / "dist"
     identity = "Developer ID Application: Example LLC (ABCDE12345)"
-    (project / "dist").mkdir(parents=True)
-    (project / "dist" / "whatsapp-collector.pyz").write_text("#!/usr/bin/env python3\n")
     calls: list[list[str]] = []
 
     def fake_run(command, **kwargs):
@@ -160,3 +164,26 @@ def test_macos_dmg_builder_creates_drag_to_applications_layout(tmp_path: Path, m
     hdiutil_call = next(call for call in calls if call[:2] == ["hdiutil", "create"])
     assert "-volname" in hdiutil_call
     assert "WhatsApp Collector" in hdiutil_call
+
+
+def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> None:
+    project = Path(__file__).resolve().parents[1]
+    app_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "App" / "WhatsAppCollectorNativeApp.swift").read_text()
+    section_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Models" / "AppSection.swift").read_text()
+    help_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Views" / "HelpView.swift").read_text()
+    migration_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Support" / "LegacyAppMigration.swift").read_text()
+    store_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Stores" / "CollectorStore.swift").read_text()
+
+    assert 'MenuBarExtra("W↗")' in app_source
+    assert "NSWindow.allowsAutomaticWindowTabbing = false" in app_source
+    assert "closeDuplicateMainWindows()" in app_source
+    assert 'case .dashboard: "WhatsApp Collector Dashboard"' in section_source
+    assert "case help" in section_source
+    assert "Older App Cleanup" in help_source
+    assert "whatsapp-collector.pyz" in migration_source
+    assert "WhatsAppCollectorMenu.swift" in migration_source
+    assert "LSUIElement" in migration_source
+    assert "trashItem" in migration_source
+    assert "legacy-app-" in migration_source
+    assert store_source.index('alert.addButton(withTitle: "Not Now")') < store_source.index('alert.addButton(withTitle: "Back Up Exports and Move Old App to Trash")')
+    assert "alertSecondButtonReturn" in store_source

@@ -1,14 +1,40 @@
 # WhatsApp Collector
 
+![macOS](https://img.shields.io/badge/macOS-native%20SwiftUI-0A84FF)
+![Read only](https://img.shields.io/badge/WhatsApp-read--only-25D366)
+![Sparkle](https://img.shields.io/badge/updates-Sparkle-7C3AED)
+![License](https://img.shields.io/badge/license-MIT-111827)
+
 Read-only WhatsApp Web collector for macOS. It works with both WhatsApp Web and WhatsApp Business Web, turning an already logged-in Chrome session into structured JSON exports for dashboards, automations, and local reporting.
 
 This project is deliberately not a bot and not a sender. It never types into WhatsApp, never targets the composer, never clicks send, and never creates outbound messages.
 
+## What you get
+
+| Surface | Purpose |
+| --- | --- |
+| Native macOS app | A proper SwiftUI window for login, export, labels, preview, automation, diagnostics, help, and updates. |
+| Stable JSON export | `~/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json`, ready for local AI agents. |
+| Dedicated Chrome profile | Keeps the collector session isolated from normal browsing and targets WhatsApp Web through DevTools. |
+| Label-aware collection | Reads WhatsApp labels from IndexedDB and preserves labeled-thread membership in the export. |
+| Safe automation | A user LaunchAgent can refresh exports on a schedule without a localhost web UI. |
+
+## Quick start
+
+```bash
+curl -L -o WhatsApp-Collector-macOS.dmg \
+  https://github.com/bdjben/whatsapp-collector/releases/latest/download/WhatsApp-Collector-macOS.dmg
+open WhatsApp-Collector-macOS.dmg
+```
+
+Drag `WhatsApp Collector.app` to Applications, launch it, click **Launch / Login**, confirm WhatsApp Web is logged in, then click **Run Export**.
+
 ## Features
 
 - Installable Python package with a `whatsapp-collector` CLI.
-- Drag-to-Applications macOS menu bar app (`W↗`) distributed as a signed DMG with the usual app-to-Applications install flow.
-- Local polished web UI via `whatsapp-collector ui` for login/setup, export runs, settings, status, and export preview.
+- Drag-to-Applications native Swift macOS app distributed as a signed DMG with the usual app-to-Applications install flow.
+- Native macOS control window with a sidebar, dashboard, label rules, export preview, automation, diagnostics, help, and a menu bar extra.
+- Optional local web UI via `whatsapp-collector ui` for CLI development and backwards-compatible operation.
 - Active Chrome session collection through AppleScript JavaScript from Apple Events.
 - Optional dedicated Chrome profile collection through Chrome DevTools Protocol for exact no-focus targeting.
 - No default display-name assumption: the dedicated window uses the first available macOS display unless `--display-name` is provided.
@@ -18,6 +44,7 @@ This project is deliberately not a bot and not a sender. It never types into Wha
 - Configurable bounded recent-message windows through `--max-messages` or `WA_MAX_MESSAGES`, plus configurable recent-chat coverage from WhatsApp Web's All view through `--max-all-chats`.
 - Stable export contract at `~/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json` by default for the UI/macOS app.
 - Atomic JSON writes with automatic backups before replacing an existing export.
+- First-launch detection for the older menu-bar/web UI app, with permission-gated export backup and removal to Trash.
 - Runtime guardrails against send/composer JavaScript paths.
 
 ## Mac app
@@ -34,14 +61,17 @@ A Finder window opens with `WhatsApp Collector.app` and an `Applications` shortc
 
 Release DMGs can be Developer ID signed, Apple-notarized, and stapled. Those notarized releases should open normally without the unidentified-developer first-launch warning. Local development builds fall back to ad-hoc signing unless a Developer ID identity is provided.
 
-The app lives in the macOS menu bar as `W↗`. Use that menu to:
+The app opens as a normal macOS window and also provides a compact menu bar extra. Use the window to:
 
-- open the local WhatsApp Collector UI
-- show the output folder in Finder
-- copy the exact output JSON path
-- copy a ready-to-paste AI harness prompt that points at the latest export
-- restart the local UI server
-- quit the app
+- launch or focus the dedicated WhatsApp Web / WhatsApp Business Web Chrome profile
+- run an export without opening a browser-based collector UI
+- load the current WhatsApp label inventory and choose per-label allow/exclude rules
+- preview the exported threads and recent messages in a native split view
+- configure automatic exports through a macOS LaunchAgent
+- check for future app updates through Sparkle
+- inspect bridge diagnostics and reveal/copy the output path or AI harness prompt
+
+The `W↗` menu bar extra provides quick access to the main window, Launch / Login, Run Export, Copy Prompt, Reveal Export, Check for Updates, and Quit.
 
 The app writes exports to a normal visible folder by default:
 
@@ -50,6 +80,8 @@ The app writes exports to a normal visible folder by default:
 ```
 
 Deleting the app from `/Applications` removes the app itself. Your exported JSON files remain in `~/Documents/WhatsApp Collector/Exports` so you do not accidentally lose collected data.
+
+If an older pre-native `WhatsApp Collector.app` is still installed in `/Applications`, the native app detects the old wrapper markers (`LSUIElement`, bundled `whatsapp-collector.pyz`, and generated menu source), asks for permission, backs up the export folder to `~/Documents/WhatsApp Collector/Backups/legacy-app-YYYYMMDD-HHMMSS/`, and moves the old app to Trash. You can also run this check from **Help -> Older App Cleanup**.
 
 ### If Launch / Login or Run Export says `No such file or directory: 'node'`
 
@@ -67,9 +99,28 @@ After installing a fixed DMG:
 4. Confirm WhatsApp Web is logged in.
 5. Click **Run Export** again.
 
-## UI
+## Native App UI
 
-Start the local UI from the menu bar app, or from the CLI:
+The macOS app is the primary UI. It does not host the collector controls at `127.0.0.1:8765`; it runs short-lived native bridge commands and renders state directly in SwiftUI.
+
+The app provides:
+
+- **Dashboard**, with export freshness, schedule state, launch/login, run export, prompt, output/profile paths, and collection limits.
+- **Labels**, where "Ignore", "Allow", and "Exclude" are explicit native choices for each WhatsApp label. Loading labels reads WhatsApp Web's IndexedDB label store through the existing read-only DevTools path, so it does not depend on brittle visible-menu scraping.
+- **Export Preview**, a searchable master-detail view over the same `threads[]` JSON that AI agents consume.
+- **Automation**, which installs a user LaunchAgent that calls the native bridge directly. No localhost web server has to be running for scheduled exports.
+- **Diagnostics**, with raw bridge responses for debugging Chrome, scheduling, and export failures.
+- **Help**, with setup steps, label-rule explanations, AI-agent file paths, and an older-app cleanup action.
+
+The stable output file remains:
+
+```text
+~/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json
+```
+
+## Optional Web UI
+
+The older local web UI remains available from the CLI:
 
 ```bash
 whatsapp-collector ui
@@ -81,7 +132,7 @@ Then open:
 http://127.0.0.1:8765/
 ```
 
-The UI provides:
+The web UI provides:
 
 - Launch / Login for the dedicated Chrome profile. This opens a separate Chrome window for WhatsApp Web so you can scan a QR code and keep the collector session isolated from your normal browser.
 - "Messages per conversation", which controls how many recent messages are saved for each collected chat thread. It does **not** limit the number of chats/threads collected.
@@ -96,7 +147,7 @@ The UI provides:
 - a copyable AI harness prompt that tells your agent where the most recent regularly updated WhatsApp export lives
 - automatic exports configured directly from the UI using a macOS background schedule, with no Terminal command copying
 
-The UI is local-only by default (`127.0.0.1`) and exposes no send/composer capability.
+The web UI is local-only by default (`127.0.0.1`) and exposes no send/composer capability.
 
 ## Requirements
 
@@ -231,22 +282,44 @@ whatsapp-collector quit-profile --profile-dir ~/.whatsapp-collector/chrome-profi
 
 ## Automatic exports and AI harness prompt
 
-The app can be refreshed manually with **Run Export**, or on a recurring schedule directly from the UI:
+The app can be refreshed manually with **Run Export**, or on a recurring schedule directly from the native Automation screen:
 
-1. Open the menu bar app or run `whatsapp-collector ui`.
+1. Open `WhatsApp Collector.app`.
 2. Click **Launch / Login** and confirm WhatsApp Web is logged in.
 3. In **Automatic exports**, choose the interval, for example every 15 minutes.
 4. Click **Start automatic exports**.
 
-WhatsApp Collector writes a user LaunchAgent under `~/Library/LaunchAgents/` and a small helper script/payload under `~/Library/Application Support/WhatsApp Collector/`. The schedule opens the menu-bar app if needed, waits for the local UI endpoint, then refreshes the same export data file. Use **Stop automatic exports** in the UI to turn it off; no Terminal or copied `cron` command is required.
+WhatsApp Collector writes a user LaunchAgent under `~/Library/LaunchAgents/` and a small helper script/payload under `~/Library/Application Support/WhatsApp Collector/`. The native app schedule calls the bundled `native_bridge.py` directly and refreshes the same export data file. Use **Stop** in Automation to turn it off; no Terminal, copied `cron` command, app UI process, or localhost web server is required.
 
-The UI and menu bar app also provide a copyable AI prompt. The default text is:
+The native app, web UI, and menu bar extra provide a copyable AI prompt. The default text is:
 
 ```text
 My most recent WhatsApp Collector export is at:
 ~/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json
 
 It is updated regularly. Treat this JSON file as a read-only local resource when answering questions about my WhatsApp conversations. You need local filesystem access to this path; if you cannot read local files directly, ask me to upload the JSON. If you need current WhatsApp context, read this file first, use its account metadata and threads/messages as source data, and cite that the information came from the local WhatsApp Collector export. Do not send messages or modify WhatsApp from this file.
+```
+
+## App updates
+
+The native macOS app embeds Sparkle 2 for update checks. The appcast feed URL is:
+
+```text
+https://github.com/bdjben/whatsapp-collector/releases/latest/download/appcast.xml
+```
+
+Future releases should upload `appcast.xml` plus the matching signed app archive to the GitHub release. The Sparkle EdDSA public key embedded in the app is:
+
+```text
+5rau7VI4KCvnHSD4dI1xXTSek9PijJJgOFgsRjcIb58=
+```
+
+The private signing key was generated in the macOS login keychain under the Sparkle account `studio.bdjben.whatsapp-collector`. Use Sparkle's `generate_appcast` tooling from the SwiftPM artifact to sign future update archives.
+
+After placing the signed update archive, for example `WhatsApp-Collector-macOS.zip` or `WhatsApp-Collector-macOS.dmg`, in a release staging directory, generate the appcast with:
+
+```bash
+scripts/generate_sparkle_appcast.sh dist/sparkle-updates
 ```
 
 ## Scheduled export wrapper
@@ -345,8 +418,13 @@ python -m build
 Build the macOS app locally with the default ad-hoc signature:
 
 ```bash
-python scripts/build_zipapp.py --output dist/whatsapp-collector.pyz
 python scripts/build_macos_app.py --output-dir dist
+```
+
+For a quick local run without creating a DMG:
+
+```bash
+./script/build_and_run.sh
 ```
 
 Build a Developer ID signed, notarized, and stapled DMG when a `Developer ID Application` certificate is installed in the keychain and `notarytool` credentials are stored:
@@ -357,7 +435,6 @@ xcrun notarytool store-credentials whatsapp-collector-notary \
   --team-id "TEAMID1234" \
   --password "app-specific-password"
 
-python scripts/build_zipapp.py --output dist/whatsapp-collector.pyz
 python scripts/build_macos_app.py --output-dir dist \
   --sign-identity "Developer ID Application: Your Name (TEAMID1234)" \
   --notary-profile whatsapp-collector-notary \

@@ -4,6 +4,8 @@ __pycache__/
 *.pyo
 *.egg-info/
 build/
+/.build/
+**/.build/
 dist/
 .pytest_cache/
 .coverage

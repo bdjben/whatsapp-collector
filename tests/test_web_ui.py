@@ -75,7 +75,7 @@ def test_ui_default_output_path_is_in_user_documents_exports_folder() -> None:
     assert UIConfig().output_path == DEFAULT_UI_OUTPUT_PATH
 
 
-def test_ui_api_status_reports_export_and_config_without_live_collection(tmp_path: Path) -> None:
+def test_ui_api_status_reports_lightweight_export_file_info_and_config_without_live_collection(tmp_path: Path) -> None:
     output = tmp_path / "export.json"
     output.write_text(json.dumps({"threads": [{"threadKey": "t1"}], "exportedAt": "2026-04-26T00:00:00+00:00"}))
     config = UIConfig(output_path=output, profile_dir=tmp_path / "profile", host="127.0.0.1", port=0, max_messages=50)
@@ -87,7 +87,10 @@ def test_ui_api_status_reports_export_and_config_without_live_collection(tmp_pat
         server.shutdown()
 
     assert status == 200
-    assert payload["export"]["threadCount"] == 1
+    assert payload["export"]["exists"] is True
+    assert "threadCount" not in payload["export"]
+    assert payload["export"]["sizeBytes"] > 0
+    assert "exportedAt" not in payload["export"]
     assert payload["config"]["maxMessages"] == 50
     assert payload["config"]["maxAllChats"] == 15
     assert payload["config"]["allowLabels"] == []
@@ -131,6 +134,9 @@ def test_ui_api_run_export_uses_requested_collection_limits_and_label_rules(tmp_
 
     assert status == 200
     assert payload["ok"] is True
+    assert payload["threadCount"] == 0
+    assert payload["export"]["threadCount"] == 0
+    assert payload["export"]["exportedAt"] == "2026-04-26T00:00:00+00:00"
     assert calls["max_messages"] == 75
     assert calls["max_all_chats"] == 42
     assert calls["account_label"] == "Ops"

@@ -185,6 +185,25 @@ def test_devtools_bridge_version_and_list_use_native_http_without_node(fake_devt
     assert [target["id"] for target in bridge.list_targets()] == ["marker-1", "page-1"]
 
 
+def test_devtools_bridge_waits_for_target_url(fake_devtools_server, monkeypatch) -> None:
+    port, _state = fake_devtools_server
+    monkeypatch.setenv("PATH", os.devnull)
+
+    bridge = ChromeDevToolsBridge(port=port, target_url_substring="https://web.whatsapp.com/")
+
+    assert [target["id"] for target in bridge.wait_until_target_url_exists(attempts=1, delay_seconds=0)] == ["page-1"]
+
+
+def test_devtools_bridge_target_url_wait_fails_when_only_other_pages_exist(fake_devtools_server, monkeypatch) -> None:
+    port, _state = fake_devtools_server
+    monkeypatch.setenv("PATH", os.devnull)
+
+    bridge = ChromeDevToolsBridge(port=port, target_url_substring="https://example.invalid/")
+
+    with pytest.raises(RuntimeError, match="Timed out waiting for Chrome target URL"):
+        bridge.wait_until_target_url_exists(attempts=1, delay_seconds=0)
+
+
 def test_devtools_bridge_evaluates_and_clicks_via_native_websocket_without_node(fake_devtools_server, monkeypatch) -> None:
     port, state = fake_devtools_server
     monkeypatch.setenv("PATH", os.devnull)

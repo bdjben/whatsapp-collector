@@ -257,6 +257,22 @@ class ChromeDevToolsBridge:
             raise RuntimeError(f"Timed out waiting for Chrome page targets on port {self.port}: {last_error}") from last_error
         raise RuntimeError(f"Timed out waiting for Chrome page targets on port {self.port}")
 
+    def wait_until_target_url_exists(self, *, attempts: int = 40, delay_seconds: float = 0.5) -> list[dict[str, Any]]:
+        if not self.target_url_substring:
+            return []
+        last_error: Exception | None = None
+        for _ in range(attempts):
+            try:
+                targets = [target for target in self._page_targets() if self._matches_url_target(target)]
+                if targets:
+                    return targets
+            except Exception as exc:  # pragma: no cover - exercised in live retry paths
+                last_error = exc
+            time.sleep(delay_seconds)
+        if last_error is not None:
+            raise RuntimeError(f"Timed out waiting for Chrome target URL {self.target_url_substring!r} on port {self.port}: {last_error}") from last_error
+        raise RuntimeError(f"Timed out waiting for Chrome target URL {self.target_url_substring!r} on port {self.port}")
+
     def version(self) -> dict[str, Any]:
         return dict(self._run_action("version", lambda: self._fetch_json("/json/version")))
 
