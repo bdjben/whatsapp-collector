@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import shutil
 import subprocess
 import time
 import urllib.parse
@@ -29,6 +30,10 @@ VISIBLE_PLACEMENT_WIDTH = 1280
 VISIBLE_PLACEMENT_HEIGHT = 960
 VISIBLE_PLACEMENT_HORIZONTAL_MARGIN = 120
 VISIBLE_PLACEMENT_TOP_MARGIN = 80
+
+
+class ChromeNotInstalledError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -175,6 +180,40 @@ def _chrome_application_name(chrome_binary: str) -> str:
     return binary_path.stem or chrome_binary
 
 
+def chrome_application_available(chrome_binary: str = DEFAULT_CHROME_BINARY) -> bool:
+    binary_path = Path(chrome_binary).expanduser()
+    if binary_path.exists():
+        return True
+    app_name = _chrome_application_name(chrome_binary)
+    candidate_apps = [
+        Path("/Applications") / f"{app_name}.app",
+        Path("~/Applications").expanduser() / f"{app_name}.app",
+    ]
+    if any(candidate.exists() for candidate in candidate_apps):
+        return True
+    if shutil.which(app_name):
+        return True
+    mdfind = shutil.which("mdfind")
+    if not mdfind:
+        return False
+    completed = subprocess.run(
+        [mdfind, "kMDItemCFBundleIdentifier == 'com.google.Chrome'"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return any(Path(line).name == f"{app_name}.app" for line in completed.stdout.splitlines())
+
+
+def chrome_missing_message(chrome_binary: str = DEFAULT_CHROME_BINARY) -> str:
+    return (
+        "Google Chrome is not installed or could not be found. "
+        "Install Google Chrome from https://www.google.com/chrome/ and then click Launch / Login again. "
+        "WhatsApp Collector opens its own dedicated Chrome profile and enables the needed DevTools connection automatically; "
+        "you do not need to turn on Chrome developer settings yourself."
+    )
+
+
 def _normalized_display_name(name: str) -> str:
     return "".join(ch for ch in str(name).lower() if ch.isalnum())
 
@@ -310,6 +349,8 @@ def launch_dedicated_chrome_window(
     target_url: str = DEFAULT_TARGET_URL,
     debug_port: int = DEFAULT_DEBUG_PORT,
 ) -> None:
+    if not chrome_application_available(chrome_binary):
+        raise ChromeNotInstalledError(chrome_missing_message(chrome_binary))
     profile_dir.mkdir(parents=True, exist_ok=True)
     command = [
         "open",

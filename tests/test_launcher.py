@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from whatsapp_collector.launcher import (
+    ChromeNotInstalledError,
     DisplayFrame,
     choose_display,
     debug_port_has_profile_conflict,
@@ -37,6 +38,7 @@ def test_launch_dedicated_chrome_window_opens_background_chrome_instance(monkeyp
         return FakeProcess()
 
     monkeypatch.setattr("whatsapp_collector.launcher.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("whatsapp_collector.launcher.chrome_application_available", lambda chrome_binary: True)
 
     launch_dedicated_chrome_window(
         chrome_binary="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -53,6 +55,16 @@ def test_launch_dedicated_chrome_window_opens_background_chrome_instance(monkeyp
     assert "--remote-debugging-port=19220" in command
     assert "--new-window" in command
     assert "https://web.whatsapp.com/" in command
+
+
+def test_launch_dedicated_chrome_window_noisily_reports_missing_chrome(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("whatsapp_collector.launcher.chrome_application_available", lambda chrome_binary: False)
+
+    with pytest.raises(ChromeNotInstalledError, match="Google Chrome is not installed"):
+        launch_dedicated_chrome_window(
+            chrome_binary="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            profile_dir=tmp_path,
+        )
 
 
 def test_terminate_profile_processes_kills_only_chrome_processes_and_not_wrapper_shell(monkeypatch, tmp_path: Path) -> None:

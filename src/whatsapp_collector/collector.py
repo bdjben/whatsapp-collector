@@ -1129,7 +1129,134 @@ class WhatsAppCollector:
 
     @staticmethod
     def _opened_chat_recent_messages_js(*, max_messages: int) -> str:
-        return f'''(async ()=>{{await new Promise(resolve => setTimeout(resolve, 1200)); const maxVideoBytes={MAX_AUTOMATIC_VIDEO_ATTACHMENT_BYTES}; const titleCandidates=[...document.querySelectorAll('header [title], #main header [title], #main header span[dir="auto"], #main header div[dir="auto"]')].map(el => (el.getAttribute('title') || (el.textContent||'').trim())).filter(Boolean); const openedChatTitle=titleCandidates.find(title => !['Profile details','click here for contact info'].includes(title)) || ''; const normalizeJid=(value)=>{{if(!value) return null; if(typeof value==='string') return value; if(typeof value==='object' && value._serialized) return value._serialized; return null;}}; const bestFileName=(msg,kind,index)=>{{const raw=msg&&typeof msg==='object' ? (msg.filename||msg.fileName||msg.documentTitle||msg.title) : null; if(typeof raw==='string'&&raw.trim()) return raw.trim(); const ext=kind==='image'?'.jpg':kind==='video'?'.mp4':kind==='document'?'.bin':''; return `attachment-${{index+1}}${{ext}}`;}}; const blobToDataURL=(blob)=>new Promise((resolve,reject)=>{{const reader=new FileReader(); reader.onload=()=>resolve(reader.result); reader.onerror=()=>reject(reader.error); reader.readAsDataURL(blob);}}); const fetchAttachment=async(src,kind)=>{{if(!src||(!src.startsWith('blob:')&&!src.startsWith('data:'))) return {{status:'notDownloaded', skippedReason:'not-fetchable-from-dom'}}; try{{const blob=src.startsWith('data:') ? await (await fetch(src)).blob() : await (await fetch(src)).blob(); if(kind==='video' && blob.size>maxVideoBytes) return {{status:'notDownloaded', sizeBytes:blob.size, skippedReason:'video-over-10mb'}}; return {{status:'downloadable', sizeBytes:blob.size, mimeType:blob.type||null, dataUrl:await blobToDataURL(blob)}};}}catch(error){{return {{status:'notDownloaded', skippedReason:'browser-fetch-failed', note:String(error)}};}}}}; const domAttachments=async(container,msg)=>{{const nodes=[...container.querySelectorAll('img[src], video[src], a[href^="blob:"], a[href^="data:"]')]; const items=[]; for(let index=0; index<nodes.length; index++){{const node=nodes[index]; const src=node.getAttribute('src')||node.getAttribute('href')||''; const tag=node.tagName.toLowerCase(); const msgType=(msg&&msg.type)||''; const kind=tag==='video'?'video':(msgType==='document'||tag==='a'?'document':'image'); const fetched=await fetchAttachment(src,kind); items.push({{kind, mimeType:fetched.mimeType||(node.getAttribute('type')||null), fileName:node.getAttribute('download')||bestFileName(msg,kind,index), sizeBytes:fetched.sizeBytes??null, status:fetched.status, skippedReason:fetched.skippedReason||null, note:fetched.note||null, dataUrl:fetched.dataUrl||null}}); }} return items; }}; const summarizeMsg=async(msg,container)=>{{if(!msg||typeof msg!=='object') return null; const attachments=await domAttachments(container,msg); return {{id: typeof msg.id === 'string' ? msg.id : (msg.id && msg.id._serialized) || null, t: msg.t ?? null, type: msg.type || null, subtype: msg.subtype || null, body: typeof msg.body === 'string' ? msg.body : null, caption: typeof msg.caption === 'string' ? msg.caption : null, text: typeof msg.text === 'string' ? msg.text : null, matchedText: typeof msg.matchedText === 'string' ? msg.matchedText : null, mimetype: typeof msg.mimetype === 'string' ? msg.mimetype : null, fileName: typeof msg.fileName === 'string' ? msg.fileName : (typeof msg.filename === 'string' ? msg.filename : null), size: Number.isFinite(Number(msg.size||msg.fileSize)) ? Number(msg.size||msg.fileSize) : null, from: normalizeJid(msg.from), to: normalizeJid(msg.to), notifyName: typeof msg.notifyName === 'string' ? msg.notifyName : null, attachments}}; }}; const containers=[...document.querySelectorAll('#main [data-testid="msg-container"]')].slice(-{int(max_messages)}); const messages=(await Promise.all(containers.map(async(container)=>{{ const fiberKey=Object.keys(container).find(k=>k.startsWith('__reactFiber$')); let fiber=fiberKey ? container[fiberKey] : null; while(fiber){{ const props=fiber.memoizedProps; if(props && typeof props==='object' && props.msg){{ return await summarizeMsg(props.msg,container); }} fiber=fiber.return; }} return null; }}))).filter(item => item && item.id).reverse(); return JSON.stringify({{OPENED_CHAT_RECENT_MESSAGES:true, openedChatTitle, messages}});}})()'''
+        return f'''(async () => {{
+            const maxMessages = {int(max_messages)};
+            const maxVideoBytes = {MAX_AUTOMATIC_VIDEO_ATTACHMENT_BYTES};
+            const maxPasses = Math.max(4, Math.min(40, Math.ceil(maxMessages / 8) + 6));
+            const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+            await wait(1200);
+            const titleCandidates = [...document.querySelectorAll('header [title], #main header [title], #main header span[dir="auto"], #main header div[dir="auto"]')]
+                .map(el => (el.getAttribute('title') || (el.textContent || '').trim()))
+                .filter(Boolean);
+            const openedChatTitle = titleCandidates.find(title => !['Profile details', 'click here for contact info'].includes(title)) || '';
+            const normalizeJid = (value) => {{
+                if (!value) return null;
+                if (typeof value === 'string') return value;
+                if (typeof value === 'object' && value._serialized) return value._serialized;
+                return null;
+            }};
+            const bestFileName = (msg, kind, index) => {{
+                const raw = msg && typeof msg === 'object' ? (msg.filename || msg.fileName || msg.documentTitle || msg.title) : null;
+                if (typeof raw === 'string' && raw.trim()) return raw.trim();
+                const ext = kind === 'image' ? '.jpg' : kind === 'video' ? '.mp4' : kind === 'document' ? '.bin' : '';
+                return `attachment-${{index + 1}}${{ext}}`;
+            }};
+            const blobToDataURL = (blob) => new Promise((resolve, reject) => {{
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = () => reject(reader.error);
+                reader.readAsDataURL(blob);
+            }});
+            const fetchAttachment = async (src, kind) => {{
+                if (!src || (!src.startsWith('blob:') && !src.startsWith('data:'))) return {{status: 'notDownloaded', skippedReason: 'not-fetchable-from-dom'}};
+                try {{
+                    const blob = await (await fetch(src)).blob();
+                    if (kind === 'video' && blob.size > maxVideoBytes) return {{status: 'notDownloaded', sizeBytes: blob.size, skippedReason: 'video-over-10mb'}};
+                    return {{status: 'downloadable', sizeBytes: blob.size, mimeType: blob.type || null, dataUrl: await blobToDataURL(blob)}};
+                }} catch (error) {{
+                    return {{status: 'notDownloaded', skippedReason: 'browser-fetch-failed', note: String(error)}};
+                }}
+            }};
+            const domAttachments = async (container, msg) => {{
+                const nodes = [...container.querySelectorAll('img[src], video[src], a[href^="blob:"], a[href^="data:"]')];
+                const items = [];
+                for (let index = 0; index < nodes.length; index += 1) {{
+                    const node = nodes[index];
+                    const src = node.getAttribute('src') || node.getAttribute('href') || '';
+                    const tag = node.tagName.toLowerCase();
+                    const msgType = (msg && msg.type) || '';
+                    const kind = tag === 'video' ? 'video' : (msgType === 'document' || tag === 'a' ? 'document' : 'image');
+                    const fetched = await fetchAttachment(src, kind);
+                    items.push({{
+                        kind,
+                        mimeType: fetched.mimeType || (node.getAttribute('type') || null),
+                        fileName: node.getAttribute('download') || bestFileName(msg, kind, index),
+                        sizeBytes: fetched.sizeBytes ?? null,
+                        status: fetched.status,
+                        skippedReason: fetched.skippedReason || null,
+                        note: fetched.note || null,
+                        dataUrl: fetched.dataUrl || null
+                    }});
+                }}
+                return items;
+            }};
+            const summarizeMsg = async (msg, container) => {{
+                if (!msg || typeof msg !== 'object') return null;
+                const attachments = await domAttachments(container, msg);
+                return {{
+                    id: typeof msg.id === 'string' ? msg.id : (msg.id && msg.id._serialized) || null,
+                    t: msg.t ?? null,
+                    type: msg.type || null,
+                    subtype: msg.subtype || null,
+                    body: typeof msg.body === 'string' ? msg.body : null,
+                    caption: typeof msg.caption === 'string' ? msg.caption : null,
+                    text: typeof msg.text === 'string' ? msg.text : null,
+                    matchedText: typeof msg.matchedText === 'string' ? msg.matchedText : null,
+                    mimetype: typeof msg.mimetype === 'string' ? msg.mimetype : null,
+                    fileName: typeof msg.fileName === 'string' ? msg.fileName : (typeof msg.filename === 'string' ? msg.filename : null),
+                    size: Number.isFinite(Number(msg.size || msg.fileSize)) ? Number(msg.size || msg.fileSize) : null,
+                    from: normalizeJid(msg.from),
+                    to: normalizeJid(msg.to),
+                    notifyName: typeof msg.notifyName === 'string' ? msg.notifyName : null,
+                    attachments
+                }};
+            }};
+            const visibleMessages = async () => {{
+                const containers = [...document.querySelectorAll('#main [data-testid="msg-container"]')];
+                const messages = await Promise.all(containers.map(async (container) => {{
+                    const fiberKey = Object.keys(container).find(k => k.startsWith('__reactFiber$'));
+                    let fiber = fiberKey ? container[fiberKey] : null;
+                    while (fiber) {{
+                        const props = fiber.memoizedProps;
+                        if (props && typeof props === 'object' && props.msg) {{
+                            return await summarizeMsg(props.msg, container);
+                        }}
+                        fiber = fiber.return;
+                    }}
+                    return null;
+                }}));
+                return messages.filter(item => item && item.id);
+            }};
+            const scroller = () => document.querySelector('#main [data-testid="conversation-panel-messages"]')
+                || [...document.querySelectorAll('#main *')].find(el => el.scrollHeight > el.clientHeight + 40)
+                || null;
+            const initialPanel = scroller();
+            if (initialPanel) {{
+                initialPanel.scrollTop = initialPanel.scrollHeight;
+                await wait(700);
+            }}
+            const seen = new Map();
+            for (let pass = 0; pass < maxPasses; pass += 1) {{
+                for (const message of await visibleMessages()) {{
+                    const key = String(message.id || '');
+                    if (!key) continue;
+                    seen.set(key, Object.assign(seen.get(key) || {{}}, message));
+                }}
+                if (seen.size >= maxMessages) break;
+                const panel = scroller();
+                if (!panel) break;
+                const beforeTop = panel.scrollTop;
+                const beforeHeight = panel.scrollHeight;
+                panel.scrollTop = Math.max(0, beforeTop - Math.max(420, panel.clientHeight * 0.9));
+                await wait(700);
+                if (Math.abs(panel.scrollTop - beforeTop) < 2 && panel.scrollHeight === beforeHeight) break;
+            }}
+            const messages = [...seen.values()]
+                .filter(item => item && item.id)
+                .sort((a, b) => (Number(b.t) || 0) - (Number(a.t) || 0))
+                .slice(0, maxMessages);
+            return JSON.stringify({{OPENED_CHAT_RECENT_MESSAGES: true, openedChatTitle, messages}});
+        }})()'''
 
     @staticmethod
     def _parse_visible_dom_iso_timestamp(pre: str) -> str | None:
@@ -1702,9 +1829,29 @@ class WhatsAppCollector:
             message.get("matchedText"),
         ]
         for candidate in candidates:
-            if isinstance(candidate, str) and candidate.strip():
+            if isinstance(candidate, str) and candidate.strip() and not WhatsAppCollector._looks_like_inline_media_payload(candidate):
                 return candidate.strip()
         return None
+
+    @staticmethod
+    def _looks_like_inline_media_payload(value: str) -> bool:
+        stripped = value.strip()
+        if stripped.startswith("data:image/") or stripped.startswith("data:video/") or stripped.startswith("data:application/"):
+            return True
+        if len(stripped) < 160:
+            return False
+        if stripped.startswith(("/9j/", "iVBORw0KGgo", "R0lGOD", "UklGR", "AAAAIGZ0eXB", "JVBERi0")):
+            return True
+        compact = re.sub(r"\s+", "", stripped)
+        if len(compact) < 160 or len(compact) % 4 != 0:
+            return False
+        if re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", compact) is None:
+            return False
+        try:
+            decoded = base64.b64decode(compact[:512], validate=True)
+        except Exception:
+            return False
+        return decoded.startswith((b"\xff\xd8\xff", b"\x89PNG", b"GIF8", b"RIFF", b"%PDF", b"\x00\x00\x00"))
 
     @staticmethod
     def _message_direction(message: dict[str, Any]) -> str:

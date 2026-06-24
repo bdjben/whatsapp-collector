@@ -1730,6 +1730,23 @@ def test_recent_messages_for_thread_excludes_null_text_messages() -> None:
     assert [message.text for message in recent_messages] == ["An expensive strawberry cheesecake has been delivered to your front door."]
 
 
+def test_extract_message_text_ignores_inline_media_payloads() -> None:
+    jpeg_payload = "/9j/4AAQSkZJRgABAQAAAQABAAD/" + ("A" * 260)
+
+    assert WhatsAppCollector._extract_message_text({"type": "image", "body": jpeg_payload}) is None
+    assert WhatsAppCollector._extract_message_text({"type": "image", "body": jpeg_payload, "caption": "Real caption"}) == "Real caption"
+
+
+def test_opened_chat_recent_messages_js_scrolls_to_load_enough_visible_history() -> None:
+    script = WhatsAppCollector._opened_chat_recent_messages_js(max_messages=15)
+
+    assert 'data-testid="conversation-panel-messages"' in script
+    assert "initialPanel.scrollTop = initialPanel.scrollHeight" in script
+    assert "panel.scrollTop = Math.max(0, beforeTop" in script
+    assert ".sort((a, b) => (Number(b.t) || 0) - (Number(a.t) || 0))" in script
+    assert ".slice(0, maxMessages)" in script
+
+
 def test_latest_thread_summary_prefers_latest_recent_message_over_preview_inference() -> None:
     thread = IndexedDBThread(
         jid="sam@lid",

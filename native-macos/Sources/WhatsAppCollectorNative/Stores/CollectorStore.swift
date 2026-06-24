@@ -126,7 +126,10 @@ final class CollectorStore: ObservableObject {
     }
 
     func launchLogin() async {
-        guard let response = await perform(.ensureWindow, busy: .launching) else { return }
+        guard let response = await perform(.ensureWindow, busy: .launching) else {
+            showChromeMissingAlertIfNeeded()
+            return
+        }
         apply(response)
         await refreshStatus()
     }
@@ -415,6 +418,16 @@ final class CollectorStore: ObservableObject {
         alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = title.contains("Failed") ? .warning : .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private func showChromeMissingAlertIfNeeded() {
+        guard let lastError, lastError.localizedCaseInsensitiveContains("Google Chrome is not installed") else { return }
+        let alert = NSAlert()
+        alert.messageText = "Google Chrome Required"
+        alert.informativeText = lastError
+        alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
         alert.runModal()
     }
