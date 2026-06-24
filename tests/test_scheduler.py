@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import plistlib
+from datetime import datetime, timezone
 from pathlib import Path
 
 from whatsapp_collector.scheduler import (
@@ -31,6 +32,10 @@ def test_schedule_script_opens_menu_bar_app_and_posts_export_payload(tmp_path: P
     assert "--data-binary" in script
     assert "mktemp -t whatsapp-collector-export" in script
     assert "WhatsApp Collector scheduled export HTTP" in script
+    assert "RUN_STATE_PATH" in script
+    assert 'write_run_state running "Scheduled export started."' in script
+    assert 'write_run_state succeeded "Scheduled export completed."' in script
+    assert 'write_run_state failed "Scheduled export failed with exit $exit_code."' in script
     assert "restoredLastGood" in script
     assert str(payload_path) in script
     assert "/Users/assistant/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json" not in script
@@ -77,6 +82,8 @@ def test_native_schedule_script_runs_bridge_without_localhost(tmp_path: Path) ->
     assert "curl" not in script
     assert '"$PYTHON" "$BRIDGE_PATH" ensure-window' in script
     assert '"$PYTHON" "$BRIDGE_PATH" run-export' in script
+    assert "RUN_STATE_PATH" in script
+    assert 'write_run_state running "Scheduled export started."' in script
     assert "WA_COLLECTOR_NATIVE_RESOURCE_DIR" in script
     assert "WA_COLLECTOR_REPO_ROOT" in script
     assert "restoredLastGood" in script
@@ -105,6 +112,8 @@ def test_schedule_status_payload_is_user_readable(tmp_path: Path) -> None:
     assert status["plistPath"] == str(config.plist_path)
     assert status["lastSuccessAt"] is None
     assert status["nextRunAfter"] is None
+    assert status["currentRunActive"] is False
+    assert status["launchctlState"] is None
 
 
 def test_schedule_status_payload_reports_recent_success_from_log(tmp_path: Path) -> None:
@@ -152,3 +161,62 @@ def test_schedule_status_payload_reports_recent_success_from_log(tmp_path: Path)
     assert status["lastOutputPath"] == "/tmp/export.json"
     assert status["lastExportedAt"] == "2026-06-24T10:59:58+00:00"
     assert status["nextRunAfter"] == "2026-06-24T11:45:00+00:00"
+
+
+def test_schedule_status_payload_reports_active_run_state(tmp_path: Path) -> None:
+    run_state_path = tmp_path / "run-state.json"
+    config = ScheduleConfig(
+        interval_minutes=15,
+        ui_url="native://bridge",
+        mode="native",
+        payload={"outputPath": "/tmp/export.json"},
+        plist_path=tmp_path / "agent.plist",
+        script_path=tmp_path / "scheduled-export.sh",
+        payload_path=tmp_path / "payload.json",
+        run_state_path=run_state_path,
+        stdout_path=tmp_path / "out.log",
+        stderr_path=tmp_path / "err.log",
+    )
+    config.plist_path.write_text("plist")
+    started_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    run_state_path.write_text(
+        json.dumps(
+            {
+                "status": "running",
+                "startedAt": started_at,
+                "updatedAt": started_at,
+                "completedAt": None,
+                "message": "Scheduled export started.",
+            }
+        )
+    )
+
+    status = schedule_status_payload(config, loaded=True)
+
+    assert status["currentRunStatus"] == "running"
+    assert status["currentRunActive"] is True
+    assert status["currentRunStartedAt"] == started_at
+    assert status["runStatePath"] == str(run_state_path)
+
+
+def test_schedule_status_payload_uses_launchctl_running_fallback(tmp_path: Path) -> None:
+    config = ScheduleConfig(
+        interval_minutes=15,
+        ui_url="native://bridge",
+        mode="native",
+        payload={"outputPath": "/tmp/export.json"},
+        plist_path=tmp_path / "agent.plist",
+        script_path=tmp_path / "scheduled-export.sh",
+        payload_path=tmp_path / "payload.json",
+        stdout_path=tmp_path / "out.log",
+        stderr_path=tmp_path / "err.log",
+    )
+    config.plist_path.write_text("plist")
+
+    status = schedule_status_payload(config, loaded=True, launchctl_summary={"loaded": True, "state": "running", "activeCount": 1})
+
+    assert status["launchctlState"] == "running"
+    assert status["launchctlActiveCount"] == 1
+    assert status["currentRunStatus"] == "running"
+    assert status["currentRunMessage"] == "LaunchAgent is currently running."
+    assert status["currentRunActive"] is True

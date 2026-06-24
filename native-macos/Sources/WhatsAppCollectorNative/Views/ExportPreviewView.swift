@@ -82,22 +82,42 @@ struct ExportPreviewView: View {
         let skipped = messageSkippedCount(warnings)
         return Group {
             if skipped > 0 {
-                DisclosureGroup(isExpanded: $warningDetailsExpanded) {
-                    VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.16)) {
+                            warningDetailsExpanded.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Label("Messages Skipped: \(skipped) - click for details", systemImage: "exclamationmark.triangle")
+                                .font(.callout.weight(.semibold))
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .rotationEffect(.degrees(warningDetailsExpanded ? 90 : 0))
+                        }
+                        .foregroundStyle(.orange)
+                    }
+                    .buttonStyle(.plain)
+
+                    if warningDetailsExpanded {
                         Text("WhatsApp Collector skipped \(skipped) chat row\(skipped == 1 ? "" : "s") because it could identify the chat but could not capture any recent message text or attachment metadata for that row during this export.")
+                            .font(.callout)
                         Text("This can happen when WhatsApp Web has not loaded that conversation, when rows are media-only/system/encrypted in a way the browser does not expose, or when the collector cannot safely open the chat during the current run. The export keeps the last successful file protection behavior and records this warning so downstream agents do not mistake missing rows for new messages.")
+                            .font(.callout)
                             .foregroundStyle(.secondary)
                         if warnings.count > 1 {
-                            Text(warnings.joined(separator: "\n"))
-                                .font(.system(.caption, design: .monospaced))
-                                .textSelection(.enabled)
+                            ScrollView {
+                                Text(warningDetailsText(warnings))
+                                    .font(.system(.caption, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .frame(maxHeight: 160)
+                            .padding(8)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                         }
                     }
-                    .font(.callout)
-                    .padding(.top, 8)
-                } label: {
-                    Label("Messages Skipped: \(skipped) - click for details", systemImage: "exclamationmark.triangle")
-                        .font(.callout.weight(.semibold))
                 }
             } else {
                 Label {
@@ -108,9 +128,9 @@ struct ExportPreviewView: View {
                     Image(systemName: "exclamationmark.triangle")
                 }
                 .font(.callout)
+                .foregroundStyle(.orange)
             }
         }
-        .foregroundStyle(.orange)
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -279,6 +299,10 @@ struct ExportPreviewView: View {
             }
         }
         return 0
+    }
+
+    private func warningDetailsText(_ warnings: [String]) -> String {
+        warnings.joined(separator: "\n")
     }
 
     private func attachmentLine(_ attachment: ExportAttachment) -> some View {

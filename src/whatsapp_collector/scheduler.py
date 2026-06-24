@@ -18,6 +18,7 @@ LAUNCH_AGENTS_DIR = Path("~/Library/LaunchAgents").expanduser()
 SCHEDULE_STATE_PATH = SUPPORT_DIR / "scheduled-export.json"
 SCHEDULE_PAYLOAD_PATH = SUPPORT_DIR / "scheduled-export-payload.json"
 SCHEDULE_SCRIPT_PATH = SUPPORT_DIR / "scheduled-export.sh"
+SCHEDULE_RUN_STATE_PATH = SUPPORT_DIR / "scheduled-export-run-state.json"
 SCHEDULE_PLIST_PATH = LAUNCH_AGENTS_DIR / f"{LAUNCH_AGENT_LABEL}.plist"
 SCHEDULE_STDOUT_PATH = LOG_DIR / "scheduled-export.out.log"
 SCHEDULE_STDERR_PATH = LOG_DIR / "scheduled-export.err.log"
@@ -37,6 +38,7 @@ class ScheduleConfig:
     plist_path: Path = SCHEDULE_PLIST_PATH
     script_path: Path = SCHEDULE_SCRIPT_PATH
     payload_path: Path = SCHEDULE_PAYLOAD_PATH
+    run_state_path: Path = SCHEDULE_RUN_STATE_PATH
     stdout_path: Path = SCHEDULE_STDOUT_PATH
     stderr_path: Path = SCHEDULE_STDERR_PATH
 
@@ -51,6 +53,7 @@ def default_schedule_config(
     python_executable: str | None = None,
     resource_dir: Path | None = None,
     repo_root: Path | None = None,
+    run_state_path: Path = SCHEDULE_RUN_STATE_PATH,
 ) -> ScheduleConfig:
     return ScheduleConfig(
         interval_minutes=_bounded_interval_minutes(interval_minutes),
@@ -61,10 +64,48 @@ def default_schedule_config(
         python_executable=python_executable,
         resource_dir=resource_dir,
         repo_root=repo_root,
+        run_state_path=run_state_path,
     )
 
 
-def build_schedule_script(*, ui_url: str, payload_path: Path) -> str:
+def _run_state_helpers() -> str:
+    return """write_run_state() {
+  status="$1"
+  message="${2:-}"
+  /usr/bin/python3 - "$RUN_STATE_PATH" "$status" "$message" <<'PY'
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+path = Path(sys.argv[1]).expanduser()
+status = sys.argv[2]
+message = sys.argv[3] if len(sys.argv) > 3 else ""
+now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+previous = {}
+try:
+    previous = json.loads(path.read_text())
+except Exception:
+    previous = {}
+
+started_at = now if status == "running" else previous.get("startedAt") or now
+payload = {
+    "status": status,
+    "startedAt": started_at,
+    "updatedAt": now,
+    "completedAt": None if status == "running" else now,
+    "message": message,
+    "pid": os.getppid(),
+}
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\\n")
+PY
+}
+"""
+
+
+def build_schedule_script(*, ui_url: str, payload_path: Path, run_state_path: Path = SCHEDULE_RUN_STATE_PATH) -> str:
     ready_url = f"{ui_url.rstrip('/')}/api/schedule"
     window_ensure_url = f"{ui_url.rstrip('/')}/api/window/ensure"
     export_url = f"{ui_url.rstrip('/')}/api/export/run"
@@ -76,6 +117,11 @@ READY_URL={shlex.quote(ready_url)}
 WINDOW_ENSURE_URL={shlex.quote(window_ensure_url)}
 EXPORT_URL={shlex.quote(export_url)}
 PAYLOAD_PATH={shlex.quote(str(payload_path))}
+RUN_STATE_PATH={shlex.quote(str(run_state_path))}
+
+{_run_state_helpers()}
+write_run_state running "Scheduled export started." || true
+export_completed=0
 
 # Make the menu-bar app/UI available without requiring a Terminal window.
 /usr/bin/open -g -a "WhatsApp Collector" >/dev/null 2>&1 || true
@@ -112,7 +158,16 @@ tmp_response="$(/usr/bin/mktemp -t whatsapp-collector-export)"
 cleanup() {{
   /bin/rm -f "$ensure_response" "$tmp_response"
 }}
-trap cleanup EXIT
+finish() {{
+  exit_code="$?"
+  if [ "$exit_code" -eq 0 ] && [ "$export_completed" -eq 1 ]; then
+    write_run_state succeeded "Scheduled export completed." || true
+  elif [ "$exit_code" -ne 0 ]; then
+    write_run_state failed "Scheduled export failed with exit $exit_code." || true
+  fi
+  cleanup
+}}
+trap finish EXIT
 
 post_json "$WINDOW_ENSURE_URL" "$ensure_response"
 post_json "$EXPORT_URL" "$tmp_response"
@@ -156,6 +211,7 @@ if latest_good:
     print(f"\\nrestoredLastGood={{latest_good}}", file=sys.stderr)
 raise SystemExit("WhatsApp export returned zero threads; restored last good export when available and refusing to report success")
 PY
+export_completed=1
 """
 
 
@@ -164,6 +220,7 @@ def build_native_schedule_script(
     bridge_path: Path,
     payload_path: Path,
     python_executable: str,
+    run_state_path: Path = SCHEDULE_RUN_STATE_PATH,
     resource_dir: Path | None = None,
     repo_root: Path | None = None,
 ) -> str:
@@ -177,6 +234,7 @@ set -eu
 PYTHON={shlex.quote(str(python_executable))}
 BRIDGE_PATH={shlex.quote(str(bridge_path))}
 PAYLOAD_PATH={shlex.quote(str(payload_path))}
+RUN_STATE_PATH={shlex.quote(str(run_state_path))}
 WA_COLLECTOR_NATIVE_RESOURCE_DIR={shlex.quote(str(resource_dir))}
 export WA_COLLECTOR_NATIVE_RESOURCE_DIR
 PYTHONDONTWRITEBYTECODE=1
@@ -184,12 +242,25 @@ export PYTHONDONTWRITEBYTECODE
 {repo_root_export}
 # Run the native bridge directly. No localhost web server or app process is required.
 
+{_run_state_helpers()}
+write_run_state running "Scheduled export started." || true
+export_completed=0
+
 ensure_response="$(/usr/bin/mktemp -t whatsapp-collector-native-ensure)"
 tmp_response="$(/usr/bin/mktemp -t whatsapp-collector-native-export)"
 cleanup() {{
   /bin/rm -f "$ensure_response" "$tmp_response"
 }}
-trap cleanup EXIT
+finish() {{
+  exit_code="$?"
+  if [ "$exit_code" -eq 0 ] && [ "$export_completed" -eq 1 ]; then
+    write_run_state succeeded "Scheduled export completed." || true
+  elif [ "$exit_code" -ne 0 ]; then
+    write_run_state failed "Scheduled export failed with exit $exit_code." || true
+  fi
+  cleanup
+}}
+trap finish EXIT
 
 "$PYTHON" "$BRIDGE_PATH" ensure-window < "$PAYLOAD_PATH" > "$ensure_response"
 "$PYTHON" "$BRIDGE_PATH" run-export < "$PAYLOAD_PATH" > "$tmp_response"
@@ -233,6 +304,7 @@ if latest_good:
     print(f"\\nrestoredLastGood={{latest_good}}", file=sys.stderr)
 raise SystemExit("WhatsApp export returned zero threads; restored last good export when available and refusing to report success")
 PY
+export_completed=1
 """
 
 
@@ -288,7 +360,7 @@ def install_native_schedule(
 def remove_schedule() -> dict[str, Any]:
     config = load_schedule_config()
     _launchctl(["bootout", _launchctl_domain(), str(config.plist_path)], check=False)
-    for path in (config.plist_path, config.script_path, config.payload_path, SCHEDULE_STATE_PATH):
+    for path in (config.plist_path, config.script_path, config.payload_path, config.run_state_path, SCHEDULE_STATE_PATH):
         try:
             path.unlink()
         except FileNotFoundError:
@@ -298,12 +370,19 @@ def remove_schedule() -> dict[str, Any]:
 
 def schedule_status() -> dict[str, Any]:
     config = load_schedule_config()
-    return schedule_status_payload(config, loaded=is_schedule_loaded())
+    launchctl_summary = _schedule_launchctl_summary()
+    return schedule_status_payload(config, loaded=launchctl_summary["loaded"], launchctl_summary=launchctl_summary)
 
 
-def schedule_status_payload(config: ScheduleConfig, *, loaded: bool) -> dict[str, Any]:
+def schedule_status_payload(
+    config: ScheduleConfig,
+    *,
+    loaded: bool,
+    launchctl_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     enabled = config.plist_path.exists()
-    run_summary = _schedule_run_summary(config)
+    launchctl_summary = launchctl_summary or {"loaded": bool(loaded)}
+    run_summary = _schedule_run_summary(config, launchctl_state=_string_value(launchctl_summary, "state"))
     if enabled and loaded:
         next_step = "WhatsApp Collector will run exports automatically while you are logged in."
     elif enabled:
@@ -327,14 +406,17 @@ def schedule_status_payload(config: ScheduleConfig, *, loaded: bool) -> dict[str
         "payloadPath": str(config.payload_path),
         "stdoutPath": str(config.stdout_path),
         "stderrPath": str(config.stderr_path),
+        "launchctlState": _string_value(launchctl_summary, "state"),
+        "launchctlActiveCount": _int_value(launchctl_summary, "activeCount"),
         "nextStep": next_step,
         **run_summary,
     }
 
 
-def _schedule_run_summary(config: ScheduleConfig) -> dict[str, Any]:
+def _schedule_run_summary(config: ScheduleConfig, *, launchctl_state: str | None = None) -> dict[str, Any]:
     stdout_updated_at = _path_updated_at(config.stdout_path)
     stderr_updated_at = _path_updated_at(config.stderr_path)
+    current_run = _read_schedule_run_state(config, launchctl_state=launchctl_state)
     stdout_objects = _read_recent_json_objects(config.stdout_path)
     stderr_objects = _read_recent_json_objects(config.stderr_path)
     last_run = _last_matching(stdout_objects, lambda value: value.get("command") == "run-export")
@@ -359,6 +441,38 @@ def _schedule_run_summary(config: ScheduleConfig) -> dict[str, Any]:
         "lastExportedAt": _string_value(export_summary, "exportedAt"),
         "lastOutputPath": _string_value(export_summary, "path"),
         "nextRunAfter": next_run_after,
+        **current_run,
+    }
+
+
+def _read_schedule_run_state(config: ScheduleConfig, *, launchctl_state: str | None = None) -> dict[str, Any]:
+    try:
+        raw = json.loads(config.run_state_path.read_text())
+    except Exception:
+        raw = {}
+    status = _string_value(raw, "status")
+    started_at = _string_value(raw, "startedAt")
+    updated_at = _string_value(raw, "updatedAt")
+    completed_at = _string_value(raw, "completedAt")
+    message = _string_value(raw, "message")
+    launchctl_running = launchctl_state == "running"
+    active = (
+        status == "running" and _is_recent(updated_at, max(timedelta(hours=6), timedelta(minutes=config.interval_minutes * 3)))
+    ) or launchctl_running
+    if launchctl_running and status != "running":
+        status = "running"
+        message = "LaunchAgent is currently running."
+    if status == "running" and not active:
+        status = "stale"
+        message = "Scheduled export state was left running by an older or interrupted job."
+    return {
+        "currentRunStatus": status,
+        "currentRunStartedAt": started_at,
+        "currentRunUpdatedAt": updated_at,
+        "currentRunCompletedAt": completed_at,
+        "currentRunMessage": message,
+        "currentRunActive": active,
+        "runStatePath": str(config.run_state_path),
     }
 
 
@@ -425,6 +539,13 @@ def _parse_iso_datetime(value: str | None) -> datetime | None:
     return parsed
 
 
+def _is_recent(value: str | None, window: timedelta) -> bool:
+    parsed = _parse_iso_datetime(value)
+    if not parsed:
+        return False
+    return datetime.now(timezone.utc) - parsed <= window
+
+
 def _string_value(source: Any, key: str) -> str | None:
     if not isinstance(source, dict):
         return None
@@ -461,12 +582,30 @@ def load_schedule_config() -> ScheduleConfig:
         python_executable=str(state["pythonExecutable"]) if state.get("pythonExecutable") else None,
         resource_dir=Path(state["resourceDir"]) if state.get("resourceDir") else None,
         repo_root=Path(state["repoRoot"]) if state.get("repoRoot") else None,
+        run_state_path=Path(state["runStatePath"]) if state.get("runStatePath") else SCHEDULE_RUN_STATE_PATH,
     )
 
 
 def is_schedule_loaded() -> bool:
+    return bool(_schedule_launchctl_summary()["loaded"])
+
+
+def _schedule_launchctl_summary() -> dict[str, Any]:
     completed = _launchctl(["print", f"{_launchctl_domain()}/{LAUNCH_AGENT_LABEL}"], check=False)
-    return completed.returncode == 0
+    state = None
+    active_count = None
+    if completed.returncode == 0:
+        for line in completed.stdout.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("state = "):
+                state = stripped.removeprefix("state = ").strip()
+            elif stripped.startswith("active count = "):
+                active_count = _int_value({"activeCount": stripped.removeprefix("active count = ").strip()}, "activeCount")
+    return {
+        "loaded": completed.returncode == 0,
+        "state": state,
+        "activeCount": active_count,
+    }
 
 
 def _write_schedule_files(config: ScheduleConfig) -> None:
@@ -480,11 +619,12 @@ def _write_schedule_files(config: ScheduleConfig) -> None:
             bridge_path=config.bridge_path,
             payload_path=config.payload_path,
             python_executable=config.python_executable,
+            run_state_path=config.run_state_path,
             resource_dir=config.resource_dir,
             repo_root=config.repo_root,
         )
     else:
-        script = build_schedule_script(ui_url=config.ui_url, payload_path=config.payload_path)
+        script = build_schedule_script(ui_url=config.ui_url, payload_path=config.payload_path, run_state_path=config.run_state_path)
     config.script_path.write_text(script)
     config.script_path.chmod(0o755)
     config.plist_path.write_bytes(
@@ -509,6 +649,7 @@ def _write_schedule_files(config: ScheduleConfig) -> None:
                 "plistPath": str(config.plist_path),
                 "scriptPath": str(config.script_path),
                 "payloadPath": str(config.payload_path),
+                "runStatePath": str(config.run_state_path),
             },
             indent=2,
             ensure_ascii=False,

@@ -61,6 +61,8 @@ struct MetricTile: View {
 struct StatusBanner: View {
     var busyState: BusyState
     var error: String?
+    var scheduledRunActive: Bool = false
+    var scheduledRunText: String = "Scheduled export running."
 
     var body: some View {
         HStack(spacing: 10) {
@@ -71,7 +73,7 @@ struct StatusBanner: View {
                 .foregroundStyle(error == nil ? .secondary : .primary)
                 .lineLimit(2)
             Spacer()
-            if busyState != .idle {
+            if busyState != .idle || scheduledRunActive {
                 ProgressView()
                     .controlSize(.small)
             }
@@ -86,18 +88,21 @@ struct StatusBanner: View {
 
     private var icon: String {
         if error != nil { return "exclamationmark.triangle" }
+        if scheduledRunActive { return "clock.arrow.circlepath" }
         if busyState != .idle { return "arrow.triangle.2.circlepath" }
         return "checkmark.circle"
     }
 
     private var color: Color {
         if error != nil { return .orange }
+        if scheduledRunActive { return .accentColor }
         if busyState != .idle { return .accentColor }
         return .green
     }
 
     private var text: String {
         if let error { return error }
+        if busyState == .idle && scheduledRunActive { return scheduledRunText }
         return busyState == .idle ? "Ready." : "\(busyState.title)..."
     }
 }

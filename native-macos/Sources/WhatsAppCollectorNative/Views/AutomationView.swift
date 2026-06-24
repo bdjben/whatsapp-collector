@@ -12,7 +12,12 @@ struct AutomationView: View {
                     systemImage: "clock.arrow.circlepath"
                 )
 
-                StatusBanner(busyState: store.busyState, error: store.lastError)
+                StatusBanner(
+                    busyState: store.busyState,
+                    error: store.lastError,
+                    scheduledRunActive: store.scheduledExportIsRunning,
+                    scheduledRunText: store.scheduledExportStatusText
+                )
 
                 GroupBox("Launch at Login") {
                     VStack(alignment: .leading, spacing: 10) {
@@ -155,6 +160,10 @@ struct AutomationView: View {
             Divider()
             Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
                 ScheduleReadoutRow(
+                    title: "Current scheduler state",
+                    value: currentRunText(schedule)
+                )
+                ScheduleReadoutRow(
                     title: "Last scheduled run",
                     value: timestampText(schedule.lastSuccessAt ?? schedule.lastRunAt)
                 )
@@ -179,6 +188,17 @@ struct AutomationView: View {
     private func timestampText(_ value: String?) -> String {
         guard value != nil else { return "Not recorded yet" }
         return "\(DisplayFormatters.relativeDate(value)) · \(DisplayFormatters.date(value))"
+    }
+
+    private func currentRunText(_ schedule: ScheduleState) -> String {
+        if schedule.isCurrentRunActive {
+            return schedule.currentRunStartedAt.map { "Running since \(DisplayFormatters.date($0))" } ?? "Running now"
+        }
+        if let status = schedule.currentRunStatus, status.isEmpty == false {
+            let updated = schedule.currentRunUpdatedAt.map { " · \(DisplayFormatters.relativeDate($0))" } ?? ""
+            return "\(status.capitalized)\(updated)"
+        }
+        return "Idle"
     }
 
     private func shouldShowFailure(_ schedule: ScheduleState) -> Bool {

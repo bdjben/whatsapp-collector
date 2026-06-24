@@ -178,9 +178,18 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     help_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Views" / "HelpView.swift").read_text()
     migration_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Support" / "LegacyAppMigration.swift").read_text()
     store_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Stores" / "CollectorStore.swift").read_text()
+    models_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Models" / "CollectorModels.swift").read_text()
     login_item_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Support" / "LoginItemManager.swift").read_text()
 
-    assert 'MenuBarExtra("W↗")' in app_source
+    assert "MenuBarStatusLabel" in app_source
+    assert 'Text("W↗")' in app_source
+    assert "TimelineView(.periodic" in app_source
+    assert "exportActivityIsVisible" in app_source
+    assert "Scheduled Export Running" in store_source
+    assert "refreshScheduleStatusQuietly" in store_source
+    assert "currentRunActive" in models_source
+    assert "launchctlState" in models_source
+    assert "scheduledRunActive" in components_source
     assert "NSWindow.allowsAutomaticWindowTabbing = false" in app_source
     assert "closeDuplicateMainWindows()" in app_source
     assert 'case .dashboard: "WhatsApp Collector"' in section_source
@@ -194,6 +203,11 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     assert "deleteAction" in components_source
     assert "removeLabel" in store_source
     assert "Messages Skipped: \\(skipped) - click for details" in export_source
+    assert "DisclosureGroup" not in export_source
+    assert "warningDetailsExpanded.toggle()" in export_source
+    assert ".frame(maxHeight: 160)" in export_source
+    assert "warningDetailsText(warnings)" in export_source
+    assert "Current scheduler state" in automation_source
     assert "View/Copy AI Prompt" in app_source
     assert "View/Copy AI Prompt" in export_source
     assert "Window(\"AI Prompt\", id: \"ai-prompt\")" in app_source

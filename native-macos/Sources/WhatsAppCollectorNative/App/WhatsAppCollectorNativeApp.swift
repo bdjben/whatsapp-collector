@@ -192,10 +192,12 @@ struct WhatsAppCollectorNativeApp: App {
             }
         }
 
-        MenuBarExtra("W↗") {
+        MenuBarExtra {
             MenuBarContent()
                 .environmentObject(store)
                 .environment(\.appActions, appActions)
+        } label: {
+            MenuBarStatusLabel(isActive: store.exportActivityIsVisible)
         }
     }
 
@@ -254,6 +256,10 @@ struct MenuBarContent: View {
     @Environment(\.appActions) private var appActions
 
     var body: some View {
+        if store.exportActivityIsVisible {
+            Label(store.exportActivityTitle, systemImage: "arrow.triangle.2.circlepath")
+            Divider()
+        }
         Button("Open Dashboard") {
             show(.dashboard)
         }
@@ -301,5 +307,27 @@ struct MenuBarContent: View {
             }
         }
         NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+struct MenuBarStatusLabel: View {
+    var isActive: Bool
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.8)) { context in
+            HStack(spacing: 3) {
+                Text("W↗")
+                if isActive {
+                    Image(systemName: pulseIsFilled(at: context.date) ? "circle.fill" : "circle")
+                        .imageScale(.small)
+                }
+            }
+            .foregroundStyle(isActive ? Color.green : Color.primary)
+            .accessibilityLabel(isActive ? "WhatsApp Collector export running" : "WhatsApp Collector")
+        }
+    }
+
+    private func pulseIsFilled(at date: Date) -> Bool {
+        Int(date.timeIntervalSinceReferenceDate / 0.8).isMultiple(of: 2)
     }
 }

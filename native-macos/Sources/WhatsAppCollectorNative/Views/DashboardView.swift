@@ -9,7 +9,12 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: 18) {
                 dashboardHeader
 
-                StatusBanner(busyState: store.busyState, error: store.lastError)
+                StatusBanner(
+                    busyState: store.busyState,
+                    error: store.lastError,
+                    scheduledRunActive: store.scheduledExportIsRunning,
+                    scheduledRunText: store.scheduledExportStatusText
+                )
 
                 metrics
                 actions
@@ -230,6 +235,9 @@ struct DashboardView: View {
     }
 
     private var scheduleDetail: String {
+        if store.scheduledExportIsRunning {
+            return store.scheduledExportStatusText
+        }
         if let interval = store.schedule?.intervalMinutes, store.schedule?.enabled == true {
             if store.schedule?.mode == "web" {
                 return "Legacy localhost runner, every \(interval) min"

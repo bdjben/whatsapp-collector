@@ -49,6 +49,8 @@ struct ScheduleState: Decodable, Equatable, Sendable {
     var payloadPath: String?
     var stdoutPath: String?
     var stderrPath: String?
+    var launchctlState: String?
+    var launchctlActiveCount: Int?
     var nextStep: String?
     var stdoutUpdatedAt: String?
     var stderrUpdatedAt: String?
@@ -60,9 +62,17 @@ struct ScheduleState: Decodable, Equatable, Sendable {
     var lastExportedAt: String?
     var lastOutputPath: String?
     var nextRunAfter: String?
+    var currentRunStatus: String?
+    var currentRunStartedAt: String?
+    var currentRunUpdatedAt: String?
+    var currentRunCompletedAt: String?
+    var currentRunMessage: String?
+    var currentRunActive: Bool?
+    var runStatePath: String?
 
     var displayState: String {
         let suffix = mode == "web" ? " (web)" : ""
+        if isCurrentRunActive { return "Running\(suffix)" }
         if enabled == true && loaded == true { return "On\(suffix)" }
         if enabled == true { return "Configured\(suffix)" }
         return "Off"
@@ -70,6 +80,10 @@ struct ScheduleState: Decodable, Equatable, Sendable {
 
     var isLegacyWebSchedule: Bool {
         enabled == true && mode == "web"
+    }
+
+    var isCurrentRunActive: Bool {
+        currentRunActive == true || currentRunStatus == "running"
     }
 }
 
@@ -267,6 +281,15 @@ enum BusyState: Equatable {
         case .exporting: "Exporting"
         case .loadingLabels: "Loading Labels"
         case .scheduling: "Scheduling"
+        }
+    }
+
+    var isExportActivity: Bool {
+        switch self {
+        case .exporting, .scheduling:
+            return true
+        case .idle, .refreshing, .launching, .loadingLabels:
+            return false
         }
     }
 }

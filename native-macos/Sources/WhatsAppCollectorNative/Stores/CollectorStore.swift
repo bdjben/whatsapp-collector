@@ -22,8 +22,35 @@ final class CollectorStore: ObservableObject {
 
     private let bridge = CollectorBridge()
     private let defaults = UserDefaults.standard
+    private var schedulePollingTask: Task<Void, Never>?
 
     var isBusy: Bool { busyState != .idle }
+
+    var scheduledExportIsRunning: Bool { schedule?.isCurrentRunActive == true }
+
+    var exportActivityIsVisible: Bool {
+        busyState.isExportActivity || scheduledExportIsRunning
+    }
+
+    var exportActivityTitle: String {
+        if busyState.isExportActivity {
+            return busyState.title
+        }
+        if scheduledExportIsRunning {
+            return "Scheduled Export Running"
+        }
+        return "Ready"
+    }
+
+    var scheduledExportStatusText: String {
+        guard let schedule, schedule.isCurrentRunActive else {
+            return "Automatic exports are idle."
+        }
+        if let startedAt = schedule.currentRunStartedAt {
+            return "Scheduled export running since \(DisplayFormatters.relativeDate(startedAt))."
+        }
+        return "Scheduled export running."
+    }
 
     var selectedThread: ExportThread? {
         guard let selectedThreadID else { return export?.threads.first }
@@ -46,10 +73,15 @@ final class CollectorStore: ObservableObject {
     }
 
     func bootstrap() async {
+        startScheduleStatusPolling()
         await refreshStatus(applySchedulePayloadIfNeeded: true)
         loadExportPreview()
         refreshLegacyAppCandidate()
         refreshLaunchAtLoginStatus()
+    }
+
+    deinit {
+        schedulePollingTask?.cancel()
     }
 
     func saveConfiguration() {
@@ -126,6 +158,25 @@ final class CollectorStore: ObservableObject {
     func removeSchedule() async {
         guard let response = await perform(.scheduleRemove, busy: .scheduling) else { return }
         apply(response)
+    }
+
+    func refreshScheduleStatusQuietly() async {
+        let bridge = self.bridge
+        let config = configuration
+        let wasRunning = scheduledExportIsRunning
+        do {
+            let (response, _) = try await Task.detached(priority: .utility) {
+                try bridge.run(.scheduleStatus, configuration: config)
+            }.value
+            if let schedule = response.schedule {
+                apply(schedule)
+                if wasRunning && schedule.isCurrentRunActive == false {
+                    loadExportPreview()
+                }
+            }
+        } catch {
+            // Quiet polling should never interrupt the user's current task.
+        }
     }
 
     func loadExportPreview() {
@@ -328,15 +379,29 @@ final class CollectorStore: ObservableObject {
             exportSummary = export
         }
         if let schedule = response.schedule {
-            self.schedule = schedule
-            if let interval = schedule.intervalMinutes {
-                scheduleIntervalMinutes = interval
-            }
+            apply(schedule)
         }
         if let prompt = response.aiPrompt {
             aiPrompt = prompt
         } else {
             aiPrompt = DisplayFormatters.aiPrompt(path: configuration.outputPath)
+        }
+    }
+
+    private func apply(_ schedule: ScheduleState) {
+        self.schedule = schedule
+        if let interval = schedule.intervalMinutes {
+            scheduleIntervalMinutes = interval
+        }
+    }
+
+    private func startScheduleStatusPolling() {
+        guard schedulePollingTask == nil else { return }
+        schedulePollingTask = Task { [weak self] in
+            while Task.isCancelled == false {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                await self?.refreshScheduleStatusQuietly()
+            }
         }
     }
 
