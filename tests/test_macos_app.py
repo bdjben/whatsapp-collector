@@ -181,9 +181,9 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     models_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Models" / "CollectorModels.swift").read_text()
     login_item_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Support" / "LoginItemManager.swift").read_text()
 
-    assert "MenuBarStatusLabel" in app_source
-    assert 'Text("W↗")' in app_source
-    assert "TimelineView(.periodic" in app_source
+    assert 'MenuBarExtra("W↗")' in app_source
+    assert "MenuBarStatusLabel" not in app_source
+    assert "TimelineView(.periodic" not in app_source
     assert "exportActivityIsVisible" in app_source
     assert "Scheduled Export Running" in store_source
     assert "refreshScheduleStatusQuietly" in store_source
