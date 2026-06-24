@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass
@@ -15,6 +16,33 @@ DEFAULT_TARGET_URL_SUBSTRING = "web.whatsapp.com/"
 DEFAULT_MARKER_TITLE = "WhatsApp Collector"
 DEFAULT_MARKER_URL_SUBSTRING = "whatsapp-collector"
 DEFAULT_DEBUG_PORT_ENV = "WA_CHROME_DEBUG_PORT"
+READ_ONLY_BLOCK_MESSAGE = (
+    "Blocked non-read-only browser automation script ({reason}). "
+    "WhatsApp Collector only reads WhatsApp Web; it will not edit message fields, "
+    "open attachment controls, or send messages."
+)
+READ_ONLY_VIOLATION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("composer editing surface", re.compile(r"\bcontenteditable\b", re.IGNORECASE)),
+    (
+        "send button",
+        re.compile(
+            r"\bsendbutton\b|aria-label\s*=\s*\\?['\"][^'\"]*\bsend\b|data-icon\s*=\s*\\?['\"][^'\"]*\bsend\b",
+            re.IGNORECASE,
+        ),
+    ),
+    ("send method call", re.compile(r"(?<![\w$])\.send\s*\(", re.IGNORECASE)),
+    ("new chat control", re.compile(r"\bnew\s+chat\b", re.IGNORECASE)),
+    (
+        "attachment control",
+        re.compile(
+            r"\battach(?:ment)?button\b|aria-label\s*=\s*\\?['\"][^'\"]*\battach\b|data-icon\s*=\s*\\?['\"][^'\"]*\battach\b",
+            re.IGNORECASE,
+        ),
+    ),
+    ("input value assignment", re.compile(r"\.value\s*=", re.IGNORECASE)),
+    ("synthetic input event", re.compile(r"\binputevent\b", re.IGNORECASE)),
+    ("execCommand mutation", re.compile(r"\bexeccommand\b", re.IGNORECASE)),
+)
 
 
 @dataclass(frozen=True)
@@ -49,19 +77,9 @@ class ChromeWhatsAppSession:
             )
 
     def assert_readonly(self, js: str) -> None:
-        lowered = js.lower()
-        forbidden = [
-            "contenteditable",
-            "sendbutton",
-            ".send",
-            "new chat",
-            "attach",
-            ".value =",
-            "inputevent",
-            "execcommand",
-        ]
-        if any(token.lower() in lowered for token in forbidden):
-            raise ValueError("JavaScript violates read-only safety boundary")
+        for reason, pattern in READ_ONLY_VIOLATION_PATTERNS:
+            if pattern.search(js):
+                raise ValueError(READ_ONLY_BLOCK_MESSAGE.format(reason=reason))
 
     def run_js(self, js: str) -> str:
         self.assert_readonly(js)
