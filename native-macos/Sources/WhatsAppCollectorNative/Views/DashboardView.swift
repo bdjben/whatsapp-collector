@@ -259,6 +259,10 @@ struct DashboardView: View {
             if store.schedule?.mode == "web" {
                 return "Legacy localhost runner, every \(interval) min"
             }
+            if let lastSuccess = store.schedule?.lastSuccessAt {
+                let next = store.schedule?.nextRunAfter.map { ", next \(DisplayFormatters.relativeDate($0))" } ?? ""
+                return "Last \(DisplayFormatters.relativeDate(lastSuccess))\(next)"
+            }
             return "Every \(interval) min"
         }
         return store.schedule?.nextStep ?? "Refresh status"

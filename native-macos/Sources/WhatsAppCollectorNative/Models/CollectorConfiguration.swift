@@ -53,6 +53,10 @@ struct CollectorConfiguration: Codable, Equatable, Sendable {
         copy.displayName = payload.displayName ?? copy.displayName
         copy.profileDir = payload.profileDir ?? copy.profileDir
         copy.outputPath = payload.outputPath ?? copy.outputPath
+        copy.debugPort = payload.debugPort ?? copy.debugPort
+        copy.markerTitle = payload.markerTitle ?? copy.markerTitle
+        copy.markerUrlSubstring = payload.markerUrlSubstring ?? copy.markerUrlSubstring
+        copy.targetUrl = payload.targetUrl ?? copy.targetUrl
         return copy
     }
 

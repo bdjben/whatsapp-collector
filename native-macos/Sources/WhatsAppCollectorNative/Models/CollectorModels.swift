@@ -50,6 +50,16 @@ struct ScheduleState: Decodable, Equatable, Sendable {
     var stdoutPath: String?
     var stderrPath: String?
     var nextStep: String?
+    var stdoutUpdatedAt: String?
+    var stderrUpdatedAt: String?
+    var lastRunAt: String?
+    var lastSuccessAt: String?
+    var lastFailureAt: String?
+    var lastFailureMessage: String?
+    var lastThreadCount: Int?
+    var lastExportedAt: String?
+    var lastOutputPath: String?
+    var nextRunAfter: String?
 
     var displayState: String {
         let suffix = mode == "web" ? " (web)" : ""
@@ -73,6 +83,10 @@ struct SchedulePayload: Codable, Equatable, Sendable {
     var displayName: String?
     var profileDir: String?
     var outputPath: String?
+    var debugPort: Int?
+    var markerTitle: String?
+    var markerUrlSubstring: String?
+    var targetUrl: String?
 }
 
 struct WindowSummary: Decodable, Equatable, Sendable {

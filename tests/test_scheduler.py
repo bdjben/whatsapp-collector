@@ -103,3 +103,52 @@ def test_schedule_status_payload_is_user_readable(tmp_path: Path) -> None:
     assert status["intervalMinutes"] == 15
     assert status["nextStep"] == "WhatsApp Collector will run exports automatically while you are logged in."
     assert status["plistPath"] == str(config.plist_path)
+    assert status["lastSuccessAt"] is None
+    assert status["nextRunAfter"] is None
+
+
+def test_schedule_status_payload_reports_recent_success_from_log(tmp_path: Path) -> None:
+    config = ScheduleConfig(
+        interval_minutes=45,
+        ui_url="native://bridge",
+        mode="native",
+        payload={"outputPath": "/tmp/export.json"},
+        plist_path=tmp_path / "agent.plist",
+        script_path=tmp_path / "scheduled-export.sh",
+        payload_path=tmp_path / "payload.json",
+        stdout_path=tmp_path / "out.log",
+        stderr_path=tmp_path / "err.log",
+    )
+    config.plist_path.write_text("plist")
+    config.stdout_path.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "command": "run-export",
+                "checkedAt": "2026-06-24T10:15:00+00:00",
+                "export": {"path": "/tmp/export.json", "threadCount": 41, "exportedAt": "2026-06-24T10:14:59+00:00"},
+                "threadCount": 41,
+            },
+            indent=2,
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "ok": True,
+                "command": "run-export",
+                "checkedAt": "2026-06-24T11:00:00+00:00",
+                "export": {"path": "/tmp/export.json", "threadCount": 43, "exportedAt": "2026-06-24T10:59:58+00:00"},
+                "threadCount": 43,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+    status = schedule_status_payload(config, loaded=True)
+
+    assert status["lastSuccessAt"] == "2026-06-24T11:00:00+00:00"
+    assert status["lastThreadCount"] == 43
+    assert status["lastOutputPath"] == "/tmp/export.json"
+    assert status["lastExportedAt"] == "2026-06-24T10:59:58+00:00"
+    assert status["nextRunAfter"] == "2026-06-24T11:45:00+00:00"

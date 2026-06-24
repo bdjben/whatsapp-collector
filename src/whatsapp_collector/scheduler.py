@@ -6,8 +6,9 @@ import plistlib
 import shlex
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 APP_NAME = "WhatsApp Collector"
 LAUNCH_AGENT_LABEL = "studio.bdjben.whatsapp-collector.scheduled-export"
@@ -302,6 +303,7 @@ def schedule_status() -> dict[str, Any]:
 
 def schedule_status_payload(config: ScheduleConfig, *, loaded: bool) -> dict[str, Any]:
     enabled = config.plist_path.exists()
+    run_summary = _schedule_run_summary(config)
     if enabled and loaded:
         next_step = "WhatsApp Collector will run exports automatically while you are logged in."
     elif enabled:
@@ -326,7 +328,121 @@ def schedule_status_payload(config: ScheduleConfig, *, loaded: bool) -> dict[str
         "stdoutPath": str(config.stdout_path),
         "stderrPath": str(config.stderr_path),
         "nextStep": next_step,
+        **run_summary,
     }
+
+
+def _schedule_run_summary(config: ScheduleConfig) -> dict[str, Any]:
+    stdout_updated_at = _path_updated_at(config.stdout_path)
+    stderr_updated_at = _path_updated_at(config.stderr_path)
+    stdout_objects = _read_recent_json_objects(config.stdout_path)
+    stderr_objects = _read_recent_json_objects(config.stderr_path)
+    last_run = _last_matching(stdout_objects, lambda value: value.get("command") == "run-export")
+    last_success = _last_matching(
+        stdout_objects,
+        lambda value: value.get("ok") is True and value.get("command") == "run-export",
+    )
+    last_failure = _last_matching(stderr_objects, lambda value: value.get("ok") is False)
+
+    last_success_at = _string_value(last_success, "checkedAt") or stdout_updated_at
+    next_run_after = _next_run_after(last_success_at, config.interval_minutes)
+    export_summary = last_success.get("export") if isinstance(last_success.get("export"), dict) else {}
+
+    return {
+        "stdoutUpdatedAt": stdout_updated_at,
+        "stderrUpdatedAt": stderr_updated_at,
+        "lastRunAt": _string_value(last_run, "checkedAt") or stdout_updated_at,
+        "lastSuccessAt": last_success_at,
+        "lastFailureAt": _string_value(last_failure, "checkedAt") or stderr_updated_at,
+        "lastFailureMessage": _string_value(last_failure, "error"),
+        "lastThreadCount": _int_value(last_success, "threadCount", export_summary.get("threadCount")),
+        "lastExportedAt": _string_value(export_summary, "exportedAt"),
+        "lastOutputPath": _string_value(export_summary, "path"),
+        "nextRunAfter": next_run_after,
+    }
+
+
+def _read_recent_json_objects(path: Path, *, max_bytes: int = 1_000_000) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - max_bytes))
+            text = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return []
+
+    decoder = json.JSONDecoder()
+    values: list[dict[str, Any]] = []
+    index = 0
+    while index < len(text):
+        start = text.find("{", index)
+        if start < 0:
+            break
+        try:
+            value, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            index = start + 1
+            continue
+        if isinstance(value, dict):
+            values.append(value)
+        index = end
+    return values
+
+
+def _last_matching(values: list[dict[str, Any]], predicate: Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
+    for value in reversed(values):
+        if predicate(value):
+            return value
+    return {}
+
+
+def _path_updated_at(path: Path) -> str | None:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).replace(microsecond=0).isoformat()
+    except OSError:
+        return None
+
+
+def _next_run_after(value: str | None, interval_minutes: int) -> str | None:
+    date = _parse_iso_datetime(value)
+    if not date:
+        return None
+    return (date + timedelta(minutes=_bounded_interval_minutes(interval_minutes))).astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _string_value(source: Any, key: str) -> str | None:
+    if not isinstance(source, dict):
+        return None
+    value = source.get(key)
+    if value is None:
+        return None
+    return str(value)
+
+
+def _int_value(source: Any, key: str, fallback: Any = None) -> int | None:
+    if not isinstance(source, dict):
+        value = fallback
+    else:
+        value = source.get(key, fallback)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def load_schedule_config() -> ScheduleConfig:

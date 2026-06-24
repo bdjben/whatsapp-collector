@@ -127,6 +127,10 @@ def _schedule_payload(cfg: dict[str, Any]) -> dict[str, Any]:
         "excludeLabels": list(cfg["exclude_labels"]),
         "includeGroups": cfg["include_groups"],
         "displayName": cfg["display_name"],
+        "debugPort": cfg["debug_port"],
+        "markerTitle": cfg["marker_title"],
+        "markerUrlSubstring": cfg["marker_url_substring"],
+        "targetUrl": cfg["target_url"],
         "profileDir": str(cfg["profile_dir"]),
         "outputPath": str(cfg["output_path"]),
     }

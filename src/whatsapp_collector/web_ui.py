@@ -572,6 +572,10 @@ def _schedule_payload(config: UIConfig) -> dict[str, Any]:
         "allowLabels": list(config.allow_labels),
         "excludeLabels": list(config.exclude_labels),
         "displayName": config.display_name,
+        "debugPort": config.debug_port,
+        "markerTitle": config.marker_title,
+        "markerUrlSubstring": config.marker_url_substring,
+        "targetUrl": config.target_url,
         "profileDir": str(config.profile_dir),
         "outputPath": str(config.output_path),
     }

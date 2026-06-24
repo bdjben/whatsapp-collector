@@ -217,6 +217,10 @@ def test_ui_schedule_api_installs_and_removes_background_schedule(tmp_path: Path
                 "accountLabel": "Ops",
                 "allowLabels": ["VIP"],
                 "excludeLabels": ["Archive"],
+                "debugPort": 19300,
+                "markerTitle": "Custom Collector",
+                "markerUrlSubstring": "custom-marker",
+                "targetUrl": "https://web.whatsapp.com/",
             },
         )
         assert status == 200
@@ -229,6 +233,10 @@ def test_ui_schedule_api_installs_and_removes_background_schedule(tmp_path: Path
         assert calls["install"]["payload"]["accountLabel"] == "Ops"
         assert calls["install"]["payload"]["allowLabels"] == ["VIP"]
         assert calls["install"]["payload"]["excludeLabels"] == ["Archive"]
+        assert calls["install"]["payload"]["debugPort"] == 19300
+        assert calls["install"]["payload"]["markerTitle"] == "Custom Collector"
+        assert calls["install"]["payload"]["markerUrlSubstring"] == "custom-marker"
+        assert calls["install"]["payload"]["targetUrl"] == "https://web.whatsapp.com/"
         assert calls["install"]["payload"]["outputPath"] == str(tmp_path / "export.json")
 
         status, payload = _json_request(url, "POST", "/api/schedule/remove", {})

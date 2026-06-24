@@ -51,6 +51,7 @@ struct AutomationView: View {
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         }
+                        scheduleRunHistory
                         HStack {
                             Button {
                                 Task { await store.installSchedule() }
@@ -129,6 +130,67 @@ struct AutomationView: View {
                 }
             }
             .padding(22)
+        }
+    }
+
+    @ViewBuilder
+    private var scheduleRunHistory: some View {
+        if let schedule = store.schedule, schedule.enabled == true {
+            Divider()
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
+                ScheduleReadoutRow(
+                    title: "Last scheduled run",
+                    value: timestampText(schedule.lastSuccessAt ?? schedule.lastRunAt)
+                )
+                ScheduleReadoutRow(
+                    title: "Threads exported",
+                    value: schedule.lastThreadCount.map { "\($0)" } ?? "Not recorded"
+                )
+                ScheduleReadoutRow(
+                    title: "Next estimated run",
+                    value: timestampText(schedule.nextRunAfter)
+                )
+                if shouldShowFailure(schedule) {
+                    ScheduleReadoutRow(
+                        title: "Last scheduler error",
+                        value: failureText(schedule)
+                    )
+                }
+            }
+        }
+    }
+
+    private func timestampText(_ value: String?) -> String {
+        guard value != nil else { return "Not recorded yet" }
+        return "\(DisplayFormatters.relativeDate(value)) · \(DisplayFormatters.date(value))"
+    }
+
+    private func shouldShowFailure(_ schedule: ScheduleState) -> Bool {
+        guard let failureAt = DisplayFormatters.parseDate(schedule.lastFailureAt) else { return false }
+        guard let successAt = DisplayFormatters.parseDate(schedule.lastSuccessAt) else { return true }
+        return failureAt > successAt
+    }
+
+    private func failureText(_ schedule: ScheduleState) -> String {
+        let message = schedule.lastFailureMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let message, !message.isEmpty {
+            return "\(timestampText(schedule.lastFailureAt)) · \(message)"
+        }
+        return timestampText(schedule.lastFailureAt)
+    }
+}
+
+private struct ScheduleReadoutRow: View {
+    var title: String
+    var value: String
+
+    var body: some View {
+        GridRow {
+            Text(title)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
     }
 }
