@@ -337,16 +337,16 @@ class WhatsAppCollector:
             if not clean_labels:
                 continue
             recent_messages = self._serialize_recent_messages(thread.recent_messages)
-            if not recent_messages and thread.visible_in_chat_list:
-                try:
-                    recent_messages = self._opened_chat_recent_messages_for_chat(
-                        thread.display_name,
-                        max_messages=max_messages,
-                        attachments_dir=attachments_root,
-                        thread_key=thread.jid,
-                    )
-                except RuntimeError:
-                    recent_messages = []
+            if thread.visible_in_chat_list:
+                recent_messages = self._refresh_recent_messages_from_opened_chat(
+                    thread.display_name,
+                    recent_messages=recent_messages,
+                    max_messages=max_messages,
+                    attachments_dir=attachments_root,
+                    thread_key=thread.jid,
+                    expected_latest_timestamp=thread.last_message_timestamp,
+                    preview=thread.preview,
+                )
             last_message_at, last_direction, last_sender, last_text = self._latest_thread_summary(thread)
             if recent_messages:
                 latest_message = recent_messages[0]
@@ -686,16 +686,15 @@ class WhatsAppCollector:
                         thread_key=jid or row.chat_name,
                     )
                 )
-            if not recent_messages:
-                try:
-                    recent_messages = self._opened_chat_recent_messages_for_chat(
-                        row.chat_name,
-                        max_messages=max_messages,
-                        attachments_dir=attachments_dir,
-                        thread_key=jid or row.chat_name,
-                    )
-                except RuntimeError:
-                    recent_messages = []
+            recent_messages = self._refresh_recent_messages_from_opened_chat(
+                row.chat_name,
+                recent_messages=recent_messages,
+                max_messages=max_messages,
+                attachments_dir=attachments_dir,
+                thread_key=jid or row.chat_name,
+                expected_latest_timestamp=(chat or {}).get("t") if chat else None,
+                preview=row.preview,
+            )
             if not recent_messages:
                 continue
 
@@ -917,6 +916,117 @@ class WhatsAppCollector:
             if recent_direct_count >= limit and recent_group_count >= limit:
                 break
         return recent_exports
+
+    def _refresh_recent_messages_from_opened_chat(
+        self,
+        chat_name: str,
+        *,
+        recent_messages: list[dict[str, Any]],
+        max_messages: int,
+        attachments_dir: Path | None,
+        thread_key: str,
+        expected_latest_timestamp: Any = None,
+        preview: str = "",
+    ) -> list[dict[str, Any]]:
+        if not self._should_refresh_opened_chat_messages(
+            recent_messages,
+            expected_latest_timestamp=expected_latest_timestamp,
+            preview=preview,
+        ):
+            return recent_messages
+        try:
+            opened_messages = self._opened_chat_recent_messages_for_chat(
+                chat_name,
+                max_messages=max_messages,
+                attachments_dir=attachments_dir,
+                thread_key=thread_key,
+            )
+        except RuntimeError:
+            return recent_messages
+        if not opened_messages:
+            return recent_messages
+        return self._merge_recent_message_exports(opened_messages, recent_messages, max_messages=max_messages)
+
+    @classmethod
+    def _should_refresh_opened_chat_messages(
+        cls,
+        recent_messages: list[dict[str, Any]],
+        *,
+        expected_latest_timestamp: Any = None,
+        preview: str = "",
+    ) -> bool:
+        if not recent_messages:
+            return True
+        expected_epoch = cls._whatsapp_timestamp_epoch(expected_latest_timestamp)
+        latest_epoch = cls._exported_message_epoch(recent_messages[0])
+        if expected_epoch is not None and latest_epoch is not None and expected_epoch > latest_epoch + 1:
+            return True
+        preview_text = str(preview or "").strip()
+        latest_text = str(recent_messages[0].get("text") or "").strip()
+        if preview_text and not latest_text:
+            return True
+        return False
+
+    @classmethod
+    def _merge_recent_message_exports(
+        cls,
+        preferred_messages: list[dict[str, Any]],
+        fallback_messages: list[dict[str, Any]],
+        *,
+        max_messages: int,
+    ) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        anonymous_index = 0
+        for message in [*fallback_messages, *preferred_messages]:
+            key = str(message.get("messageId") or "").strip()
+            if not key:
+                anonymous_index += 1
+                key = f"anonymous:{anonymous_index}:{message.get('timestamp') or ''}:{message.get('sender') or ''}"
+            existing = merged.get(key, {})
+            merged[key] = cls._merge_recent_message_dicts(existing, message)
+        return sorted(merged.values(), key=cls._exported_message_epoch_for_sort, reverse=True)[:max_messages]
+
+    @staticmethod
+    def _merge_recent_message_dicts(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+        if not existing:
+            return dict(incoming)
+        merged = dict(existing)
+        for key, value in incoming.items():
+            if value is None or value == "":
+                continue
+            if key == "attachments" and merged.get("attachments") and not value:
+                continue
+            merged[key] = value
+        return merged
+
+    @classmethod
+    def _exported_message_epoch_for_sort(cls, message: dict[str, Any]) -> float:
+        return cls._exported_message_epoch(message) or 0.0
+
+    @classmethod
+    def _exported_message_epoch(cls, message: dict[str, Any]) -> float | None:
+        return cls._iso_timestamp_epoch(message.get("timestamp"))
+
+    @classmethod
+    def _whatsapp_timestamp_epoch(cls, value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            timestamp = float(value)
+        except (TypeError, ValueError):
+            return cls._iso_timestamp_epoch(value)
+        if timestamp > 10_000_000_000:
+            timestamp /= 1000
+        return timestamp
+
+    @staticmethod
+    def _iso_timestamp_epoch(value: Any) -> float | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
 
     def _serialize_recent_messages(self, messages: list[RecentMessage]) -> list[dict[str, Any]]:
         serialized: list[dict[str, Any]] = []

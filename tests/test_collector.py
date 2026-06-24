@@ -8,7 +8,7 @@ from whatsapp_collector.collector import (
     LABELS_BODY_JS,
     WhatsAppCollector,
 )
-from whatsapp_collector.models import ChatRow, IndexedDBThread, LabelStat, NormalizedEvent, RecentMessage, Snapshot
+from whatsapp_collector.models import ChatRow, IndexedDBThread, LabelStat, NormalizedEvent, RecentAttachment, RecentMessage, Snapshot
 
 
 class StubSession:
@@ -569,6 +569,131 @@ def test_dashboard_export_uses_opened_chat_fallback_for_labeled_visible_threads_
     ]
     assert thread["messages"] == thread["recentMessages"]
     assert thread["lastMessageText"] == "Opened fallback text"
+
+
+def test_dashboard_export_refreshes_stale_labeled_visible_thread_from_opened_chat() -> None:
+    class RefreshingCollector(WhatsAppCollector):
+        def __init__(self) -> None:
+            super().__init__(session=StubSession())
+            self.opened_chats: list[str] = []
+
+        def collect_snapshot(self) -> Snapshot:
+            return Snapshot(page_title="WhatsApp", page_url="https://web.whatsapp.com/", labels=[], chat_list=[])
+
+        def collect_labeled_threads(self, *args, **kwargs) -> list[IndexedDBThread]:
+            return [
+                IndexedDBThread(
+                    jid="ana@lid",
+                    display_name="Ana Rajko",
+                    phone_or_history_id=None,
+                    labels=["Follow Up"],
+                    last_message_timestamp=1782327000,
+                    unread_count=0,
+                    preview="Newest visible text",
+                    timestamp_label="Today",
+                    visible_in_chat_list=True,
+                    recent_messages=[
+                        RecentMessage(
+                            message_id="old-media",
+                            timestamp=1776500000,
+                            iso_timestamp="2026-04-18T08:13:20+00:00",
+                            direction="inbound",
+                            sender="Ana Rajko",
+                            text=None,
+                            text_available=False,
+                            message_type="image",
+                            subtype=None,
+                            attachments=[
+                                RecentAttachment(
+                                    attachment_id="att_old",
+                                    kind="image",
+                                    mime_type="image/jpeg",
+                                    file_name="old.jpg",
+                                    size_bytes=None,
+                                    status="notDownloaded",
+                                )
+                            ],
+                        )
+                    ],
+                )
+            ]
+
+        def _opened_chat_recent_messages_for_chat(self, chat_name: str, *, max_messages: int, **kwargs) -> list[dict]:
+            self.opened_chats.append(chat_name)
+            return [
+                {
+                    "messageId": "new-visible",
+                    "timestamp": "2026-06-24T18:50:00+00:00",
+                    "direction": "inbound",
+                    "sender": "Ana Rajko",
+                    "text": "Newest visible text",
+                    "textAvailable": True,
+                    "messageType": "chat",
+                    "subtype": None,
+                }
+            ]
+
+        def _excluded_recent_chat_names(self, excluded_labels):
+            return set()
+
+        def collect_chat_list(self) -> list[ChatRow]:
+            return []
+
+        def _recent_default_view_exports(self, **kwargs):
+            return []
+
+        def _recent_indexeddb_chat_exports(self, **kwargs):
+            return []
+
+    collector = RefreshingCollector()
+
+    payload = collector.collect_dashboard_export(allow_labels=["Follow Up"], max_messages=15)
+
+    thread = payload["threads"][0]
+    assert collector.opened_chats == ["Ana Rajko"]
+    assert thread["lastMessageAt"] == "2026-06-24T18:50:00+00:00"
+    assert thread["lastMessageText"] == "Newest visible text"
+    assert [message["messageId"] for message in thread["recentMessages"]] == ["new-visible", "old-media"]
+
+
+def test_opened_chat_refresh_decision_only_refreshes_stale_or_empty_latest_messages() -> None:
+    current_text = [
+        {
+            "messageId": "current",
+            "timestamp": "2026-06-24T18:50:00+00:00",
+            "text": "Current text",
+        }
+    ]
+    old_text = [
+        {
+            "messageId": "old",
+            "timestamp": "2026-06-23T18:50:00+00:00",
+            "text": "Old text",
+        }
+    ]
+    empty_latest = [
+        {
+            "messageId": "media",
+            "timestamp": "2026-06-24T18:50:00+00:00",
+            "text": None,
+        }
+    ]
+
+    assert not WhatsAppCollector._should_refresh_opened_chat_messages(
+        current_text,
+        expected_latest_timestamp=1782327000,
+        preview="Current text",
+    )
+    assert WhatsAppCollector._should_refresh_opened_chat_messages(
+        old_text,
+        expected_latest_timestamp=1782327000,
+        preview="Current text",
+    )
+    assert WhatsAppCollector._should_refresh_opened_chat_messages(
+        empty_latest,
+        expected_latest_timestamp=1782327000,
+        preview="Current text",
+    )
 
 
 def test_collect_labeled_threads_includes_all_labeled_chats_except_archive_label_only_or_excluded_label_only() -> None:
