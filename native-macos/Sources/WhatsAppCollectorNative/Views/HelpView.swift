@@ -59,7 +59,7 @@ struct HelpView: View {
                 GroupBox("Browser Requirements") {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("WhatsApp Collector needs Google Chrome installed and uses a dedicated Chrome profile, separate from your normal browsing profile. Click Launch / Login, let that Chrome window open, and keep WhatsApp Web or WhatsApp Business Web logged in there.")
-                        Text("Do not close the dedicated Chrome window while exporting. If Chrome asks for a QR login, scan it first, then return to the app and run the export. The native app uses Chrome DevTools on its private debug port; it does not send messages or need the old localhost web UI.")
+                        Text("Do not close the dedicated Chrome window while exporting. If Chrome asks for a QR login, scan it first, then return to the app and run the export. The app only reads the logged-in browser data needed for the export; it does not send messages or open the old browser-based app UI.")
                             .foregroundStyle(.secondary)
                     }
                     .font(.callout)
@@ -69,7 +69,9 @@ struct HelpView: View {
 
                 GroupBox("Automation") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Automatic exports use a macOS LaunchAgent. Native schedules call the bundled bridge directly, so the localhost web UI does not need to be running.")
+                        Text("Use the Automation tab to start or stop recurring exports. When automatic exports are on, macOS runs WhatsApp Collector on the interval you choose while you are logged in, refreshes the same JSON file, and records the last successful run in the app.")
+                            .foregroundStyle(.secondary)
+                        Text("Turn on Launch at Login there if you want the app itself to open automatically after you sign in. You can turn either option off from the same Automation tab.")
                             .foregroundStyle(.secondary)
                         Button {
                             Task { await store.installSchedule() }
@@ -125,9 +127,9 @@ struct HelpView: View {
                             action: store.copyOutputPath
                         )
                         Button {
-                            store.copyPrompt()
+                            appActions.showAIPrompt()
                         } label: {
-                            Label("Copy AI Prompt", systemImage: "doc.on.doc")
+                            Label("View/Copy AI Prompt", systemImage: "doc.on.doc")
                         }
                     }
                     .padding(.vertical, 4)

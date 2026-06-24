@@ -293,6 +293,7 @@ def main(argv: Sequence[str] | None = None, *, collector: WhatsAppCollector | No
         if args.write:
             payload["written_to"] = str(_write_snapshot(payload, storage_dir, folder="events"))
     elif args.command == "dashboard-export":
+        output_path = Path(args.output).expanduser()
         payload = collector.collect_dashboard_export(
             account_label=args.account_label,
             allow_labels=args.allow_label,
@@ -300,8 +301,9 @@ def main(argv: Sequence[str] | None = None, *, collector: WhatsAppCollector | No
             max_messages=max_messages,
             max_all_chats=max_all_chats,
             include_groups=args.include_groups,
+            attachments_dir=output_path.parent / "Attachments",
         )
-        payload["written_to"] = str(_write_atomic_json(payload, Path(args.output)))
+        payload["written_to"] = str(_write_atomic_json(payload, output_path))
     elif args.command == "ensure-window":
         payload = ensure_dedicated_whatsapp_window(
             display_name=args.display_name,

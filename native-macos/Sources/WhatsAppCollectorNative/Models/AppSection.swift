@@ -23,7 +23,7 @@ enum AppSection: String, CaseIterable, Identifiable {
 
     var navigationTitle: String {
         switch self {
-        case .dashboard: "WhatsApp Collector Dashboard"
+        case .dashboard: "WhatsApp Collector"
         default: title
         }
     }

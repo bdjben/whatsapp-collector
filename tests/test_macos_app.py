@@ -170,16 +170,41 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     project = Path(__file__).resolve().parents[1]
     app_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "App" / "WhatsAppCollectorNativeApp.swift").read_text()
     section_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Models" / "AppSection.swift").read_text()
+    dashboard_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Views" / "DashboardView.swift").read_text()
+    export_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Views" / "ExportPreviewView.swift").read_text()
+    automation_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Views" / "AutomationView.swift").read_text()
+    prompt_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Views" / "AIPromptWindow.swift").read_text()
+    components_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Views" / "Components.swift").read_text()
     help_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Views" / "HelpView.swift").read_text()
     migration_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Support" / "LegacyAppMigration.swift").read_text()
     store_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Stores" / "CollectorStore.swift").read_text()
+    login_item_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Support" / "LoginItemManager.swift").read_text()
 
     assert 'MenuBarExtra("W↗")' in app_source
     assert "NSWindow.allowsAutomaticWindowTabbing = false" in app_source
     assert "closeDuplicateMainWindows()" in app_source
-    assert 'case .dashboard: "WhatsApp Collector Dashboard"' in section_source
+    assert 'case .dashboard: "WhatsApp Collector"' in section_source
+    assert 'title: "WhatsApp Collector"' in dashboard_source
+    assert "Native macOS app" not in dashboard_source
+    assert dashboard_source.index('Label("Load Labels"') < dashboard_source.index('Label("Run Export"')
+    assert 'Label("Open Export Preview"' in dashboard_source
+    assert "Updates and Help" not in dashboard_source
+    assert dashboard_source.index("collectionSettings") < dashboard_source.index("browserReadiness")
+    assert dashboard_source.index("chromeProfile") < dashboard_source.index("files")
+    assert "deleteAction" in components_source
+    assert "removeLabel" in store_source
+    assert "Messages Skipped: \\(skipped) - click for details" in export_source
+    assert "View/Copy AI Prompt" in app_source
+    assert "View/Copy AI Prompt" in export_source
+    assert "Window(\"AI Prompt\", id: \"ai-prompt\")" in app_source
+    assert "Temporary Prompt Editing" in prompt_source
+    assert "Close Without Saving" in prompt_source
+    assert "SMAppService.mainApp" in login_item_source
+    assert "Launch at Login" in automation_source
     assert "case help" in section_source
     assert "Older App Cleanup" in help_source
+    assert "localhost web UI" not in help_source
+    assert "Native schedules call the bundled bridge" not in help_source
     assert "whatsapp-collector.pyz" in migration_source
     assert "WhatsAppCollectorMenu.swift" in migration_source
     assert "LSUIElement" in migration_source

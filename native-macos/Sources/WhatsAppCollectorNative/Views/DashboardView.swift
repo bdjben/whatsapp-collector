@@ -13,10 +13,10 @@ struct DashboardView: View {
 
                 metrics
                 actions
-                updates
-                browserReadiness
                 collectionSettings
-                paths
+                browserReadiness
+                chromeProfile
+                files
             }
             .padding(22)
         }
@@ -25,7 +25,7 @@ struct DashboardView: View {
     private var dashboardHeader: some View {
         HStack(alignment: .top, spacing: 16) {
             SectionHeader(
-                title: "WhatsApp Collector Dashboard",
+                title: "WhatsApp Collector",
                 subtitle: "Launch the dedicated WhatsApp Web profile, run exports, and keep the AI-ready JSON fresh.",
                 systemImage: "message.badge"
             )
@@ -33,9 +33,6 @@ struct DashboardView: View {
             VStack(alignment: .trailing, spacing: 6) {
                 Text(AppMetadata.displayVersion)
                     .font(.headline)
-                Text("Native macOS app")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 Button {
                     appActions.checkForUpdates()
                 } label: {
@@ -89,6 +86,13 @@ struct DashboardView: View {
                 .disabled(store.isBusy)
 
                 Button {
+                    Task { await store.loadLabels() }
+                } label: {
+                    Label("Load Labels", systemImage: "tag")
+                }
+                .disabled(store.isBusy)
+
+                Button {
                     Task { await store.runExport() }
                 } label: {
                     Label("Run Export", systemImage: "square.and.arrow.down")
@@ -96,19 +100,13 @@ struct DashboardView: View {
                 .keyboardShortcut("r", modifiers: [.command])
                 .disabled(store.isBusy)
 
-                Button {
-                    Task { await store.loadLabels() }
-                } label: {
-                    Label("Load Labels", systemImage: "tag")
-                }
-                .disabled(store.isBusy)
-
                 Spacer()
 
                 Button {
                     store.loadExportPreview()
+                    store.selectedSection = .export
                 } label: {
-                    Label("Preview", systemImage: "doc.text.magnifyingglass")
+                    Label("Open Export Preview", systemImage: "doc.text.magnifyingglass")
                 }
                 Button {
                     store.revealOutput()
@@ -119,34 +117,6 @@ struct DashboardView: View {
             .padding(.vertical, 4)
         } label: {
             Text("Primary Actions")
-        }
-    }
-
-    private var updates: some View {
-        GroupBox("Updates and Help") {
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(AppMetadata.displayVersion)
-                        .font(.headline)
-                    Text("Use Sparkle to check GitHub releases for newer signed builds.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button {
-                    appActions.checkForUpdates()
-                } label: {
-                    Label("Check for Updates...", systemImage: "arrow.triangle.2.circlepath")
-                }
-                .accessibilityLabel("Check for Updates")
-                Button {
-                    appActions.openRepository()
-                } label: {
-                    Label("GitHub", systemImage: "questionmark.circle")
-                }
-                .accessibilityLabel("Open GitHub Repository")
-            }
-            .padding(.vertical, 4)
         }
     }
 
@@ -229,7 +199,20 @@ struct DashboardView: View {
         }
     }
 
-    private var paths: some View {
+    private var chromeProfile: some View {
+        GroupBox("Chrome Profile Folder") {
+            PathRow(
+                title: "Dedicated Chrome profile",
+                path: $store.configuration.profileDir,
+                systemImage: "person.crop.square",
+                actionTitle: "Open",
+                action: store.openProfileFolder
+            )
+            .padding(.vertical, 4)
+        }
+    }
+
+    private var files: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 16) {
                 PathRow(
@@ -238,14 +221,6 @@ struct DashboardView: View {
                     systemImage: "doc.badge.gearshape",
                     actionTitle: "Copy",
                     action: store.copyOutputPath
-                )
-                Divider()
-                PathRow(
-                    title: "Chrome profile folder",
-                    path: $store.configuration.profileDir,
-                    systemImage: "person.crop.square",
-                    actionTitle: "Open",
-                    action: store.openProfileFolder
                 )
             }
             .padding(.vertical, 4)

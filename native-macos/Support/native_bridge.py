@@ -180,6 +180,7 @@ def _run_export(cfg: dict[str, Any]) -> dict[str, Any]:
         allow_labels=cfg["allow_labels"],
         exclude_labels=cfg["exclude_labels"],
         include_groups=cfg["include_groups"],
+        attachments_dir=cfg["output_path"].parent / "Attachments",
     )
     _write_atomic_json(export, cfg["output_path"])
     summary = _read_export_summary(cfg["output_path"], parse_json=True)

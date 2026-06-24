@@ -21,6 +21,20 @@ class ChatRow:
 
 
 @dataclass(frozen=True)
+class RecentAttachment:
+    attachment_id: str
+    kind: str
+    mime_type: str | None
+    file_name: str | None
+    size_bytes: int | None
+    status: str
+    relative_path: str | None = None
+    local_path: str | None = None
+    skipped_reason: str | None = None
+    note: str | None = None
+
+
+@dataclass(frozen=True)
 class RecentMessage:
     message_id: str
     timestamp: int | None
@@ -31,6 +45,7 @@ class RecentMessage:
     text_available: bool
     message_type: str
     subtype: str | None
+    attachments: list[RecentAttachment] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

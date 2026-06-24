@@ -2,7 +2,9 @@ import SwiftUI
 
 struct ExportPreviewView: View {
     @EnvironmentObject private var store: CollectorStore
+    @Environment(\.appActions) private var appActions
     @State private var searchText = ""
+    @State private var warningDetailsExpanded = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -14,7 +16,7 @@ struct ExportPreviewView: View {
             if let export = store.export {
                 VStack(spacing: 0) {
                     if let warnings = export.exportWarnings, warnings.isEmpty == false {
-                        warningStrip(warnings)
+                        warningPanel(warnings)
                             .padding(.horizontal, 22)
                             .padding(.vertical, 10)
                         Divider()
@@ -54,9 +56,9 @@ struct ExportPreviewView: View {
                     Label("Reload File", systemImage: "arrow.clockwise")
                 }
                 Button {
-                    store.copyPrompt()
+                    appActions.showAIPrompt()
                 } label: {
-                    Label("Copy AI Prompt", systemImage: "doc.on.doc")
+                    Label("View/Copy AI Prompt", systemImage: "doc.on.doc")
                 }
                 Button {
                     store.copySelectedThreadJSON()
@@ -76,15 +78,38 @@ struct ExportPreviewView: View {
         }
     }
 
-    private func warningStrip(_ warnings: [String]) -> some View {
-        Label {
-            Text(warnings.prefix(3).joined(separator: "  "))
-                .lineLimit(2)
-                .textSelection(.enabled)
-        } icon: {
-            Image(systemName: "exclamationmark.triangle")
+    private func warningPanel(_ warnings: [String]) -> some View {
+        let skipped = messageSkippedCount(warnings)
+        return Group {
+            if skipped > 0 {
+                DisclosureGroup(isExpanded: $warningDetailsExpanded) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("WhatsApp Collector skipped \(skipped) chat row\(skipped == 1 ? "" : "s") because it could identify the chat but could not capture any recent message text or attachment metadata for that row during this export.")
+                        Text("This can happen when WhatsApp Web has not loaded that conversation, when rows are media-only/system/encrypted in a way the browser does not expose, or when the collector cannot safely open the chat during the current run. The export keeps the last successful file protection behavior and records this warning so downstream agents do not mistake missing rows for new messages.")
+                            .foregroundStyle(.secondary)
+                        if warnings.count > 1 {
+                            Text(warnings.joined(separator: "\n"))
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                        }
+                    }
+                    .font(.callout)
+                    .padding(.top, 8)
+                } label: {
+                    Label("Messages Skipped: \(skipped) - click for details", systemImage: "exclamationmark.triangle")
+                        .font(.callout.weight(.semibold))
+                }
+            } else {
+                Label {
+                    Text(warnings.prefix(3).joined(separator: "  "))
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle")
+                }
+                .font(.callout)
+            }
         }
-        .font(.callout)
         .foregroundStyle(.orange)
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -186,6 +211,11 @@ struct ExportPreviewView: View {
                                     Text(messageText(for: message))
                                         .textSelection(.enabled)
                                         .foregroundStyle(messageTextIsAvailable(for: message) ? .primary : .secondary)
+                                    if let attachments = message.attachments, attachments.isEmpty == false {
+                                        ForEach(attachments) { attachment in
+                                            attachmentLine(attachment)
+                                        }
+                                    }
                                 }
                                 Divider()
                             }
@@ -238,5 +268,54 @@ struct ExportPreviewView: View {
     private func messageTextIsAvailable(for message: ExportMessage) -> Bool {
         let text = message.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return !text.isEmpty && message.textAvailable != false
+    }
+
+    private func messageSkippedCount(_ warnings: [String]) -> Int {
+        for warning in warnings {
+            guard warning.hasPrefix("message-capture-skipped:") else { continue }
+            let suffix = warning.split(separator: ":", maxSplits: 1).last
+            if let suffix, let count = Int(suffix) {
+                return count
+            }
+        }
+        return 0
+    }
+
+    private func attachmentLine(_ attachment: ExportAttachment) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: attachmentIcon(attachment))
+            Text(attachment.kind ?? "attachment")
+                .font(.caption.weight(.semibold))
+            if let fileName = attachment.fileName {
+                Text(fileName)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            if let size = attachment.sizeBytes {
+                Text(DisplayFormatters.bytes(size))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Text(attachment.status ?? "unknown")
+                .font(.caption)
+                .foregroundStyle(attachment.status == "downloaded" ? .green : .orange)
+            if let reason = attachment.skippedReason {
+                Text(reason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .textSelection(.enabled)
+    }
+
+    private func attachmentIcon(_ attachment: ExportAttachment) -> String {
+        switch attachment.kind {
+        case "image": return "photo"
+        case "video": return "film"
+        case "audio": return "waveform"
+        case "document": return "doc"
+        default: return "paperclip"
+        }
     }
 }

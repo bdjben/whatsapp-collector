@@ -39,6 +39,7 @@ struct AppActionHandlers {
     var checkForUpdates: @MainActor () -> Void = {}
     var openRepository: @MainActor () -> Void = {}
     var openLatestRelease: @MainActor () -> Void = {}
+    var showAIPrompt: @MainActor () -> Void = {}
 }
 
 private struct AppActionHandlersKey: EnvironmentKey {

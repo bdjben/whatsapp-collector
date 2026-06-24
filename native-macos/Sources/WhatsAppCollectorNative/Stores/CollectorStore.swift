@@ -17,6 +17,8 @@ final class CollectorStore: ObservableObject {
     @Published var legacyAppCandidate: LegacyAppCandidate?
     @Published var legacyCleanupSummary: String?
     @Published var selectedSection: AppSection = .dashboard
+    @Published var launchAtLoginEnabled: Bool = false
+    @Published var launchAtLoginStatus: String = "Not configured"
 
     private let bridge = CollectorBridge()
     private let defaults = UserDefaults.standard
@@ -40,12 +42,14 @@ final class CollectorStore: ObservableObject {
         scheduleIntervalMinutes = loadedInterval
         aiPrompt = DisplayFormatters.aiPrompt(path: loadedConfiguration.outputPath)
         availableLabels = Self.loadStringArray(for: .availableLabels, from: UserDefaults.standard)
+        refreshLaunchAtLoginStatus()
     }
 
     func bootstrap() async {
         await refreshStatus(applySchedulePayloadIfNeeded: true)
         loadExportPreview()
         refreshLegacyAppCandidate()
+        refreshLaunchAtLoginStatus()
     }
 
     func saveConfiguration() {
@@ -141,6 +145,7 @@ final class CollectorStore: ObservableObject {
                 maxRecentMessages: decoded.maxRecentMessages,
                 maxAllViewChats: decoded.maxAllViewChats,
                 includeGroups: decoded.includeGroups,
+                attachmentsRoot: decoded.attachmentsRoot,
                 threads: decoded.threads.sortedByRecency(),
                 exportWarnings: decoded.exportWarnings
             )
@@ -192,12 +197,40 @@ final class CollectorStore: ObservableObject {
         saveConfiguration()
     }
 
+    func removeLabel(_ label: String) {
+        let clean = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        availableLabels.removeAll { $0.caseInsensitiveCompare(clean) == .orderedSame }
+        defaults.set(availableLabels, forKey: DefaultsKey.availableLabels.rawValue)
+        clearLabelDecision(clean)
+    }
+
     func copyOutputPath() {
         copy(configuration.outputPath)
     }
 
     func copyPrompt() {
         copy(aiPrompt)
+    }
+
+    func defaultAIPrompt() -> String {
+        DisplayFormatters.aiPrompt(path: configuration.outputPath)
+    }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            try LoginItemManager.setEnabled(enabled)
+            refreshLaunchAtLoginStatus()
+        } catch {
+            refreshLaunchAtLoginStatus()
+            lastError = "Could not update Launch at Login: \(error.localizedDescription)"
+            diagnostics = error.localizedDescription
+        }
+    }
+
+    func refreshLaunchAtLoginStatus() {
+        launchAtLoginEnabled = LoginItemManager.isEnabled
+        launchAtLoginStatus = LoginItemManager.statusDescription
     }
 
     func copySelectedThreadJSON() {

@@ -135,6 +135,7 @@ struct LabelChip: View {
     var allowAction: () -> Void
     var excludeAction: () -> Void
     var clearAction: () -> Void
+    var deleteAction: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
@@ -150,6 +151,12 @@ struct LabelChip: View {
             .labelsHidden()
             .pickerStyle(.segmented)
             .frame(width: 330)
+            Button(role: .destructive, action: deleteAction) {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .help("Remove this label from the local rule list")
+            .accessibilityLabel("Remove \(title) from label list")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)

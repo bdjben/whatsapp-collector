@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import base64
 from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import hashlib
 import json
+import mimetypes
 import re
+from pathlib import Path
 from typing import Any
 
 from whatsapp_collector.chrome_session import ChromeWhatsAppSession
@@ -13,6 +17,7 @@ from whatsapp_collector.models import (
     IndexedDBThread,
     LabelStat,
     NormalizedEvent,
+    RecentAttachment,
     RecentMessage,
     Snapshot,
 )
@@ -30,6 +35,15 @@ DEFAULT_MAX_MESSAGES = MAX_MESSAGE_LOOKBACK_HARD_LIMIT
 DEFAULT_ALL_VIEW_CHAT_LIMIT = 15
 GROUP_INCLUDE_STANDARD = "standard"
 GROUP_INCLUDE_LABELED_ALWAYS = "labeledAlways"
+MAX_AUTOMATIC_VIDEO_ATTACHMENT_BYTES = 10 * 1024 * 1024
+ATTACHMENT_MESSAGE_TYPES = {
+    "image",
+    "document",
+    "video",
+    "ptt",
+    "audio",
+    "sticker",
+}
 
 
 class WhatsAppCollector:
@@ -269,6 +283,7 @@ class WhatsAppCollector:
         max_messages: int = MAX_MESSAGE_LOOKBACK_HARD_LIMIT,
         max_all_chats: int = DEFAULT_ALL_VIEW_CHAT_LIMIT,
         include_groups: str = GROUP_INCLUDE_STANDARD,
+        attachments_dir: Path | str | None = None,
     ) -> dict[str, Any]:
         with self._cached_idb_reads():
             return self._collect_dashboard_export(
@@ -278,6 +293,7 @@ class WhatsAppCollector:
                 max_messages=max_messages,
                 max_all_chats=max_all_chats,
                 include_groups=include_groups,
+                attachments_dir=attachments_dir,
             )
 
     def _collect_dashboard_export(
@@ -289,10 +305,12 @@ class WhatsAppCollector:
         max_messages: int = MAX_MESSAGE_LOOKBACK_HARD_LIMIT,
         max_all_chats: int = DEFAULT_ALL_VIEW_CHAT_LIMIT,
         include_groups: str = GROUP_INCLUDE_STANDARD,
+        attachments_dir: Path | str | None = None,
     ) -> dict[str, Any]:
         max_messages = self._bounded_max_messages(max_messages)
         max_all_chats = max(1, int(max_all_chats))
         include_groups = self._normalized_group_policy(include_groups)
+        attachments_root = Path(attachments_dir).expanduser() if attachments_dir else None
         excluded_labels = self._effective_excluded_labels(exclude_labels)
         forced_labels = list(allow_labels or [])
         snapshot = self.collect_snapshot()
@@ -321,7 +339,12 @@ class WhatsAppCollector:
             recent_messages = self._serialize_recent_messages(thread.recent_messages)
             if not recent_messages and thread.visible_in_chat_list:
                 try:
-                    recent_messages = self._opened_chat_recent_messages_for_chat(thread.display_name, max_messages=max_messages)
+                    recent_messages = self._opened_chat_recent_messages_for_chat(
+                        thread.display_name,
+                        max_messages=max_messages,
+                        attachments_dir=attachments_root,
+                        thread_key=thread.jid,
+                    )
                 except RuntimeError:
                     recent_messages = []
             last_message_at, last_direction, last_sender, last_text = self._latest_thread_summary(thread)
@@ -373,6 +396,7 @@ class WhatsAppCollector:
                 include_groups=include_groups,
                 max_messages=max_messages,
                 limit=max_all_chats,
+                attachments_dir=attachments_root,
             )
         )
         exported_threads.extend(
@@ -383,6 +407,7 @@ class WhatsAppCollector:
                 include_groups=include_groups,
                 max_messages=max_messages,
                 limit=max_all_chats,
+                attachments_dir=attachments_root,
             )
         )
         exported_threads.sort(key=self._export_thread_recency_key, reverse=True)
@@ -400,6 +425,8 @@ class WhatsAppCollector:
             "includeGroups": include_groups,
             "threads": exported_threads,
         }
+        if attachments_root:
+            payload["attachmentsRoot"] = str(attachments_root)
         if export_warnings:
             if message_capture_skipped_count:
                 export_warnings.append(f"message-capture-skipped:{message_capture_skipped_count}")
@@ -615,6 +642,7 @@ class WhatsAppCollector:
         include_groups: str,
         max_messages: int,
         limit: int = 15,
+        attachments_dir: Path | None = None,
     ) -> list[dict[str, Any]]:
         seen_titles = {self._normalized_chat_identity(title) for title in existing_titles}
         recent_exports: list[dict[str, Any]] = []
@@ -645,7 +673,7 @@ class WhatsAppCollector:
             recent_messages = []
             candidate_message_keys = self._candidate_message_keys_for_default_view_row(row, contact=contact, group=group, chat=chat)
             candidate_messages = self._collect_candidate_messages(candidate_message_keys, messages_by_jid)
-            if jid and any(self._extract_message_text(message) for message in candidate_messages):
+            if jid and any(self._message_has_exportable_content(message) for message in candidate_messages):
                 recent_messages = self._serialize_recent_messages(
                     self._recent_messages_for_thread(
                         jid=jid,
@@ -654,11 +682,18 @@ class WhatsAppCollector:
                         messages=candidate_messages,
                         preview=row.preview,
                         max_messages=max_messages,
+                        attachments_dir=attachments_dir,
+                        thread_key=jid or row.chat_name,
                     )
                 )
             if not recent_messages:
                 try:
-                    recent_messages = self._opened_chat_recent_messages_for_chat(row.chat_name, max_messages=max_messages)
+                    recent_messages = self._opened_chat_recent_messages_for_chat(
+                        row.chat_name,
+                        max_messages=max_messages,
+                        attachments_dir=attachments_dir,
+                        thread_key=jid or row.chat_name,
+                    )
                 except RuntimeError:
                     recent_messages = []
             if not recent_messages:
@@ -697,6 +732,7 @@ class WhatsAppCollector:
         include_groups: str,
         max_messages: int,
         limit: int,
+        attachments_dir: Path | None = None,
     ) -> list[dict[str, Any]]:
         try:
             label_rows = self._idb_read_all("label")
@@ -807,11 +843,18 @@ class WhatsAppCollector:
                     messages=candidate_messages,
                     preview="",
                     max_messages=max_messages,
+                    attachments_dir=attachments_dir,
+                    thread_key=jid,
                 )
             )
             if not recent_messages:
                 try:
-                    recent_messages = self._opened_chat_recent_messages_for_chat(display_name, max_messages=max_messages)
+                    recent_messages = self._opened_chat_recent_messages_for_chat(
+                        display_name,
+                        max_messages=max_messages,
+                        attachments_dir=attachments_dir,
+                        thread_key=jid,
+                    )
                 except RuntimeError:
                     recent_messages = []
             latest_raw = self._latest_raw_message(candidate_messages)
@@ -875,10 +918,10 @@ class WhatsAppCollector:
                 break
         return recent_exports
 
-    @staticmethod
-    def _serialize_recent_messages(messages: list[RecentMessage]) -> list[dict[str, Any]]:
-        return [
-            {
+    def _serialize_recent_messages(self, messages: list[RecentMessage]) -> list[dict[str, Any]]:
+        serialized: list[dict[str, Any]] = []
+        for message in messages:
+            item = {
                 "messageId": message.message_id,
                 "timestamp": message.iso_timestamp,
                 "direction": message.direction,
@@ -888,10 +931,39 @@ class WhatsAppCollector:
                 "messageType": message.message_type,
                 "subtype": message.subtype,
             }
-            for message in messages
-        ]
+            if message.attachments:
+                item["attachments"] = [self._serialize_attachment(attachment) for attachment in message.attachments]
+            serialized.append(item)
+        return serialized
 
-    def _opened_chat_recent_messages_for_chat(self, chat_name: str, *, max_messages: int) -> list[dict[str, Any]]:
+    @staticmethod
+    def _serialize_attachment(attachment: RecentAttachment) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "attachmentId": attachment.attachment_id,
+            "kind": attachment.kind,
+            "mimeType": attachment.mime_type,
+            "fileName": attachment.file_name,
+            "sizeBytes": attachment.size_bytes,
+            "status": attachment.status,
+        }
+        if attachment.relative_path:
+            payload["relativePath"] = attachment.relative_path
+        if attachment.local_path:
+            payload["localPath"] = attachment.local_path
+        if attachment.skipped_reason:
+            payload["skippedReason"] = attachment.skipped_reason
+        if attachment.note:
+            payload["note"] = attachment.note
+        return payload
+
+    def _opened_chat_recent_messages_for_chat(
+        self,
+        chat_name: str,
+        *,
+        max_messages: int,
+        attachments_dir: Path | None = None,
+        thread_key: str | None = None,
+    ) -> list[dict[str, Any]]:
         if not hasattr(self.session, "click_point"):
             raise RuntimeError("Opened-chat message capture requires a DevTools-backed Chrome session")
         self._reset_chat_list_to_top()
@@ -916,22 +988,29 @@ class WhatsAppCollector:
             if not message_id:
                 continue
             text = self._extract_message_text(item)
-            if not text:
+            attachments = self._message_attachments(
+                item,
+                attachments_dir=attachments_dir,
+                thread_key=thread_key or chat_name,
+                message_id=message_id,
+            )
+            if not text and not attachments:
                 continue
             direction = self._message_direction(item)
             sender = self._message_sender(item, display_name=chat_name, direction=direction)
-            opened_messages.append(
-                {
-                    "messageId": message_id,
-                    "timestamp": self._format_timestamp(item.get("t")),
-                    "direction": direction,
-                    "sender": sender,
-                    "text": text,
-                    "textAvailable": True,
-                    "messageType": item.get("type") or "unknown",
-                    "subtype": item.get("subtype"),
-                }
-            )
+            opened_message = {
+                "messageId": message_id,
+                "timestamp": self._format_timestamp(item.get("t")),
+                "direction": direction,
+                "sender": sender,
+                "text": text,
+                "textAvailable": bool(text),
+                "messageType": item.get("type") or "unknown",
+                "subtype": item.get("subtype"),
+            }
+            if attachments:
+                opened_message["attachments"] = [self._serialize_attachment(attachment) for attachment in attachments]
+            opened_messages.append(opened_message)
         return opened_messages
 
     @staticmethod
@@ -940,7 +1019,7 @@ class WhatsAppCollector:
 
     @staticmethod
     def _opened_chat_recent_messages_js(*, max_messages: int) -> str:
-        return f'''(async ()=>{{await new Promise(resolve => setTimeout(resolve, 1200)); const titleCandidates=[...document.querySelectorAll('header [title], #main header [title], #main header span[dir="auto"], #main header div[dir="auto"]')].map(el => (el.getAttribute('title') || (el.textContent||'').trim())).filter(Boolean); const openedChatTitle=titleCandidates.find(title => !['Profile details','click here for contact info'].includes(title)) || ''; const summarizeMsg=(msg)=>{{if(!msg||typeof msg!=='object') return null; const normalizeJid=(value)=>{{if(!value) return null; if(typeof value==='string') return value; if(typeof value==='object' && value._serialized) return value._serialized; return null;}}; return {{id: typeof msg.id === 'string' ? msg.id : (msg.id && msg.id._serialized) || null, t: msg.t ?? null, type: msg.type || null, subtype: msg.subtype || null, body: typeof msg.body === 'string' ? msg.body : null, caption: typeof msg.caption === 'string' ? msg.caption : null, text: typeof msg.text === 'string' ? msg.text : null, matchedText: typeof msg.matchedText === 'string' ? msg.matchedText : null, from: normalizeJid(msg.from), to: normalizeJid(msg.to), notifyName: typeof msg.notifyName === 'string' ? msg.notifyName : null}}; }}; const messages=[...document.querySelectorAll('#main [data-testid="msg-container"]')].slice(-{int(max_messages)}).map((container)=>{{ const fiberKey=Object.keys(container).find(k=>k.startsWith('__reactFiber$')); let fiber=fiberKey ? container[fiberKey] : null; while(fiber){{ const props=fiber.memoizedProps; if(props && typeof props==='object' && props.msg){{ return summarizeMsg(props.msg); }} fiber=fiber.return; }} return null; }}).filter(item => item && item.id).reverse(); return JSON.stringify({{OPENED_CHAT_RECENT_MESSAGES:true, openedChatTitle, messages}});}})()'''
+        return f'''(async ()=>{{await new Promise(resolve => setTimeout(resolve, 1200)); const maxVideoBytes={MAX_AUTOMATIC_VIDEO_ATTACHMENT_BYTES}; const titleCandidates=[...document.querySelectorAll('header [title], #main header [title], #main header span[dir="auto"], #main header div[dir="auto"]')].map(el => (el.getAttribute('title') || (el.textContent||'').trim())).filter(Boolean); const openedChatTitle=titleCandidates.find(title => !['Profile details','click here for contact info'].includes(title)) || ''; const normalizeJid=(value)=>{{if(!value) return null; if(typeof value==='string') return value; if(typeof value==='object' && value._serialized) return value._serialized; return null;}}; const bestFileName=(msg,kind,index)=>{{const raw=msg&&typeof msg==='object' ? (msg.filename||msg.fileName||msg.documentTitle||msg.title) : null; if(typeof raw==='string'&&raw.trim()) return raw.trim(); const ext=kind==='image'?'.jpg':kind==='video'?'.mp4':kind==='document'?'.bin':''; return `attachment-${{index+1}}${{ext}}`;}}; const blobToDataURL=(blob)=>new Promise((resolve,reject)=>{{const reader=new FileReader(); reader.onload=()=>resolve(reader.result); reader.onerror=()=>reject(reader.error); reader.readAsDataURL(blob);}}); const fetchAttachment=async(src,kind)=>{{if(!src||(!src.startsWith('blob:')&&!src.startsWith('data:'))) return {{status:'notDownloaded', skippedReason:'not-fetchable-from-dom'}}; try{{const blob=src.startsWith('data:') ? await (await fetch(src)).blob() : await (await fetch(src)).blob(); if(kind==='video' && blob.size>maxVideoBytes) return {{status:'notDownloaded', sizeBytes:blob.size, skippedReason:'video-over-10mb'}}; return {{status:'downloadable', sizeBytes:blob.size, mimeType:blob.type||null, dataUrl:await blobToDataURL(blob)}};}}catch(error){{return {{status:'notDownloaded', skippedReason:'browser-fetch-failed', note:String(error)}};}}}}; const domAttachments=async(container,msg)=>{{const nodes=[...container.querySelectorAll('img[src], video[src], a[href^="blob:"], a[href^="data:"]')]; const items=[]; for(let index=0; index<nodes.length; index++){{const node=nodes[index]; const src=node.getAttribute('src')||node.getAttribute('href')||''; const tag=node.tagName.toLowerCase(); const msgType=(msg&&msg.type)||''; const kind=tag==='video'?'video':(msgType==='document'||tag==='a'?'document':'image'); const fetched=await fetchAttachment(src,kind); items.push({{kind, mimeType:fetched.mimeType||(node.getAttribute('type')||null), fileName:node.getAttribute('download')||bestFileName(msg,kind,index), sizeBytes:fetched.sizeBytes??null, status:fetched.status, skippedReason:fetched.skippedReason||null, note:fetched.note||null, dataUrl:fetched.dataUrl||null}}); }} return items; }}; const summarizeMsg=async(msg,container)=>{{if(!msg||typeof msg!=='object') return null; const attachments=await domAttachments(container,msg); return {{id: typeof msg.id === 'string' ? msg.id : (msg.id && msg.id._serialized) || null, t: msg.t ?? null, type: msg.type || null, subtype: msg.subtype || null, body: typeof msg.body === 'string' ? msg.body : null, caption: typeof msg.caption === 'string' ? msg.caption : null, text: typeof msg.text === 'string' ? msg.text : null, matchedText: typeof msg.matchedText === 'string' ? msg.matchedText : null, mimetype: typeof msg.mimetype === 'string' ? msg.mimetype : null, fileName: typeof msg.fileName === 'string' ? msg.fileName : (typeof msg.filename === 'string' ? msg.filename : null), size: Number.isFinite(Number(msg.size||msg.fileSize)) ? Number(msg.size||msg.fileSize) : null, from: normalizeJid(msg.from), to: normalizeJid(msg.to), notifyName: typeof msg.notifyName === 'string' ? msg.notifyName : null, attachments}}; }}; const containers=[...document.querySelectorAll('#main [data-testid="msg-container"]')].slice(-{int(max_messages)}); const messages=(await Promise.all(containers.map(async(container)=>{{ const fiberKey=Object.keys(container).find(k=>k.startsWith('__reactFiber$')); let fiber=fiberKey ? container[fiberKey] : null; while(fiber){{ const props=fiber.memoizedProps; if(props && typeof props==='object' && props.msg){{ return await summarizeMsg(props.msg,container); }} fiber=fiber.return; }} return null; }}))).filter(item => item && item.id).reverse(); return JSON.stringify({{OPENED_CHAT_RECENT_MESSAGES:true, openedChatTitle, messages}});}})()'''
 
     @staticmethod
     def _parse_visible_dom_iso_timestamp(pre: str) -> str | None:
@@ -1246,31 +1325,263 @@ class WhatsAppCollector:
         messages: list[dict[str, Any]],
         preview: str,
         max_messages: int,
+        attachments_dir: Path | None = None,
+        thread_key: str | None = None,
     ) -> list[RecentMessage]:
         sorted_messages = sorted(messages, key=lambda item: item.get("t") or 0, reverse=True)
         recent_messages: list[RecentMessage] = []
         for message in sorted_messages:
+            message_id = message.get("id") or f"{jid}:{message.get('t') or 0}"
             message_text = self._extract_message_text(message)
-            if not message_text:
+            attachments = self._message_attachments(
+                message,
+                attachments_dir=attachments_dir,
+                thread_key=thread_key or jid,
+                message_id=str(message_id),
+            )
+            if not message_text and not attachments:
                 continue
             direction = self._message_direction(message)
             sender = self._message_sender(message, display_name=display_name, direction=direction)
             recent_messages.append(
                 RecentMessage(
-                    message_id=message.get("id") or f"{jid}:{message.get('t') or 0}",
+                    message_id=str(message_id),
                     timestamp=message.get("t"),
                     iso_timestamp=self._format_timestamp(message.get("t")),
                     direction=direction,
                     sender=sender,
                     text=message_text,
-                    text_available=True,
+                    text_available=bool(message_text),
                     message_type=message.get("type") or "unknown",
                     subtype=message.get("subtype"),
+                    attachments=attachments,
                 )
             )
             if len(recent_messages) >= max_messages:
                 break
         return recent_messages
+
+    def _message_attachments(
+        self,
+        message: dict[str, Any],
+        *,
+        attachments_dir: Path | None,
+        thread_key: str,
+        message_id: str,
+    ) -> list[RecentAttachment]:
+        candidates = self._attachment_candidates(message)
+        attachments: list[RecentAttachment] = []
+        for index, candidate in enumerate(candidates):
+            attachments.append(
+                self._attachment_from_candidate(
+                    candidate,
+                    attachments_dir=attachments_dir,
+                    thread_key=thread_key,
+                    message_id=message_id,
+                    index=index,
+                )
+            )
+        return attachments
+
+    def _message_has_exportable_content(self, message: dict[str, Any]) -> bool:
+        return bool(self._extract_message_text(message) or self._attachment_candidates(message))
+
+    def _attachment_candidates(self, message: dict[str, Any]) -> list[dict[str, Any]]:
+        explicit = message.get("attachments")
+        if isinstance(explicit, list) and explicit:
+            return [item for item in explicit if isinstance(item, dict)]
+
+        message_type = str(message.get("type") or "").strip().lower()
+        mimetype_value = self._first_string(message, ["mimetype", "mimeType", "mime"])
+        file_name = self._first_string(
+            message,
+            ["fileName", "filename", "documentTitle", "title"],
+        )
+        size_bytes = self._first_int(message, ["size", "fileSize", "sizeBytes"])
+        data_url = self._first_string(message, ["dataUrl", "dataURL"])
+        if message_type not in ATTACHMENT_MESSAGE_TYPES and not mimetype_value and not file_name:
+            return []
+        if message_type in ATTACHMENT_MESSAGE_TYPES and not any([mimetype_value, file_name, size_bytes, data_url]):
+            return []
+
+        return [
+            {
+                "kind": self._attachment_kind(message_type, mimetype_value, file_name),
+                "mimeType": mimetype_value,
+                "fileName": file_name,
+                "sizeBytes": size_bytes,
+                "dataUrl": data_url,
+            }
+        ]
+
+    def _attachment_from_candidate(
+        self,
+        candidate: dict[str, Any],
+        *,
+        attachments_dir: Path | None,
+        thread_key: str,
+        message_id: str,
+        index: int,
+    ) -> RecentAttachment:
+        kind = self._attachment_kind(
+            str(candidate.get("kind") or candidate.get("type") or "").strip().lower(),
+            self._first_string(candidate, ["mimeType", "mimetype", "mime"]),
+            self._first_string(candidate, ["fileName", "filename", "name"]),
+        )
+        mime_type = self._first_string(candidate, ["mimeType", "mimetype", "mime"])
+        size_bytes = self._first_int(candidate, ["sizeBytes", "size", "fileSize"])
+        file_name = self._safe_attachment_filename(
+            self._first_string(candidate, ["fileName", "filename", "name"]),
+            kind=kind,
+            mime_type=mime_type,
+            index=index,
+        )
+        attachment_id = self._stable_attachment_id(message_id=message_id, kind=kind, file_name=file_name, index=index)
+
+        data_url = self._first_string(candidate, ["dataUrl", "dataURL"])
+        if kind == "video" and size_bytes is not None and size_bytes > MAX_AUTOMATIC_VIDEO_ATTACHMENT_BYTES:
+            return RecentAttachment(
+                attachment_id=attachment_id,
+                kind=kind,
+                mime_type=mime_type,
+                file_name=file_name,
+                size_bytes=size_bytes,
+                status="notDownloaded",
+                skipped_reason="video-over-10mb",
+                note="Video was not downloaded automatically because it is larger than 10 MB; the user can view it in WhatsApp.",
+            )
+
+        if attachments_dir and data_url:
+            materialized = self._write_data_url_attachment(
+                data_url,
+                attachments_dir=attachments_dir,
+                thread_key=thread_key,
+                message_id=message_id,
+                file_name=file_name,
+            )
+            if materialized:
+                path, relative_path, actual_mime, actual_size = materialized
+                return RecentAttachment(
+                    attachment_id=attachment_id,
+                    kind=kind,
+                    mime_type=mime_type or actual_mime,
+                    file_name=file_name,
+                    size_bytes=size_bytes or actual_size,
+                    status="downloaded",
+                    relative_path=relative_path,
+                    local_path=str(path),
+                )
+
+        skipped_reason = self._first_string(candidate, ["skippedReason"]) or "download-not-available"
+        status = "notDownloaded"
+        note = self._first_string(candidate, ["note"])
+        if kind in {"image", "document"}:
+            note = note or "Attachment metadata was found, but WhatsApp Web did not expose downloadable bytes during this export."
+        elif kind == "video":
+            note = note or "Video metadata was found, but the video was not downloadable during this export."
+        return RecentAttachment(
+            attachment_id=attachment_id,
+            kind=kind,
+            mime_type=mime_type,
+            file_name=file_name,
+            size_bytes=size_bytes,
+            status=status,
+            skipped_reason=skipped_reason,
+            note=note,
+        )
+
+    @staticmethod
+    def _attachment_kind(raw_kind: str, mime_type: str | None, file_name: str | None) -> str:
+        kind = (raw_kind or "").lower()
+        mime = (mime_type or "").lower()
+        if kind in {"image", "document", "video", "audio", "sticker"}:
+            return kind
+        if kind == "ptt":
+            return "audio"
+        if mime.startswith("image/"):
+            return "image"
+        if mime.startswith("video/"):
+            return "video"
+        if mime.startswith("audio/"):
+            return "audio"
+        if file_name:
+            guessed, _ = mimetypes.guess_type(file_name)
+            return WhatsAppCollector._attachment_kind("", guessed, None)
+        return "document"
+
+    @staticmethod
+    def _stable_attachment_id(*, message_id: str, kind: str, file_name: str, index: int) -> str:
+        digest = hashlib.sha256(f"{message_id}:{kind}:{file_name}:{index}".encode("utf-8")).hexdigest()[:16]
+        return f"att_{digest}"
+
+    @staticmethod
+    def _safe_path_component(value: str) -> str:
+        clean = re.sub(r"[^A-Za-z0-9._-]+", "-", value or "").strip(".-")
+        return clean[:120] or "unknown"
+
+    @classmethod
+    def _safe_attachment_filename(cls, value: str | None, *, kind: str, mime_type: str | None, index: int) -> str:
+        raw = (value or "").strip()
+        if not raw:
+            extension = mimetypes.guess_extension(mime_type or "") or {
+                "image": ".jpg",
+                "video": ".mp4",
+                "audio": ".m4a",
+                "document": ".bin",
+                "sticker": ".webp",
+            }.get(kind, ".bin")
+            raw = f"attachment-{index + 1}{extension}"
+        name = cls._safe_path_component(raw)
+        suffix = Path(name).suffix
+        if not suffix:
+            guessed = mimetypes.guess_extension(mime_type or "")
+            if guessed:
+                name = f"{name}{guessed}"
+        return name
+
+    @classmethod
+    def _write_data_url_attachment(
+        cls,
+        data_url: str,
+        *,
+        attachments_dir: Path,
+        thread_key: str,
+        message_id: str,
+        file_name: str,
+    ) -> tuple[Path, str, str | None, int] | None:
+        match = re.match(r"^data:(?P<mime>[^;,]+)?(?:;charset=[^;,]+)?;base64,(?P<data>.+)$", data_url, re.DOTALL)
+        if not match:
+            return None
+        try:
+            data = base64.b64decode(match.group("data"), validate=True)
+        except ValueError:
+            return None
+        message_dir = attachments_dir / cls._safe_path_component(thread_key) / cls._safe_path_component(message_id)
+        message_dir.mkdir(parents=True, exist_ok=True)
+        output_path = message_dir / file_name
+        output_path.write_bytes(data)
+        relative_path = str(output_path.relative_to(attachments_dir.parent))
+        return output_path, relative_path, match.group("mime"), len(data)
+
+    @staticmethod
+    def _first_string(source: dict[str, Any], keys: list[str]) -> str | None:
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    @staticmethod
+    def _first_int(source: dict[str, Any], keys: list[str]) -> int | None:
+        for key in keys:
+            value = source.get(key)
+            if value is None or value == "":
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+        return None
 
     @staticmethod
     def _extract_message_text(message: dict[str, Any]) -> str | None:

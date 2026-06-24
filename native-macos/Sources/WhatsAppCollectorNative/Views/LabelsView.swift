@@ -28,7 +28,8 @@ struct LabelsView: View {
                                 role: role(for: label),
                                 allowAction: { store.setAllow(label) },
                                 excludeAction: { store.setExclude(label) },
-                                clearAction: { store.clearLabelDecision(label) }
+                                clearAction: { store.clearLabelDecision(label) },
+                                deleteAction: { store.removeLabel(label) }
                             )
                         }
                     }

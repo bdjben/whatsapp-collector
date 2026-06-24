@@ -113,6 +113,7 @@ struct WhatsAppExport: Decodable, Sendable {
     var maxRecentMessages: Int?
     var maxAllViewChats: Int?
     var includeGroups: String?
+    var attachmentsRoot: String?
     var threads: [ExportThread]
     var exportWarnings: [String]?
 }
@@ -163,7 +164,8 @@ struct ExportThread: Codable, Identifiable, Sendable {
                     text: lastMessageText,
                     textAvailable: true,
                     messageType: "chat",
-                    subtype: nil
+                    subtype: nil,
+                    attachments: nil
                 )
             ]
         }
@@ -191,8 +193,24 @@ struct ExportMessage: Codable, Identifiable, Sendable {
     var textAvailable: Bool?
     var messageType: String?
     var subtype: String?
+    var attachments: [ExportAttachment]?
 
     var id: String { messageId ?? timestamp ?? text ?? "unknown-message" }
+}
+
+struct ExportAttachment: Codable, Identifiable, Sendable {
+    var attachmentId: String?
+    var kind: String?
+    var mimeType: String?
+    var fileName: String?
+    var sizeBytes: Int?
+    var status: String?
+    var relativePath: String?
+    var localPath: String?
+    var skippedReason: String?
+    var note: String?
+
+    var id: String { attachmentId ?? localPath ?? relativePath ?? fileName ?? "unknown-attachment" }
 }
 
 extension Array where Element == ExportThread {

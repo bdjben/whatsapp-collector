@@ -109,6 +109,14 @@ struct WhatsAppCollectorNativeApp: App {
                 }
         }
         .defaultSize(width: 1180, height: 760)
+
+        Window("AI Prompt", id: "ai-prompt") {
+            AIPromptWindow()
+                .environmentObject(store)
+                .frame(minWidth: 680, minHeight: 520)
+        }
+        .defaultSize(width: 760, height: 620)
+
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates...") {
@@ -151,6 +159,11 @@ struct WhatsAppCollectorNativeApp: App {
 
                 Divider()
 
+                Button("View/Copy AI Prompt") {
+                    showAIPrompt()
+                }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+
                 Button("Reveal Export") {
                     store.revealOutput()
                 }
@@ -190,7 +203,8 @@ struct WhatsAppCollectorNativeApp: App {
         AppActionHandlers(
             checkForUpdates: checkForUpdates,
             openRepository: AppMetadata.openRepository,
-            openLatestRelease: AppMetadata.openLatestRelease
+            openLatestRelease: AppMetadata.openLatestRelease,
+            showAIPrompt: showAIPrompt
         )
     }
 
@@ -209,6 +223,12 @@ struct WhatsAppCollectorNativeApp: App {
     @MainActor
     private func checkForUpdates() {
         updaterController.updater.checkForUpdates()
+    }
+
+    @MainActor
+    private func showAIPrompt() {
+        openWindow(id: "ai-prompt")
+        NSApp.activate(ignoringOtherApps: true)
     }
 }
 
@@ -250,8 +270,8 @@ struct MenuBarContent: View {
         Button("Run Export") {
             Task { await store.runExport() }
         }
-        Button("Copy Prompt") {
-            store.copyPrompt()
+        Button("View/Copy AI Prompt") {
+            appActions.showAIPrompt()
         }
         Button("Reveal Export") {
             store.revealOutput()

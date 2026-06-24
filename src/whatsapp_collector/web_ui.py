@@ -288,6 +288,7 @@ def _display_path(path: Path) -> str:
 
 
 def _ai_harness_prompt(output_display_path: str) -> str:
+    attachment_root = str(Path(output_display_path).expanduser().parent / "Attachments")
     return (
         "My most recent WhatsApp Collector export is at:\n"
         f"{output_display_path}\n\n"
@@ -296,7 +297,11 @@ def _ai_harness_prompt(output_display_path: str) -> str:
         "if you cannot read local files directly, ask me to upload the JSON. If you need current "
         "WhatsApp context, read this file first, use its account metadata and threads/messages as source data, and cite that the "
         "information came from the local WhatsApp Collector export. Do not send messages or modify "
-        "WhatsApp from this file."
+        "WhatsApp from this file.\n\n"
+        "Some messages may include an attachments array. When an attachment has status=downloaded, "
+        f"open the referenced localPath, or resolve relativePath from the export folder; attachments are stored under {attachment_root}. "
+        "When an attachment has status=notDownloaded, treat it as a real media/document placeholder attached to that message, not as a new message. "
+        "If skippedReason is video-over-10mb, tell me that WhatsApp has a video for that message but it was not downloaded automatically because it is over 10 MB."
     )
 
 
@@ -348,6 +353,7 @@ def default_collect_export(
         allow_labels=allow_labels,
         exclude_labels=exclude_labels,
         include_groups=include_groups,
+        attachments_dir=output_path.parent / "Attachments",
     )
 
 

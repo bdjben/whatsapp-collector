@@ -14,6 +14,22 @@ struct AutomationView: View {
 
                 StatusBanner(busyState: store.busyState, error: store.lastError)
 
+                GroupBox("Launch at Login") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle(isOn: Binding(
+                            get: { store.launchAtLoginEnabled },
+                            set: { store.setLaunchAtLogin($0) }
+                        )) {
+                            Label("Open WhatsApp Collector when you log in", systemImage: "power")
+                        }
+                        .toggleStyle(.switch)
+                        Text(store.launchAtLoginStatus)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+
                 if store.schedule?.isLegacyWebSchedule == true {
                     Label(
                         "This schedule was installed by the older localhost web runner. Start automatic exports here to replace it with the native bridge runner.",

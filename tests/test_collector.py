@@ -1,3 +1,6 @@
+import base64
+from pathlib import Path
+
 from whatsapp_collector.collector import (
     CHAT_LIST_BODY_JS,
     CHAT_LIST_RESET_JS,
@@ -447,6 +450,73 @@ def test_collect_labeled_threads_enforces_allowlist_and_lookback_cap() -> None:
     assert len(threads[0].recent_messages) == 1
 
 
+def test_recent_message_attachments_are_stable_and_saved_by_message_id(tmp_path: Path) -> None:
+    collector = WhatsAppCollector(session=StubSession())
+    data = base64.b64encode(b"fake image bytes").decode("ascii")
+
+    messages = collector._recent_messages_for_thread(
+        jid="thread@lid",
+        display_name="Example Contact",
+        phone_or_history_id=None,
+        messages=[
+            {
+                "id": "false_thread@lid_media1",
+                "t": 1776500000,
+                "type": "image",
+                "from": "thread@lid",
+                "caption": "Receipt",
+                "mimetype": "image/png",
+                "fileName": "receipt.png",
+                "size": 16,
+                "dataUrl": f"data:image/png;base64,{data}",
+            }
+        ],
+        preview="",
+        max_messages=5,
+        attachments_dir=tmp_path / "Attachments",
+        thread_key="thread@lid",
+    )
+
+    serialized = collector._serialize_recent_messages(messages)
+
+    attachment = serialized[0]["attachments"][0]
+    assert attachment["attachmentId"].startswith("att_")
+    assert attachment["kind"] == "image"
+    assert attachment["status"] == "downloaded"
+    assert attachment["relativePath"] == "Attachments/thread-lid/false_thread-lid_media1/receipt.png"
+    assert (tmp_path / attachment["relativePath"]).read_bytes() == b"fake image bytes"
+
+
+def test_large_video_attachment_gets_placeholder_without_download(tmp_path: Path) -> None:
+    collector = WhatsAppCollector(session=StubSession())
+
+    messages = collector._recent_messages_for_thread(
+        jid="thread@lid",
+        display_name="Example Contact",
+        phone_or_history_id=None,
+        messages=[
+            {
+                "id": "false_thread@lid_video1",
+                "t": 1776500000,
+                "type": "video",
+                "from": "thread@lid",
+                "mimetype": "video/mp4",
+                "fileName": "long-video.mp4",
+                "size": 12 * 1024 * 1024,
+            }
+        ],
+        preview="",
+        max_messages=5,
+        attachments_dir=tmp_path / "Attachments",
+        thread_key="thread@lid",
+    )
+
+    attachment = collector._serialize_recent_messages(messages)[0]["attachments"][0]
+    assert attachment["status"] == "notDownloaded"
+    assert attachment["skippedReason"] == "video-over-10mb"
+    assert "larger than 10 MB" in attachment["note"]
+
+
 def test_dashboard_export_uses_opened_chat_fallback_for_labeled_visible_threads_without_indexeddb_text() -> None:
     class NoPlaintextMessageSession(StubSession):
         def run_async_json(self, script: str, result_var: str = "__hermes_async_result"):
@@ -464,7 +534,7 @@ def test_dashboard_export_uses_opened_chat_fallback_for_labeled_visible_threads_
             super().__init__(session=NoPlaintextMessageSession())
             self.opened_chats: list[str] = []
 
-        def _opened_chat_recent_messages_for_chat(self, chat_name: str, *, max_messages: int) -> list[dict]:
+        def _opened_chat_recent_messages_for_chat(self, chat_name: str, *, max_messages: int, **kwargs) -> list[dict]:
             self.opened_chats.append(chat_name)
             return [
                 {

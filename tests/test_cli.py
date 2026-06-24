@@ -93,6 +93,7 @@ class StubCollector:
         max_messages=15,
         max_all_chats=15,
         include_groups="standard",
+        attachments_dir=None,
     ):
         return {
             "source": "whatsapp",
