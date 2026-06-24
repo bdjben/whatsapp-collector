@@ -337,8 +337,9 @@ class WhatsAppCollector:
             if not clean_labels:
                 continue
             recent_messages = self._serialize_recent_messages(thread.recent_messages)
+            source_diagnostics = None
             if thread.visible_in_chat_list:
-                recent_messages = self._refresh_recent_messages_from_opened_chat(
+                recent_messages, source_diagnostics = self._refresh_recent_messages_from_opened_chat(
                     thread.display_name,
                     recent_messages=recent_messages,
                     max_messages=max_messages,
@@ -346,6 +347,8 @@ class WhatsAppCollector:
                     thread_key=thread.jid,
                     expected_latest_timestamp=thread.last_message_timestamp,
                     preview=thread.preview,
+                    force=True,
+                    return_diagnostics=True,
                 )
             last_message_at, last_direction, last_sender, last_text = self._latest_thread_summary(thread)
             if recent_messages:
@@ -357,30 +360,30 @@ class WhatsAppCollector:
             else:
                 message_capture_skipped_count += 1
                 continue
-            exported_threads.append(
-                {
-                    "threadKey": thread.jid,
-                    "chatTitle": thread.display_name,
-                    "chatType": "group" if thread.jid.endswith("@g.us") else "direct",
-                    "participants": [
-                        {
-                            "name": thread.display_name,
-                            "phone": thread.phone_or_history_id,
-                        }
-                    ],
-                    "labelsRaw": clean_labels,
-                    "labelsNormalized": [self._normalize_label_slug(label) for label in clean_labels],
-                    "unread": thread.unread_count > 0,
-                    "starred": False,
-                    "requiresResponse": (thread.unread_count > 0) or ("Follow Up" in clean_labels) or ("Important" in clean_labels),
-                    "lastMessageAt": last_message_at,
-                    "lastMessageDirection": last_direction,
-                    "lastMessageSender": last_sender,
-                    "lastMessageText": last_text,
-                    "recentMessages": recent_messages,
-                    "messages": list(recent_messages),
-                }
-            )
+            export_thread = {
+                "threadKey": thread.jid,
+                "chatTitle": thread.display_name,
+                "chatType": "group" if thread.jid.endswith("@g.us") else "direct",
+                "participants": [
+                    {
+                        "name": thread.display_name,
+                        "phone": thread.phone_or_history_id,
+                    }
+                ],
+                "labelsRaw": clean_labels,
+                "labelsNormalized": [self._normalize_label_slug(label) for label in clean_labels],
+                "unread": thread.unread_count > 0,
+                "starred": False,
+                "requiresResponse": (thread.unread_count > 0) or ("Follow Up" in clean_labels) or ("Important" in clean_labels),
+                "lastMessageAt": last_message_at,
+                "lastMessageDirection": last_direction,
+                "lastMessageSender": last_sender,
+                "lastMessageText": last_text,
+                "recentMessages": recent_messages,
+                "messages": list(recent_messages),
+            }
+            self._attach_source_diagnostics(export_thread, source_diagnostics)
+            exported_threads.append(export_thread)
         try:
             excluded_recent_chat_names = self._excluded_recent_chat_names(excluded_labels)
         except (RuntimeError, TimeoutError, ValueError) as exc:
@@ -686,7 +689,7 @@ class WhatsAppCollector:
                         thread_key=jid or row.chat_name,
                     )
                 )
-            recent_messages = self._refresh_recent_messages_from_opened_chat(
+            recent_messages, source_diagnostics = self._refresh_recent_messages_from_opened_chat(
                 row.chat_name,
                 recent_messages=recent_messages,
                 max_messages=max_messages,
@@ -694,32 +697,34 @@ class WhatsAppCollector:
                 thread_key=jid or row.chat_name,
                 expected_latest_timestamp=(chat or {}).get("t") if chat else None,
                 preview=row.preview,
+                force=True,
+                return_diagnostics=True,
             )
             if not recent_messages:
                 continue
 
             last_message = recent_messages[0]
-            recent_exports.append(
-                {
-                    "threadKey": jid or f"visible:{self._normalize_label_slug(row.chat_name)}",
-                    "chatTitle": row.chat_name,
-                    "chatType": "group" if jid and jid.endswith("@g.us") else ("direct" if jid else "unknown"),
-                    "participants": [{"name": row.chat_name, "phone": phone_or_history_id}],
-                    "labelsRaw": ["Unlabeled"],
-                    "labelsNormalized": ["unlabeled"],
-                    "unread": row.unread_count > 0 or row.unread_flag,
-                    "starred": False,
-                    "requiresResponse": row.unread_count > 0 or row.unread_flag,
-                    "lastMessageAt": last_message["timestamp"],
-                    "lastMessageDirection": last_message["direction"],
-                    "lastMessageSender": last_message["sender"],
-                    "lastMessageText": last_message["text"] or row.preview,
-                    "timestampLabel": row.timestamp_label,
-                    "sourceView": "all",
-                    "recentMessages": recent_messages,
-                    "messages": [dict(message) for message in recent_messages],
-                }
-            )
+            export_thread = {
+                "threadKey": jid or f"visible:{self._normalize_label_slug(row.chat_name)}",
+                "chatTitle": row.chat_name,
+                "chatType": "group" if jid and jid.endswith("@g.us") else ("direct" if jid else "unknown"),
+                "participants": [{"name": row.chat_name, "phone": phone_or_history_id}],
+                "labelsRaw": ["Unlabeled"],
+                "labelsNormalized": ["unlabeled"],
+                "unread": row.unread_count > 0 or row.unread_flag,
+                "starred": False,
+                "requiresResponse": row.unread_count > 0 or row.unread_flag,
+                "lastMessageAt": last_message["timestamp"],
+                "lastMessageDirection": last_message["direction"],
+                "lastMessageSender": last_message["sender"],
+                "lastMessageText": last_message["text"] or row.preview,
+                "timestampLabel": row.timestamp_label,
+                "sourceView": "all",
+                "recentMessages": recent_messages,
+                "messages": [dict(message) for message in recent_messages],
+            }
+            self._attach_source_diagnostics(export_thread, source_diagnostics)
+            recent_exports.append(export_thread)
         return recent_exports
 
     def _recent_indexeddb_chat_exports(
@@ -846,13 +851,22 @@ class WhatsAppCollector:
                     thread_key=jid,
                 )
             )
+            source_diagnostics = None
             if not recent_messages:
                 try:
-                    recent_messages = self._opened_chat_recent_messages_for_chat(
+                    opened_messages = self._opened_chat_recent_messages_for_chat(
                         display_name,
                         max_messages=max_messages,
                         attachments_dir=attachments_dir,
                         thread_key=jid,
+                    )
+                    recent_messages = opened_messages
+                    source_diagnostics = self._message_source_diagnostics(
+                        indexeddb_messages=[],
+                        opened_chat_messages=opened_messages,
+                        merged_messages=recent_messages,
+                        opened_chat_checked=True,
+                        max_messages=max_messages,
                     )
                 except RuntimeError:
                     recent_messages = []
@@ -887,26 +901,26 @@ class WhatsAppCollector:
             labels_normalized = [self._normalize_label_slug(label) for label in labels_raw]
             unread = int(chat.get("unreadCount") or 0) > 0
             requires_response = unread or bool({"follow-up", "important"} & set(labels_normalized))
-            recent_exports.append(
-                {
-                    "threadKey": jid,
-                    "chatTitle": display_name,
-                    "chatType": "group" if is_group_chat else "direct",
-                    "participants": [{"name": display_name, "phone": phone_or_history_id}],
-                    "labelsRaw": labels_raw,
-                    "labelsNormalized": labels_normalized,
-                    "unread": unread,
-                    "starred": False,
-                    "requiresResponse": requires_response,
-                    "lastMessageAt": last_message_at,
-                    "lastMessageDirection": last_direction,
-                    "lastMessageSender": last_sender,
-                    "lastMessageText": last_text,
-                    "sourceView": "indexeddb-recent",
-                    "recentMessages": recent_messages,
-                    "messages": [dict(message) for message in recent_messages],
-                }
-            )
+            export_thread = {
+                "threadKey": jid,
+                "chatTitle": display_name,
+                "chatType": "group" if is_group_chat else "direct",
+                "participants": [{"name": display_name, "phone": phone_or_history_id}],
+                "labelsRaw": labels_raw,
+                "labelsNormalized": labels_normalized,
+                "unread": unread,
+                "starred": False,
+                "requiresResponse": requires_response,
+                "lastMessageAt": last_message_at,
+                "lastMessageDirection": last_direction,
+                "lastMessageSender": last_sender,
+                "lastMessageText": last_text,
+                "sourceView": "indexeddb-recent",
+                "recentMessages": recent_messages,
+                "messages": [dict(message) for message in recent_messages],
+            }
+            self._attach_source_diagnostics(export_thread, source_diagnostics)
+            recent_exports.append(export_thread)
             if is_group_chat:
                 recent_group_count += 1
             else:
@@ -927,13 +941,15 @@ class WhatsAppCollector:
         thread_key: str,
         expected_latest_timestamp: Any = None,
         preview: str = "",
-    ) -> list[dict[str, Any]]:
-        if not self._should_refresh_opened_chat_messages(
+        force: bool = False,
+        return_diagnostics: bool = False,
+    ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        if not force and not self._should_refresh_opened_chat_messages(
             recent_messages,
             expected_latest_timestamp=expected_latest_timestamp,
             preview=preview,
         ):
-            return recent_messages
+            return (recent_messages, None) if return_diagnostics else recent_messages
         try:
             opened_messages = self._opened_chat_recent_messages_for_chat(
                 chat_name,
@@ -941,11 +957,139 @@ class WhatsAppCollector:
                 attachments_dir=attachments_dir,
                 thread_key=thread_key,
             )
-        except RuntimeError:
-            return recent_messages
+        except RuntimeError as exc:
+            diagnostic = self._message_source_diagnostics(
+                indexeddb_messages=recent_messages,
+                opened_chat_messages=[],
+                merged_messages=recent_messages,
+                opened_chat_checked=True,
+                opened_chat_error=str(exc),
+                max_messages=max_messages,
+            )
+            return (recent_messages, diagnostic) if return_diagnostics else recent_messages
         if not opened_messages:
-            return recent_messages
-        return self._merge_recent_message_exports(opened_messages, recent_messages, max_messages=max_messages)
+            diagnostic = self._message_source_diagnostics(
+                indexeddb_messages=recent_messages,
+                opened_chat_messages=[],
+                merged_messages=recent_messages,
+                opened_chat_checked=True,
+                max_messages=max_messages,
+            )
+            return (recent_messages, diagnostic) if return_diagnostics else recent_messages
+        merged_messages = self._merge_recent_message_exports(opened_messages, recent_messages, max_messages=max_messages)
+        diagnostic = self._message_source_diagnostics(
+            indexeddb_messages=recent_messages,
+            opened_chat_messages=opened_messages,
+            merged_messages=merged_messages,
+            opened_chat_checked=True,
+            max_messages=max_messages,
+        )
+        return (merged_messages, diagnostic) if return_diagnostics else merged_messages
+
+    @classmethod
+    def _attach_source_diagnostics(cls, export_thread: dict[str, Any], diagnostics: dict[str, Any] | None) -> None:
+        if diagnostics and diagnostics.get("issues"):
+            export_thread["sourceDiagnostics"] = diagnostics
+
+    @classmethod
+    def _message_source_diagnostics(
+        cls,
+        *,
+        indexeddb_messages: list[dict[str, Any]],
+        opened_chat_messages: list[dict[str, Any]],
+        merged_messages: list[dict[str, Any]],
+        opened_chat_checked: bool,
+        max_messages: int,
+        opened_chat_error: str | None = None,
+    ) -> dict[str, Any] | None:
+        issues: list[dict[str, Any]] = []
+        latest_indexeddb = cls._latest_exported_message(indexeddb_messages)
+        latest_opened = cls._latest_exported_message(opened_chat_messages)
+        latest_indexeddb_epoch = cls._exported_message_epoch(latest_indexeddb or {})
+        latest_opened_epoch = cls._exported_message_epoch(latest_opened or {})
+
+        if opened_chat_error:
+            if "requires a DevTools-backed Chrome session" not in opened_chat_error:
+                issues.append({"code": "opened-chat-check-failed", "detail": opened_chat_error[:240]})
+        elif opened_chat_checked and not opened_chat_messages and not indexeddb_messages:
+            issues.append({"code": "no-message-source-produced-exportable-content"})
+
+        if latest_opened_epoch is not None and (latest_indexeddb_epoch is None or latest_opened_epoch > latest_indexeddb_epoch + 1):
+            issues.append(
+                {
+                    "code": "opened-chat-newer-than-indexeddb",
+                    "openedChatLatestAt": latest_opened.get("timestamp") if latest_opened else None,
+                    "indexedDbLatestAt": latest_indexeddb.get("timestamp") if latest_indexeddb else None,
+                }
+            )
+        if latest_indexeddb_epoch is not None and latest_opened_epoch is not None and latest_indexeddb_epoch > latest_opened_epoch + 1:
+            issues.append(
+                {
+                    "code": "indexeddb-newer-than-opened-chat",
+                    "indexedDbLatestAt": latest_indexeddb.get("timestamp") if latest_indexeddb else None,
+                    "openedChatLatestAt": latest_opened.get("timestamp") if latest_opened else None,
+                }
+            )
+
+        issues.extend(cls._matching_message_conflicts(indexeddb_messages, opened_chat_messages))
+
+        if not issues:
+            return None
+        sources: list[str] = []
+        if indexeddb_messages:
+            sources.append("indexeddb")
+        if opened_chat_messages:
+            sources.append("opened-chat")
+        return {
+            "openedChatChecked": opened_chat_checked,
+            "sourcesUsed": sources,
+            "indexedDbMessageCount": len(indexeddb_messages),
+            "openedChatMessageCount": len(opened_chat_messages),
+            "mergedMessageCount": len(merged_messages),
+            "maxMessages": max_messages,
+            "issues": issues,
+        }
+
+    @classmethod
+    def _latest_exported_message(cls, messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+        ordered = sorted(messages, key=cls._exported_message_epoch_for_sort, reverse=True)
+        return ordered[0] if ordered else None
+
+    @classmethod
+    def _matching_message_conflicts(
+        cls,
+        indexeddb_messages: list[dict[str, Any]],
+        opened_chat_messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        issues: list[dict[str, Any]] = []
+        indexed_by_id = {str(message.get("messageId") or ""): message for message in indexeddb_messages if message.get("messageId")}
+        opened_by_id = {str(message.get("messageId") or ""): message for message in opened_chat_messages if message.get("messageId")}
+        for message_id in sorted(set(indexed_by_id) & set(opened_by_id)):
+            indexed = indexed_by_id[message_id]
+            opened = opened_by_id[message_id]
+            indexed_epoch = cls._exported_message_epoch(indexed)
+            opened_epoch = cls._exported_message_epoch(opened)
+            if indexed_epoch is not None and opened_epoch is not None and abs(indexed_epoch - opened_epoch) > 1:
+                issues.append(
+                    {
+                        "code": "matching-message-timestamp-conflict",
+                        "messageId": message_id,
+                        "indexedDbAt": indexed.get("timestamp"),
+                        "openedChatAt": opened.get("timestamp"),
+                    }
+                )
+            indexed_text_available = bool(str(indexed.get("text") or "").strip())
+            opened_text_available = bool(str(opened.get("text") or "").strip())
+            if indexed_text_available != opened_text_available:
+                issues.append(
+                    {
+                        "code": "matching-message-text-availability-conflict",
+                        "messageId": message_id,
+                        "indexedDbTextAvailable": indexed_text_available,
+                        "openedChatTextAvailable": opened_text_available,
+                    }
+                )
+        return issues
 
     @classmethod
     def _should_refresh_opened_chat_messages(

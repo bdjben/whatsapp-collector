@@ -16,7 +16,7 @@ struct LabelsView: View {
             if allLabels.isEmpty {
                 EmptyState(
                     title: "No labels loaded",
-                    detail: "Open the dedicated WhatsApp Web profile, then load labels. The native app reads WhatsApp’s IndexedDB label store directly.",
+                    detail: "Label rules are optional. Load labels only if you want Always Include or Never Include behavior; otherwise the export uses normal recent-chat rules.",
                     systemImage: "tag.slash"
                 )
             } else {
@@ -43,7 +43,7 @@ struct LabelsView: View {
         VStack(alignment: .leading, spacing: 16) {
             SectionHeader(
                 title: "Label Rules",
-                subtitle: "Choose which WhatsApp labels follow standard recent-chat behavior, always force inclusion, or block a thread when they are the only label.",
+                subtitle: "Optional. Most users can leave labels alone; use these rules only when a WhatsApp label should always force inclusion or never include a chat.",
                 systemImage: "tag"
             )
 
@@ -51,7 +51,7 @@ struct LabelsView: View {
 
             GroupBox("What Standard Means") {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Standard does not force a chat into the export and does not block it. A Standard-labeled chat is included only when it qualifies through the normal export rules, especially the configured Recent chats from All window.")
+                    Text("Label rules are optional. Standard is the default no-rule behavior: it does not force a chat into the export and does not block it. A Standard-labeled chat is included only when it qualifies through the normal export rules, especially the configured Recent chats from All window.")
                     Text("Always Include forces matching chats into the export even if they are outside the recent-chat window. Never Include skips a chat only when every label on that chat is a Never Include label.")
                         .foregroundStyle(.secondary)
                 }

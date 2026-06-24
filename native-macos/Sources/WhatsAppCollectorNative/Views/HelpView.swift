@@ -39,7 +39,7 @@ struct HelpView: View {
                 GroupBox("Typical Workflow") {
                     VStack(alignment: .leading, spacing: 12) {
                         HelpStep(number: 1, title: "Launch / Login", detail: "Open the dedicated Chrome profile and confirm WhatsApp Web or WhatsApp Business Web is logged in.")
-                        HelpStep(number: 2, title: "Load Labels", detail: "Read the current WhatsApp label inventory, then mark labels as Standard, Always Include, or Never Include.")
+                        HelpStep(number: 2, title: "Optional Label Rules", detail: "Label rules are optional. Load labels only if you want some labels to Always Include chats or Never Include chats.")
                         HelpStep(number: 3, title: "Run Export", detail: "Refresh the same stable JSON file used by local agents and automations.")
                         HelpStep(number: 4, title: "Preview or Reveal", detail: "Review threads inside the app, copy one thread as JSON, or reveal the full export file in Finder.")
                     }
@@ -48,7 +48,7 @@ struct HelpView: View {
 
                 GroupBox("Label Rules") {
                     VStack(alignment: .leading, spacing: 8) {
-                        HelpDefinition(term: "Standard", detail: "Do not force or block chats with this label. Standard chats are included only when they match the normal export rules, especially the Recent chats from All setting.")
+                        HelpDefinition(term: "Standard", detail: "The default optional no-rule state. Do not force or block chats with this label. Standard chats are included only when they match the normal export rules, especially the Recent chats from All setting.")
                         HelpDefinition(term: "Always Include", detail: "Force chats with this label into the export even when they are outside the recent-chat window.")
                         HelpDefinition(term: "Never Include", detail: "Skip a chat only when every label on it is a Never Include label.")
                         HelpDefinition(term: "Groups", detail: "Use the Groups setting on the dashboard to keep group chats out unless the group has an Always Include label.")
@@ -59,7 +59,7 @@ struct HelpView: View {
                 GroupBox("Browser Requirements") {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("WhatsApp Collector needs Google Chrome installed and uses a dedicated Chrome profile, separate from your normal browsing profile. Click Launch / Login, let that Chrome window open, and keep WhatsApp Web or WhatsApp Business Web logged in there.")
-                        Text("Do not close the dedicated Chrome window while exporting. If Chrome asks for a QR login, scan it first, then return to the app and run the export. The app opens Chrome with its own DevTools connection, so you do not need to turn on Chrome developer settings. The app only reads the logged-in browser data needed for the export; it does not send messages or open the old browser-based app UI.")
+                        Text("Do not close the dedicated Chrome window while exporting. If Chrome asks for a QR login, scan it first, then return to the app and run the export. After a successful export, the app closes only its dedicated Chrome profile window/process. The app opens Chrome with its own DevTools connection, so you do not need to turn on Chrome developer settings. The app only reads the logged-in browser data needed for the export; it does not send messages or open the old browser-based app UI.")
                             .foregroundStyle(.secondary)
                     }
                     .font(.callout)

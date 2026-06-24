@@ -207,6 +207,25 @@ struct ExportPreviewView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
 
+                    if let diagnostics = thread.sourceDiagnostics,
+                       let issues = diagnostics.issues,
+                       issues.isEmpty == false {
+                        GroupBox("Source Diagnostics") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(sourceDiagnosticSummary(diagnostics))
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                                ForEach(issues) { issue in
+                                    Label(sourceDiagnosticIssueText(issue), systemImage: "exclamationmark.triangle")
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+
                     GroupBox("Recent Messages") {
                         VStack(alignment: .leading, spacing: 10) {
                             let messages = Array(thread.previewMessages.prefix(20))
@@ -331,6 +350,31 @@ struct ExportPreviewView: View {
             }
         }
         .textSelection(.enabled)
+    }
+
+    private func sourceDiagnosticSummary(_ diagnostics: SourceDiagnostics) -> String {
+        let indexed = diagnostics.indexedDbMessageCount ?? 0
+        let opened = diagnostics.openedChatMessageCount ?? 0
+        let merged = diagnostics.mergedMessageCount ?? 0
+        let sources = diagnostics.sourcesUsed?.joined(separator: ", ") ?? "none"
+        return "Compared IndexedDB and opened-chat sources. Sources used: \(sources). IndexedDB: \(indexed), opened chat: \(opened), merged: \(merged)."
+    }
+
+    private func sourceDiagnosticIssueText(_ issue: SourceDiagnosticIssue) -> String {
+        switch issue.code {
+        case "opened-chat-newer-than-indexeddb":
+            return "Opened chat had a newer latest message than IndexedDB."
+        case "indexeddb-newer-than-opened-chat":
+            return "IndexedDB had a newer latest message than the opened chat view."
+        case "matching-message-timestamp-conflict":
+            return "Matching message \(issue.messageId ?? "") had conflicting timestamps."
+        case "matching-message-text-availability-conflict":
+            return "Matching message \(issue.messageId ?? "") had conflicting text availability."
+        case "opened-chat-check-failed":
+            return "Opened-chat verification failed: \(issue.detail ?? "unknown error")"
+        default:
+            return issue.code ?? "Unknown source diagnostic issue."
+        }
     }
 
     private func attachmentIcon(_ attachment: ExportAttachment) -> String {

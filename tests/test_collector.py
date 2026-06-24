@@ -654,6 +654,8 @@ def test_dashboard_export_refreshes_stale_labeled_visible_thread_from_opened_cha
     assert thread["lastMessageAt"] == "2026-06-24T18:50:00+00:00"
     assert thread["lastMessageText"] == "Newest visible text"
     assert [message["messageId"] for message in thread["recentMessages"]] == ["new-visible", "old-media"]
+    assert thread["sourceDiagnostics"]["openedChatChecked"] is True
+    assert thread["sourceDiagnostics"]["issues"][0]["code"] == "opened-chat-newer-than-indexeddb"
 
 
 def test_opened_chat_refresh_decision_only_refreshes_stale_or_empty_latest_messages() -> None:
@@ -694,6 +696,42 @@ def test_opened_chat_refresh_decision_only_refreshes_stale_or_empty_latest_messa
         expected_latest_timestamp=1782327000,
         preview="Current text",
     )
+
+
+def test_message_source_diagnostics_reports_recency_and_matching_message_conflicts() -> None:
+    diagnostics = WhatsAppCollector._message_source_diagnostics(
+        indexeddb_messages=[
+            {
+                "messageId": "same",
+                "timestamp": "2026-06-24T18:49:00+00:00",
+                "text": "",
+            }
+        ],
+        opened_chat_messages=[
+            {
+                "messageId": "same",
+                "timestamp": "2026-06-24T18:50:05+00:00",
+                "text": "Visible text",
+            }
+        ],
+        merged_messages=[
+            {
+                "messageId": "same",
+                "timestamp": "2026-06-24T18:50:05+00:00",
+                "text": "Visible text",
+            }
+        ],
+        opened_chat_checked=True,
+        max_messages=15,
+    )
+
+    assert diagnostics is not None
+    assert diagnostics["sourcesUsed"] == ["indexeddb", "opened-chat"]
+    assert [issue["code"] for issue in diagnostics["issues"]] == [
+        "opened-chat-newer-than-indexeddb",
+        "matching-message-timestamp-conflict",
+        "matching-message-text-availability-conflict",
+    ]
 
 
 def test_collect_labeled_threads_includes_all_labeled_chats_except_archive_label_only_or_excluded_label_only() -> None:

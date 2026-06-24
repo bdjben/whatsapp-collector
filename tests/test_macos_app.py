@@ -170,7 +170,12 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     project = Path(__file__).resolve().parents[1]
     app_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "App" / "WhatsAppCollectorNativeApp.swift").read_text()
     section_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Models" / "AppSection.swift").read_text()
+    update_models_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Models" / "UpdateModels.swift").read_text()
+    update_monitor_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Stores" / "UpdateMonitor.swift").read_text()
+    update_service_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Services" / "UpdateAvailabilityService.swift").read_text()
+    content_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Views" / "ContentView.swift").read_text()
     dashboard_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Views" / "DashboardView.swift").read_text()
+    labels_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Views" / "LabelsView.swift").read_text()
     export_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Views" / "ExportPreviewView.swift").read_text()
     automation_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Views" / "AutomationView.swift").read_text()
     prompt_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Views" / "AIPromptWindow.swift").read_text()
@@ -182,6 +187,15 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     login_item_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Support" / "LoginItemManager.swift").read_text()
 
     assert 'MenuBarExtra("W↗")' in app_source
+    assert "@StateObject private var updateMonitor = UpdateMonitor()" in app_source
+    assert "updateMonitor.startAutomaticChecks()" in app_source
+    assert "Task { await updateMonitor.checkNow(trigger: .manual) }" in app_source
+    assert "Update Available:" in app_source
+    assert "UpdateStatusBanner" in content_source
+    assert "automaticCheckIntervalSeconds: UInt64 = 15 * 60" in update_monitor_source
+    assert "AppMetadata.appcastURL" in update_monitor_source
+    assert "URLSession.shared.data" in update_service_source
+    assert "VersionComparator.isVersion" in update_models_source
     assert "MenuBarStatusLabel" not in app_source
     assert "TimelineView(.periodic" not in app_source
     assert "exportActivityIsVisible" in app_source
@@ -194,6 +208,12 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     assert "closeDuplicateMainWindows()" in app_source
     assert 'case .dashboard: "WhatsApp Collector"' in section_source
     assert 'title: "WhatsApp Collector"' in dashboard_source
+    assert "Chrome window display" in dashboard_source
+    assert "Optional macOS display name" in dashboard_source
+    assert "particular monitor, such as LED TV" in dashboard_source
+    assert "After a successful export, WhatsApp Collector closes only its dedicated Chrome profile" in dashboard_source
+    assert "Label rules are optional" in labels_source
+    assert "Optional. Most users can leave labels alone" in labels_source
     assert "Native macOS app" not in dashboard_source
     assert dashboard_source.index('Label("Load Labels"') < dashboard_source.index('Label("Run Export"')
     assert 'Label("Open Export Preview"' in dashboard_source
@@ -203,6 +223,8 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     assert "deleteAction" in components_source
     assert "removeLabel" in store_source
     assert "Messages Skipped: \\(skipped) - click for details" in export_source
+    assert "Source Diagnostics" in export_source
+    assert "sourceDiagnostics" in models_source
     assert "DisclosureGroup" not in export_source
     assert "warningDetailsExpanded.toggle()" in export_source
     assert ".frame(maxHeight: 160)" in export_source
@@ -217,6 +239,9 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     assert "Launch at Login" in automation_source
     assert "case help" in section_source
     assert "Older App Cleanup" in help_source
+    assert "Optional Label Rules" in help_source
+    assert "Label rules are optional" in help_source
+    assert "After a successful export, the app closes only its dedicated Chrome profile" in help_source
     assert "localhost web UI" not in help_source
     assert "Native schedules call the bundled bridge" not in help_source
     assert "whatsapp-collector.pyz" in migration_source
@@ -227,3 +252,6 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     assert "legacy-app-" in migration_source
     assert store_source.index('alert.addButton(withTitle: "Not Now")') < store_source.index('"Back Up Exports and Move Old App to Trash"')
     assert "alertSecondButtonReturn" in store_source
+    bridge_source = (project / "native-macos" / "Support" / "native_bridge.py").read_text()
+    assert "terminate_profile_processes(cfg[\"profile_dir\"]" in bridge_source
+    assert "\"closedAfterExport\": True" in bridge_source

@@ -41,6 +41,7 @@ from whatsapp_collector.launcher import (  # noqa: E402
     DEFAULT_PROFILE_DIR,
     DEFAULT_TARGET_URL,
     ensure_dedicated_whatsapp_window,
+    terminate_profile_processes,
 )
 from whatsapp_collector.scheduler import install_native_schedule, remove_schedule, schedule_status  # noqa: E402
 from whatsapp_collector.web_ui import (  # noqa: E402
@@ -187,12 +188,14 @@ def _run_export(cfg: dict[str, Any]) -> dict[str, Any]:
     thread_count = len(export.get("threads", [])) if isinstance(export.get("threads"), list) else 0
     summary["threadCount"] = thread_count
     summary["exportedAt"] = export.get("exportedAt")
+    terminate_profile_processes(cfg["profile_dir"], wait_attempts=8, delay_seconds=0.2)
     return {
         "ok": True,
         "command": "run-export",
         "checkedAt": _now(),
         "export": summary,
         "threadCount": thread_count,
+        "window": {"profileDir": str(cfg["profile_dir"]), "closedAfterExport": True},
     }
 
 

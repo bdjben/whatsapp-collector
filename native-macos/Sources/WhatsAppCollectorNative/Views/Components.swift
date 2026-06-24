@@ -107,6 +107,51 @@ struct StatusBanner: View {
     }
 }
 
+struct UpdateStatusBanner: View {
+    var state: UpdateAvailabilityState
+    var checkNow: () -> Void
+    var openRelease: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: state.iconName)
+                .foregroundStyle(color)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(state.title)
+                    .font(.callout.weight(.semibold))
+                    .lineLimit(1)
+                Text(state.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            if state.isChecking {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            if state.updateAvailable {
+                Button("Latest Release", action: openRelease)
+                    .controlSize(.small)
+            }
+            Button("Check for Updates...", action: checkNow)
+                .controlSize(.small)
+        }
+        .padding(10)
+        .background(color.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(color.opacity(0.24))
+        }
+    }
+
+    private var color: Color {
+        if state.updateAvailable { return .blue }
+        if state.errorMessage != nil { return .orange }
+        return .green
+    }
+}
+
 struct PathRow: View {
     var title: String
     @Binding var path: String

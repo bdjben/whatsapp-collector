@@ -129,7 +129,7 @@ struct DashboardView: View {
         GroupBox("Browser Setup") {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Use Launch / Login to open the dedicated Chrome profile, then make sure WhatsApp Web or WhatsApp Business Web is logged in there before running an export.")
-                Text("Keep that Chrome window open while exporting. The app reads WhatsApp through that profile’s DevTools connection and does not use the old localhost browser UI.")
+                Text("Keep that Chrome window open while exporting. After a successful export, WhatsApp Collector closes only its dedicated Chrome profile window/process. The app reads WhatsApp through that profile’s DevTools connection and does not use the old localhost browser UI.")
                     .foregroundStyle(.secondary)
             }
             .font(.callout)
@@ -191,11 +191,16 @@ struct DashboardView: View {
                     }
                 }
                 GridRow {
-                    Text("Monitor")
+                    Text("Chrome window display")
                         .foregroundStyle(.secondary)
-                    TextField("Optional display name", text: $store.configuration.displayName)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 360)
+                    VStack(alignment: .leading, spacing: 6) {
+                        TextField("Optional macOS display name", text: $store.configuration.displayName)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 360)
+                        Text("Optional. Use this only if you want the dedicated Chrome window placed on a particular monitor, such as LED TV. Leave it blank to use the normal display.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .padding(.vertical, 4)

@@ -153,6 +153,7 @@ struct ExportThread: Codable, Identifiable, Sendable {
     var lastMessageText: String?
     var timestampLabel: String?
     var sourceView: String?
+    var sourceDiagnostics: SourceDiagnostics?
     var recentMessages: [ExportMessage]?
     var messages: [ExportMessage]?
 
@@ -196,6 +197,34 @@ struct ExportThread: Codable, Identifiable, Sendable {
 struct ExportParticipant: Codable, Sendable {
     var name: String?
     var phone: String?
+}
+
+struct SourceDiagnostics: Codable, Sendable {
+    var openedChatChecked: Bool?
+    var sourcesUsed: [String]?
+    var indexedDbMessageCount: Int?
+    var openedChatMessageCount: Int?
+    var mergedMessageCount: Int?
+    var maxMessages: Int?
+    var issues: [SourceDiagnosticIssue]?
+}
+
+struct SourceDiagnosticIssue: Codable, Identifiable, Sendable {
+    var code: String?
+    var detail: String?
+    var messageId: String?
+    var indexedDbLatestAt: String?
+    var openedChatLatestAt: String?
+    var indexedDbAt: String?
+    var openedChatAt: String?
+    var indexedDbTextAvailable: Bool?
+    var openedChatTextAvailable: Bool?
+
+    var id: String {
+        [code, messageId, indexedDbLatestAt, openedChatLatestAt, indexedDbAt, openedChatAt]
+            .compactMap { $0 }
+            .joined(separator: ":")
+    }
 }
 
 struct ExportMessage: Codable, Identifiable, Sendable {

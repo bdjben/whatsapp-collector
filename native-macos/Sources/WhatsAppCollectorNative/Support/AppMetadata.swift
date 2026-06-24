@@ -6,6 +6,14 @@ enum AppMetadata {
     static let repositoryURL = URL(string: "https://github.com/bdjben/whatsapp-collector")!
     static let latestReleaseURL = URL(string: "https://github.com/bdjben/whatsapp-collector/releases/latest")!
 
+    static var appcastURL: URL {
+        if let raw = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String,
+           let url = URL(string: raw) {
+            return url
+        }
+        return URL(string: "https://github.com/bdjben/whatsapp-collector/releases/latest/download/appcast.xml")!
+    }
+
     static var shortVersionString: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development"
     }

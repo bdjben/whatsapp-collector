@@ -2,6 +2,8 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var store: CollectorStore
+    @EnvironmentObject private var updateMonitor: UpdateMonitor
+    @Environment(\.appActions) private var appActions
 
     private var selection: Binding<AppSection> {
         Binding(
@@ -14,26 +16,39 @@ struct ContentView: View {
         NavigationSplitView {
             SidebarView(selection: selection)
         } detail: {
-            detail
-                .navigationTitle(selection.wrappedValue.navigationTitle)
-                .toolbar {
-                    ToolbarItemGroup {
-                        Button {
-                            Task { await store.refreshStatus() }
-                        } label: {
-                            Label("Refresh", systemImage: "arrow.clockwise")
-                        }
-                        .help("Refresh status")
+            VStack(spacing: 0) {
+                UpdateStatusBanner(
+                    state: updateMonitor.state,
+                    checkNow: appActions.checkForUpdates,
+                    openRelease: appActions.openLatestRelease
+                )
+                .padding(.horizontal, 22)
+                .padding(.top, 14)
+                .padding(.bottom, 10)
 
-                        Button {
-                            Task { await store.runExport() }
-                        } label: {
-                            Label("Run Export", systemImage: "square.and.arrow.down")
-                        }
-                        .help("Run export")
-                        .disabled(store.isBusy)
+                Divider()
+
+                detail
+            }
+            .navigationTitle(selection.wrappedValue.navigationTitle)
+            .toolbar {
+                ToolbarItemGroup {
+                    Button {
+                        Task { await store.refreshStatus() }
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
                     }
+                    .help("Refresh status")
+
+                    Button {
+                        Task { await store.runExport() }
+                    } label: {
+                        Label("Run Export", systemImage: "square.and.arrow.down")
+                    }
+                    .help("Run export")
+                    .disabled(store.isBusy)
                 }
+            }
         }
     }
 

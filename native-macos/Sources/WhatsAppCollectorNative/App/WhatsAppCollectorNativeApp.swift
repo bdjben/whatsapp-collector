@@ -85,6 +85,7 @@ struct WhatsAppCollectorNativeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @Environment(\.openWindow) private var openWindow
     @StateObject private var store = CollectorStore()
+    @StateObject private var updateMonitor = UpdateMonitor()
     private let updaterController: SPUStandardUpdaterController
 
     init() {
@@ -95,10 +96,12 @@ struct WhatsAppCollectorNativeApp: App {
         WindowGroup("WhatsApp Collector", id: "main") {
             ContentView()
                 .environmentObject(store)
+                .environmentObject(updateMonitor)
                 .environment(\.appActions, appActions)
                 .frame(minWidth: 1080, minHeight: 700)
                 .background(MainWindowAccessor())
                 .task {
+                    updateMonitor.startAutomaticChecks()
                     await store.bootstrap()
                 }
                 .onChange(of: store.configuration) {
@@ -195,6 +198,7 @@ struct WhatsAppCollectorNativeApp: App {
         MenuBarExtra("W↗") {
             MenuBarContent()
                 .environmentObject(store)
+                .environmentObject(updateMonitor)
                 .environment(\.appActions, appActions)
         }
     }
@@ -222,6 +226,7 @@ struct WhatsAppCollectorNativeApp: App {
 
     @MainActor
     private func checkForUpdates() {
+        Task { await updateMonitor.checkNow(trigger: .manual) }
         updaterController.updater.checkForUpdates()
     }
 
@@ -250,10 +255,17 @@ struct MainWindowAccessor: NSViewRepresentable {
 
 struct MenuBarContent: View {
     @EnvironmentObject private var store: CollectorStore
+    @EnvironmentObject private var updateMonitor: UpdateMonitor
     @Environment(\.openWindow) private var openWindow
     @Environment(\.appActions) private var appActions
 
     var body: some View {
+        if updateMonitor.state.updateAvailable {
+            Button("Update Available: \(updateMonitor.state.latestVersion ?? "New Version")") {
+                appActions.checkForUpdates()
+            }
+            Divider()
+        }
         if store.exportActivityIsVisible {
             Label(store.exportActivityTitle, systemImage: "arrow.triangle.2.circlepath")
             Divider()

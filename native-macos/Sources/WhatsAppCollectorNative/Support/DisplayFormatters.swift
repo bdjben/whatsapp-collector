@@ -21,6 +21,10 @@ enum DisplayFormatters {
         return relativeFormatter.localizedString(for: date, relativeTo: Date())
     }
 
+    static func isoString(from date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
+    }
+
     static func bytes(_ value: Int?) -> String {
         guard let value else { return "0 KB" }
         return ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .file)
