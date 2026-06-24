@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from whatsapp_collector.chrome_session import ChromeWhatsAppSession
+from whatsapp_collector.export_quality import attach_export_quality
 from whatsapp_collector.models import (
     ChatRow,
     IndexedDBThread,
@@ -436,6 +437,7 @@ class WhatsAppCollector:
             payload["exportWarnings"] = export_warnings
         elif message_capture_skipped_count:
             payload["exportWarnings"] = [f"message-capture-skipped:{message_capture_skipped_count}"]
+        attach_export_quality(payload)
         return payload
 
     def _model_storage_stores(self) -> list[str]:
@@ -785,9 +787,6 @@ class WhatsAppCollector:
             if str(thread.get("chatTitle") or "").strip()
         }
         recent_exports: list[dict[str, Any]] = []
-        recent_direct_count = 0
-        recent_group_count = 0
-
         sorted_chat_rows = sorted(
             [
                 row
@@ -798,17 +797,12 @@ class WhatsAppCollector:
             reverse=True,
         )
 
-        for row in sorted_chat_rows:
+        for row in sorted_chat_rows[:limit]:
             chat = row["value"]
             jid = str(chat.get("id") or "").strip()
             if not jid or jid in seen_thread_keys:
                 continue
             is_group_chat = jid.endswith("@g.us")
-            if is_group_chat:
-                if recent_group_count >= limit:
-                    continue
-            elif recent_direct_count >= limit:
-                continue
 
             raw_labels = self._labels_for_thread(jid, labels_for_jid)
             normalized_labels = {self._normalize_label_slug(label) for label in raw_labels}
@@ -921,14 +915,8 @@ class WhatsAppCollector:
             }
             self._attach_source_diagnostics(export_thread, source_diagnostics)
             recent_exports.append(export_thread)
-            if is_group_chat:
-                recent_group_count += 1
-            else:
-                recent_direct_count += 1
             seen_thread_keys.add(jid)
             seen_titles.add(normalized_display_name)
-            if recent_direct_count >= limit and recent_group_count >= limit:
-                break
         return recent_exports
 
     def _refresh_recent_messages_from_opened_chat(

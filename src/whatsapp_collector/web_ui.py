@@ -16,6 +16,7 @@ from whatsapp_collector.collector import (
     MAX_MESSAGE_LOOKBACK_HARD_LIMIT,
     WhatsAppCollector,
 )
+from whatsapp_collector.export_quality import ExportQualityError, validate_export_quality
 from whatsapp_collector.launcher import (
     DEFAULT_DEBUG_PORT,
     DEFAULT_MARKER_TITLE,
@@ -435,6 +436,7 @@ def create_app_handler(
                         marker_url_substring=effective.marker_url_substring,
                         target_url=effective.target_url,
                     )
+                    validate_export_quality(export)
                     _write_atomic_json(export, effective.output_path)
                     thread_count = len(export.get("threads", [])) if isinstance(export.get("threads"), list) else 0
                     summary = _read_export_summary(effective.output_path, parse_json=False)
@@ -472,6 +474,11 @@ def create_app_handler(
                     self._send_json({"ok": True, "schedule": remove_schedule()})
                     return
                 self._send_json({"ok": False, "error": "not-found"}, status=404)
+            except ExportQualityError as exc:
+                self._send_json(
+                    {"ok": False, "error": str(exc), "errorType": type(exc).__name__, "exportQuality": exc.report},
+                    status=409,
+                )
             except Exception as exc:  # pragma: no cover - defensive API boundary
                 self._send_json({"ok": False, "error": str(exc)}, status=500)
 

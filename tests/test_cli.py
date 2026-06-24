@@ -290,6 +290,47 @@ def test_cli_dashboard_export_backs_up_existing_output_before_replacing_it(tmp_p
     assert '"141394635137028@lid"' in output.read_text()
 
 
+def test_cli_dashboard_export_rejects_degraded_payload_without_writing(capsys, tmp_path: Path) -> None:
+    class BadCollector(StubCollector):
+        def collect_dashboard_export(self, **kwargs):
+            return {
+                "source": "whatsapp",
+                "exportedAt": "2026-04-19T00:00:00+00:00",
+                "maxAllViewChats": kwargs["max_all_chats"],
+                "threads": [
+                    {
+                        "threadKey": f"thread-{index}",
+                        "chatTitle": f"Thread {index}",
+                        "sourceView": "indexeddb-recent",
+                        "recentMessages": [
+                            {
+                                "messageId": f"m{index}",
+                                "timestamp": "2026-04-19T00:00:00+00:00",
+                                "direction": "inbound",
+                                "sender": "sender",
+                                "text": None,
+                                "textAvailable": False,
+                                "messageType": "image",
+                                "subtype": None,
+                            }
+                        ],
+                        "messages": [],
+                    }
+                    for index in range(3)
+                ],
+            }
+
+    output = tmp_path / "whatsapp-dashboard-export.json"
+
+    exit_code = main(["dashboard-export", "--output", str(output)], collector=BadCollector())
+
+    assert exit_code == 1
+    assert not output.exists()
+    out = capsys.readouterr().out
+    assert '"ok": false' in out
+    assert "too-many-latest-messages-without-text" in out
+
+
 def test_cli_ensure_window_prints_window_payload(monkeypatch, capsys, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 

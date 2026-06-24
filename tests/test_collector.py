@@ -1275,7 +1275,7 @@ def test_collect_dashboard_export_includes_recent_unlabeled_indexeddb_chat_absen
     assert len(tamar["recentMessages"]) == 1
 
 
-def test_collect_dashboard_export_keeps_recent_direct_indexeddb_chats_when_groups_are_newer() -> None:
+def test_collect_dashboard_export_limits_indexeddb_fallback_to_same_top_recency_horizon() -> None:
     class NewerGroupsSession:
         def click_point(self, expression: str):
             return {"x": 10, "y": 20}
@@ -1355,7 +1355,7 @@ def test_collect_dashboard_export_keeps_recent_direct_indexeddb_chats_when_group
     )
 
     indexeddb_titles = [thread["chatTitle"] for thread in payload["threads"] if thread.get("sourceView") == "indexeddb-recent"]
-    assert indexeddb_titles == ["Newer Group A", "Tamar Simon"]
+    assert indexeddb_titles == ["Newer Group A"]
 
 
 def test_collect_dashboard_export_can_skip_groups_unless_always_include_label_matches() -> None:

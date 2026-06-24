@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 
 def _load_native_bridge():
@@ -51,3 +54,108 @@ def test_native_schedule_install_persists_browser_control_settings(tmp_path: Pat
     assert captured["payload"]["markerTitle"] == "Custom Collector"
     assert captured["payload"]["markerUrlSubstring"] == "custom-marker"
     assert captured["payload"]["targetUrl"] == "https://web.whatsapp.com/"
+
+
+def _good_export() -> dict[str, Any]:
+    return {
+        "source": "whatsapp",
+        "exportedAt": "2026-06-24T20:00:00+00:00",
+        "maxAllViewChats": 30,
+        "threads": [
+            {
+                "threadKey": "good",
+                "chatTitle": "Good Thread",
+                "sourceView": "all",
+                "recentMessages": [
+                    {
+                        "messageId": "m1",
+                        "timestamp": "2026-06-24T20:00:00+00:00",
+                        "direction": "inbound",
+                        "sender": "sender",
+                        "text": "Readable text",
+                        "textAvailable": True,
+                        "messageType": "chat",
+                        "subtype": None,
+                    }
+                ],
+                "messages": [],
+            }
+        ],
+    }
+
+
+def _degraded_export() -> dict[str, Any]:
+    return {
+        "source": "whatsapp",
+        "exportedAt": "2026-06-24T20:01:00+00:00",
+        "maxAllViewChats": 30,
+        "threads": [
+            {
+                "threadKey": f"bad-{index}",
+                "chatTitle": f"Bad Thread {index}",
+                "sourceView": "indexeddb-recent",
+                "recentMessages": [
+                    {
+                        "messageId": f"m{index}",
+                        "timestamp": "2026-06-24T20:01:00+00:00",
+                        "direction": "inbound",
+                        "sender": "sender",
+                        "text": None,
+                        "textAvailable": False,
+                        "messageType": "image",
+                        "subtype": None,
+                    }
+                ],
+                "messages": [],
+            }
+            for index in range(3)
+        ],
+    }
+
+
+def test_native_run_export_retries_then_writes_when_quality_recovers(tmp_path: Path, monkeypatch) -> None:
+    bridge = _load_native_bridge()
+    output = tmp_path / "export.json"
+    calls = {"count": 0}
+
+    class FakeCollector:
+        def collect_dashboard_export(self, **kwargs):
+            calls["count"] += 1
+            return _degraded_export() if calls["count"] == 1 else _good_export()
+
+    monkeypatch.setattr(bridge, "_collector", lambda cfg: FakeCollector())
+    monkeypatch.setattr(bridge.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(bridge, "terminate_profile_processes", lambda *args, **kwargs: None)
+
+    result = bridge.dispatch("run-export", {"outputPath": str(output), "profileDir": str(tmp_path / "profile")})
+
+    assert result["ok"] is True
+    assert result["threadCount"] == 1
+    assert calls["count"] == 2
+    assert json.loads(output.read_text())["threads"][0]["chatTitle"] == "Good Thread"
+
+
+def test_native_run_export_rejects_degraded_export_and_restores_last_good(tmp_path: Path, monkeypatch) -> None:
+    bridge = _load_native_bridge()
+    output = tmp_path / "export.json"
+    output.write_text(json.dumps(_degraded_export()))
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    last_good = backup / "export.20260624-200000.json"
+    last_good.write_text(json.dumps(_good_export()))
+    calls = {"count": 0}
+
+    class FakeCollector:
+        def collect_dashboard_export(self, **kwargs):
+            calls["count"] += 1
+            return _degraded_export()
+
+    monkeypatch.setattr(bridge, "_collector", lambda cfg: FakeCollector())
+    monkeypatch.setattr(bridge.time, "sleep", lambda seconds: None)
+
+    with pytest.raises(bridge.ExportQualityError) as exc_info:
+        bridge.dispatch("run-export", {"outputPath": str(output), "profileDir": str(tmp_path / "profile")})
+
+    assert calls["count"] == 3
+    assert exc_info.value.report["restoredLastGood"] == str(last_good)
+    assert json.loads(output.read_text())["threads"][0]["chatTitle"] == "Good Thread"

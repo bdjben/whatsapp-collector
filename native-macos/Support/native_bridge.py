@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,11 @@ from whatsapp_collector.collector import (  # noqa: E402
     GROUP_INCLUDE_STANDARD,
     MAX_MESSAGE_LOOKBACK_HARD_LIMIT,
     WhatsAppCollector,
+)
+from whatsapp_collector.export_quality import (  # noqa: E402
+    ExportQualityError,
+    restore_latest_acceptable_backup,
+    validate_export_quality,
 )
 from whatsapp_collector.launcher import (  # noqa: E402
     DEFAULT_DEBUG_PORT,
@@ -174,15 +180,34 @@ def _ensure_window(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run_export(cfg: dict[str, Any]) -> dict[str, Any]:
-    export = _collector(cfg).collect_dashboard_export(
-        account_label=cfg["account_label"],
-        max_messages=cfg["max_messages"],
-        max_all_chats=cfg["max_all_chats"],
-        allow_labels=cfg["allow_labels"],
-        exclude_labels=cfg["exclude_labels"],
-        include_groups=cfg["include_groups"],
-        attachments_dir=cfg["output_path"].parent / "Attachments",
-    )
+    attempts: list[dict[str, Any]] = []
+    export: dict[str, Any] | None = None
+    for attempt in range(1, 4):
+        export = _collector(cfg).collect_dashboard_export(
+            account_label=cfg["account_label"],
+            max_messages=cfg["max_messages"],
+            max_all_chats=cfg["max_all_chats"],
+            allow_labels=cfg["allow_labels"],
+            exclude_labels=cfg["exclude_labels"],
+            include_groups=cfg["include_groups"],
+            attachments_dir=cfg["output_path"].parent / "Attachments",
+        )
+        try:
+            validate_export_quality(export)
+            break
+        except ExportQualityError as exc:
+            attempts.append(exc.report)
+            if attempt < 3:
+                time.sleep(4 * attempt)
+                continue
+            restored = restore_latest_acceptable_backup(cfg["output_path"])
+            report = dict(exc.report)
+            report["attempts"] = attempts
+            if restored:
+                report["restoredLastGood"] = str(restored)
+            raise ExportQualityError(report) from exc
+    if export is None:
+        raise RuntimeError("Collector did not return an export payload")
     _write_atomic_json(export, cfg["output_path"])
     summary = _read_export_summary(cfg["output_path"], parse_json=True)
     thread_count = len(export.get("threads", [])) if isinstance(export.get("threads"), list) else 0
@@ -262,19 +287,16 @@ def main(argv: list[str]) -> int:
     try:
         result = dispatch(command, payload)
     except Exception as exc:
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "command": command,
-                    "checkedAt": _now(),
-                    "error": str(exc),
-                    "errorType": type(exc).__name__,
-                },
-                indent=2,
-                ensure_ascii=False,
-            )
-        )
+        error_payload = {
+            "ok": False,
+            "command": command,
+            "checkedAt": _now(),
+            "error": str(exc),
+            "errorType": type(exc).__name__,
+        }
+        if isinstance(exc, ExportQualityError):
+            error_payload["exportQuality"] = exc.report
+        print(json.dumps(error_payload, indent=2, ensure_ascii=False))
         return 1
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0

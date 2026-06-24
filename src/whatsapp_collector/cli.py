@@ -16,6 +16,7 @@ from whatsapp_collector.collector import (
     MAX_MESSAGE_LOOKBACK_HARD_LIMIT,
     WhatsAppCollector,
 )
+from whatsapp_collector.export_quality import ExportQualityError, validate_export_quality
 from whatsapp_collector.launcher import (
     DEFAULT_DEBUG_PORT,
     DEFAULT_DISPLAY_NAME,
@@ -303,6 +304,11 @@ def main(argv: Sequence[str] | None = None, *, collector: WhatsAppCollector | No
             include_groups=args.include_groups,
             attachments_dir=output_path.parent / "Attachments",
         )
+        try:
+            validate_export_quality(payload)
+        except ExportQualityError as exc:
+            print(json.dumps({"ok": False, "error": str(exc), "exportQuality": exc.report}, indent=2, ensure_ascii=False))
+            return 1
         payload["written_to"] = str(_write_atomic_json(payload, output_path))
     elif args.command == "ensure-window":
         payload = ensure_dedicated_whatsapp_window(

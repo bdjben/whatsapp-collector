@@ -118,7 +118,37 @@ def test_ui_api_run_export_uses_requested_collection_limits_and_label_rules(tmp_
             "includeGroups": kwargs["include_groups"],
             "allowLabels": kwargs["allow_labels"],
             "excludeLabels": kwargs["exclude_labels"],
-            "threads": [],
+            "threads": [
+                {
+                    "threadKey": "thread-1",
+                    "chatTitle": "Example Contact",
+                    "sourceView": "all",
+                    "recentMessages": [
+                        {
+                            "messageId": "m1",
+                            "timestamp": "2026-04-26T00:00:00+00:00",
+                            "direction": "inbound",
+                            "sender": "Example Contact",
+                            "text": "Readable text",
+                            "textAvailable": True,
+                            "messageType": "chat",
+                            "subtype": None,
+                        }
+                    ],
+                    "messages": [
+                        {
+                            "messageId": "m1",
+                            "timestamp": "2026-04-26T00:00:00+00:00",
+                            "direction": "inbound",
+                            "sender": "Example Contact",
+                            "text": "Readable text",
+                            "textAvailable": True,
+                            "messageType": "chat",
+                            "subtype": None,
+                        }
+                    ],
+                }
+            ],
         }
 
     config = UIConfig(output_path=tmp_path / "export.json", profile_dir=tmp_path / "profile", host="127.0.0.1", port=0)
@@ -142,8 +172,8 @@ def test_ui_api_run_export_uses_requested_collection_limits_and_label_rules(tmp_
 
     assert status == 200
     assert payload["ok"] is True
-    assert payload["threadCount"] == 0
-    assert payload["export"]["threadCount"] == 0
+    assert payload["threadCount"] == 1
+    assert payload["export"]["threadCount"] == 1
     assert payload["export"]["exportedAt"] == "2026-04-26T00:00:00+00:00"
     assert calls["max_messages"] == 75
     assert calls["max_all_chats"] == 42
@@ -157,6 +187,50 @@ def test_ui_api_run_export_uses_requested_collection_limits_and_label_rules(tmp_
     assert written["includeGroups"] == "labeledAlways"
     assert written["allowLabels"] == ["VIP", "Important"]
     assert written["excludeLabels"] == ["Archive"]
+
+
+def test_ui_api_run_export_rejects_degraded_export_without_writing(tmp_path: Path) -> None:
+    def fake_collect_export(**kwargs):
+        return {
+            "source": "whatsapp",
+            "exportedAt": "2026-04-26T00:00:00+00:00",
+            "maxAllViewChats": kwargs["max_all_chats"],
+            "threads": [
+                {
+                    "threadKey": f"thread-{index}",
+                    "chatTitle": f"Thread {index}",
+                    "sourceView": "indexeddb-recent",
+                    "recentMessages": [
+                        {
+                            "messageId": f"m{index}",
+                            "timestamp": "2026-04-26T00:00:00+00:00",
+                            "direction": "inbound",
+                            "sender": "sender",
+                            "text": None,
+                            "textAvailable": False,
+                            "messageType": "image",
+                            "subtype": None,
+                        }
+                    ],
+                    "messages": [],
+                }
+                for index in range(3)
+            ],
+        }
+
+    output = tmp_path / "export.json"
+    config = UIConfig(output_path=output, profile_dir=tmp_path / "profile", host="127.0.0.1", port=0)
+    server, url = _start_test_server(config, collect_export=fake_collect_export)
+    try:
+        status, payload = _json_request(url, "POST", "/api/export/run", {})
+    finally:
+        server.shutdown()
+
+    assert status == 409
+    assert payload["ok"] is False
+    assert payload["errorType"] == "ExportQualityError"
+    assert payload["exportQuality"]["ok"] is False
+    assert not output.exists()
 
 
 def test_ui_api_prepopulates_current_label_options_from_whatsapp_web(tmp_path: Path) -> None:
