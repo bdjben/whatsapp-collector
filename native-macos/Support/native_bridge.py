@@ -35,6 +35,7 @@ from whatsapp_collector.collector import (  # noqa: E402
     MAX_MESSAGE_LOOKBACK_HARD_LIMIT,
     WhatsAppCollector,
 )
+from whatsapp_collector.devtools_bridge import ChromeDevToolsBridge  # noqa: E402
 from whatsapp_collector.export_quality import (  # noqa: E402
     ExportQualityError,
     restore_latest_acceptable_backup,
@@ -182,6 +183,12 @@ def _ensure_window(cfg: dict[str, Any]) -> dict[str, Any]:
 def _run_export(cfg: dict[str, Any]) -> dict[str, Any]:
     attempts: list[dict[str, Any]] = []
     export: dict[str, Any] | None = None
+    ChromeDevToolsBridge(
+        port=int(cfg["debug_port"]),
+        marker_title=cfg["marker_title"],
+        marker_url_substring=cfg["marker_url_substring"],
+        target_url_substring=cfg["target_url"],
+    ).wait_until_whatsapp_ready(attempts=60, delay_seconds=0.5, require_ready=True)
     for attempt in range(1, 4):
         export = _collector(cfg).collect_dashboard_export(
             account_label=cfg["account_label"],

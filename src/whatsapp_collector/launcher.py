@@ -364,10 +364,34 @@ def launch_dedicated_chrome_window(
         "--no-first-run",
         "--no-default-browser-check",
         "--new-window",
-        marker_data_url(marker_title),
         target_url,
     ]
     subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _activate_whatsapp_target(bridge: ChromeDevToolsBridge) -> None:
+    activator = getattr(bridge, "activate_target_url", None)
+    if callable(activator):
+        activator()
+
+
+def _marker_targets(bridge: ChromeDevToolsBridge) -> list[dict[str, object]]:
+    finder = getattr(bridge, "marker_targets", None)
+    if not callable(finder):
+        return []
+    return list(finder())
+
+
+def _wait_whatsapp_readiness(
+    bridge: ChromeDevToolsBridge,
+    *,
+    attempts: int,
+    delay_seconds: float,
+) -> dict[str, object]:
+    waiter = getattr(bridge, "wait_until_whatsapp_ready", None)
+    if not callable(waiter):
+        return {"ready": True, "probe": "unavailable"}
+    return dict(waiter(attempts=attempts, delay_seconds=delay_seconds, require_ready=False))
 
 
 def ensure_dedicated_whatsapp_window(
@@ -415,6 +439,7 @@ def ensure_dedicated_whatsapp_window(
         bridge.wait_until_ready(attempts=wait_attempts, delay_seconds=delay_seconds)
         bridge.wait_until_page_targets_exist(attempts=wait_attempts, delay_seconds=delay_seconds)
         bridge.wait_until_target_url_exists(attempts=wait_attempts, delay_seconds=delay_seconds)
+        _activate_whatsapp_target(bridge)
 
     if debug_port_has_profile_conflict(debug_port, profile_dir):
         relaunch_window()
@@ -423,6 +448,10 @@ def ensure_dedicated_whatsapp_window(
             bridge.wait_until_ready(attempts=1, delay_seconds=delay_seconds)
             bridge.wait_until_page_targets_exist(attempts=1, delay_seconds=delay_seconds)
             bridge.wait_until_target_url_exists(attempts=1, delay_seconds=delay_seconds)
+            if _marker_targets(bridge):
+                relaunch_window()
+            else:
+                _activate_whatsapp_target(bridge)
         except RuntimeError:
             relaunch_window()
 
@@ -433,11 +462,14 @@ def ensure_dedicated_whatsapp_window(
         width=bounds["width"],
         height=bounds["height"],
     )
+    readiness = _wait_whatsapp_readiness(bridge, attempts=wait_attempts, delay_seconds=delay_seconds)
     if settle_seconds > 0:
         time.sleep(settle_seconds)
     return {
         "windowId": placement["windowId"],
         "targetId": placement.get("targetId"),
+        "whatsappReady": readiness.get("ready") is True,
+        "whatsappReadiness": readiness,
         "requestedDisplay": display_name,
         "displayFallbackUsed": display_fallback_used,
         "display": asdict(display),

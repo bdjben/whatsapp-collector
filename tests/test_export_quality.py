@@ -23,7 +23,7 @@ def _thread(title: str, messages: list[dict], *, source_view: str | None = "all"
     return payload
 
 
-def _message(message_id: str, *, text_available: bool = True) -> dict:
+def _message(message_id: str, *, text_available: bool = True, attachments: list[dict] | None = None) -> dict:
     return {
         "messageId": message_id,
         "timestamp": "2026-06-24T20:00:00+00:00",
@@ -33,6 +33,7 @@ def _message(message_id: str, *, text_available: bool = True) -> dict:
         "textAvailable": text_available,
         "messageType": "chat" if text_available else "image",
         "subtype": None,
+        **({"attachments": attachments} if attachments else {}),
     }
 
 
@@ -49,10 +50,43 @@ def test_export_quality_accepts_readable_all_view_export() -> None:
 
     assert report["ok"] is True
     assert report["metrics"]["threadCount"] == 2
-    assert report["metrics"]["latestTextUnavailableThreadCount"] == 0
+    assert report["metrics"]["latestContentUnavailableThreadCount"] == 0
 
 
-def test_export_quality_rejects_more_than_two_latest_messages_without_text() -> None:
+def test_export_quality_accepts_media_only_messages_with_attachment_metadata() -> None:
+    payload = {
+        "maxAllViewChats": 15,
+        "threads": [
+            _thread(
+                "Ana",
+                [
+                    _message(
+                        "a1",
+                        text_available=False,
+                        attachments=[
+                            {
+                                "attachmentId": "att-a1",
+                                "kind": "image",
+                                "mimeType": "image/jpeg",
+                                "fileName": "attachment-1.jpg",
+                                "status": "downloaded",
+                                "relativePath": "Attachments/Ana/a1/attachment-1.jpg",
+                            }
+                        ],
+                    )
+                ],
+            )
+        ],
+    }
+
+    report = assess_export_quality(payload)
+
+    assert report["ok"] is True
+    assert report["metrics"]["textUnavailableCount"] == 1
+    assert report["metrics"]["contentUnavailableCount"] == 0
+
+
+def test_export_quality_rejects_more_than_two_latest_messages_without_content() -> None:
     payload = {
         "maxAllViewChats": 15,
         "threads": [
@@ -65,16 +99,16 @@ def test_export_quality_rejects_more_than_two_latest_messages_without_text() -> 
     report = assess_export_quality(payload)
 
     assert report["ok"] is False
-    assert "too-many-latest-messages-without-text" in [issue["code"] for issue in report["issues"]]
+    assert "too-many-latest-messages-without-content" in [issue["code"] for issue in report["issues"]]
     try:
         validate_export_quality(payload)
     except ExportQualityError as exc:
-        assert exc.report["metrics"]["latestTextUnavailableThreadCount"] == 3
+        assert exc.report["metrics"]["latestContentUnavailableThreadCount"] == 3
     else:  # pragma: no cover - defensive
         raise AssertionError("Expected ExportQualityError")
 
 
-def test_export_quality_rejects_thread_with_more_than_one_third_messages_without_text() -> None:
+def test_export_quality_rejects_thread_with_more_than_one_third_messages_without_content() -> None:
     payload = {
         "maxAllViewChats": 15,
         "threads": [
@@ -93,10 +127,10 @@ def test_export_quality_rejects_thread_with_more_than_one_third_messages_without
     report = assess_export_quality(payload)
 
     assert report["ok"] is False
-    issue = next(issue for issue in report["issues"] if issue["code"] == "thread-text-unavailable-ratio-too-high")
+    issue = next(issue for issue in report["issues"] if issue["code"] == "thread-content-unavailable-ratio-too-high")
     assert issue["threads"][0]["messageCount"] == 4
-    assert issue["threads"][0]["allowedTextUnavailableCount"] == 2
-    assert issue["threads"][0]["textUnavailableCount"] == 3
+    assert issue["threads"][0]["allowedContentUnavailableCount"] == 2
+    assert issue["threads"][0]["contentUnavailableCount"] == 3
 
 
 def test_export_quality_rejects_indexeddb_fallback_without_all_view_capture() -> None:

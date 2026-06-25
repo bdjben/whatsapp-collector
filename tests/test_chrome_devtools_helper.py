@@ -9,11 +9,11 @@ SCHEDULED_SCRIPT = PROJECT_ROOT / "scripts" / "scheduled_export.sh"
 HOURLY_SCRIPT = PROJECT_ROOT / "scripts" / "hourly_tv_export.sh"
 
 
-def test_native_devtools_bridge_does_not_activate_or_bring_windows_to_front() -> None:
+def test_native_devtools_bridge_activates_tab_without_page_bring_to_front() -> None:
     bridge_source = (PROJECT_ROOT / "src" / "whatsapp_collector" / "devtools_bridge.py").read_text()
 
     assert "Page.bringToFront" not in bridge_source
-    assert "Target.activateTarget" not in bridge_source
+    assert "Target.activateTarget" in bridge_source
 
 
 def test_devtools_bridge_does_not_shell_out_to_system_node() -> None:

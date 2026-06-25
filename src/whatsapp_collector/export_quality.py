@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 
-LATEST_TEXT_UNAVAILABLE_THREAD_LIMIT = 2
+LATEST_CONTENT_UNAVAILABLE_THREAD_LIMIT = 2
 
 
 class ExportQualityError(RuntimeError):
@@ -22,12 +22,14 @@ def assess_export_quality(payload: dict[str, Any]) -> dict[str, Any]:
     thread_items = threads if isinstance(threads, list) else []
     issues: list[dict[str, Any]] = []
     source_view_counts: Counter[str] = Counter()
-    latest_text_unavailable_threads: list[str] = []
-    per_thread_text_unavailable_violations: list[dict[str, Any]] = []
+    latest_content_unavailable_threads: list[str] = []
+    per_thread_content_unavailable_violations: list[dict[str, Any]] = []
     thread_count = len(thread_items)
     message_count = 0
     text_available_count = 0
     text_unavailable_count = 0
+    content_available_count = 0
+    content_unavailable_count = 0
 
     for thread in thread_items:
         if not isinstance(thread, dict):
@@ -37,22 +39,24 @@ def assess_export_quality(payload: dict[str, Any]) -> dict[str, Any]:
         if not messages:
             continue
         message_count += len(messages)
-        unavailable = [message for message in messages if _message_text_unavailable(message)]
-        available = len(messages) - len(unavailable)
-        text_available_count += available
-        text_unavailable_count += len(unavailable)
+        text_unavailable = [message for message in messages if _message_text_unavailable(message)]
+        content_unavailable = [message for message in messages if _message_content_unavailable(message)]
+        text_available_count += len(messages) - len(text_unavailable)
+        text_unavailable_count += len(text_unavailable)
+        content_available_count += len(messages) - len(content_unavailable)
+        content_unavailable_count += len(content_unavailable)
         latest = messages[0]
-        if _message_text_unavailable(latest):
-            latest_text_unavailable_threads.append(_thread_title(thread))
+        if _message_content_unavailable(latest):
+            latest_content_unavailable_threads.append(_thread_title(thread))
         threshold = math.ceil(len(messages) / 3)
-        if len(unavailable) > threshold:
-            per_thread_text_unavailable_violations.append(
+        if len(content_unavailable) > threshold:
+            per_thread_content_unavailable_violations.append(
                 {
                     "chatTitle": _thread_title(thread),
                     "threadKey": str(thread.get("threadKey") or ""),
                     "messageCount": len(messages),
-                    "textUnavailableCount": len(unavailable),
-                    "allowedTextUnavailableCount": threshold,
+                    "contentUnavailableCount": len(content_unavailable),
+                    "allowedContentUnavailableCount": threshold,
                 }
             )
 
@@ -72,38 +76,39 @@ def assess_export_quality(payload: dict[str, Any]) -> dict[str, Any]:
                 "detail": "The export contained threads but no recentMessages/messages arrays with message records.",
             }
         )
-    if message_count > 0 and text_available_count <= 0:
+    if message_count > 0 and content_available_count <= 0:
         issues.append(
             {
-                "code": "no-text-captured",
+                "code": "no-content-captured",
                 "severity": "error",
-                "detail": "The export contained message records, but none had readable text.",
+                "detail": "The export contained message records, but none had readable text or captured attachment metadata.",
             }
         )
-    if len(latest_text_unavailable_threads) > LATEST_TEXT_UNAVAILABLE_THREAD_LIMIT:
+    if len(latest_content_unavailable_threads) > LATEST_CONTENT_UNAVAILABLE_THREAD_LIMIT:
         issues.append(
             {
-                "code": "too-many-latest-messages-without-text",
+                "code": "too-many-latest-messages-without-content",
                 "severity": "error",
                 "detail": (
-                    "More than two exported threads have textAvailable=false on their latest message. "
-                    "This usually means WhatsApp Web was not ready or the collector fell back to stale media-only data."
+                    "More than two exported threads have no readable text and no captured attachment metadata "
+                    "on their latest message. This usually means WhatsApp Web was not ready or the collector "
+                    "fell back to stale data."
                 ),
-                "limit": LATEST_TEXT_UNAVAILABLE_THREAD_LIMIT,
-                "count": len(latest_text_unavailable_threads),
-                "chatTitles": latest_text_unavailable_threads[:20],
+                "limit": LATEST_CONTENT_UNAVAILABLE_THREAD_LIMIT,
+                "count": len(latest_content_unavailable_threads),
+                "chatTitles": latest_content_unavailable_threads[:20],
             }
         )
-    if per_thread_text_unavailable_violations:
+    if per_thread_content_unavailable_violations:
         issues.append(
             {
-                "code": "thread-text-unavailable-ratio-too-high",
+                "code": "thread-content-unavailable-ratio-too-high",
                 "severity": "error",
                 "detail": (
-                    "At least one exported thread has textAvailable=false on more than one third of its messages, "
-                    "rounded up to the nearest whole message."
+                    "At least one exported thread has neither readable text nor captured attachment metadata on "
+                    "more than one third of its messages, rounded up to the nearest whole message."
                 ),
-                "threads": per_thread_text_unavailable_violations[:20],
+                "threads": per_thread_content_unavailable_violations[:20],
             }
         )
 
@@ -125,17 +130,20 @@ def assess_export_quality(payload: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "ok": not any(issue.get("severity") == "error" for issue in issues),
-        "rulesVersion": 1,
+        "rulesVersion": 2,
         "thresholds": {
-            "latestTextUnavailableThreadLimit": LATEST_TEXT_UNAVAILABLE_THREAD_LIMIT,
-            "perThreadTextUnavailableFraction": "1/3 rounded up",
+            "latestContentUnavailableThreadLimit": LATEST_CONTENT_UNAVAILABLE_THREAD_LIMIT,
+            "perThreadContentUnavailableFraction": "1/3 rounded up",
+            "textAvailableFalseWithCapturedAttachment": "allowed",
         },
         "metrics": {
             "threadCount": thread_count,
             "messageCount": message_count,
             "textAvailableCount": text_available_count,
             "textUnavailableCount": text_unavailable_count,
-            "latestTextUnavailableThreadCount": len(latest_text_unavailable_threads),
+            "contentAvailableCount": content_available_count,
+            "contentUnavailableCount": content_unavailable_count,
+            "latestContentUnavailableThreadCount": len(latest_content_unavailable_threads),
             "sourceViewCounts": dict(source_view_counts),
         },
         "issues": issues,
@@ -188,10 +196,42 @@ def _thread_messages(thread: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _message_text_unavailable(message: dict[str, Any]) -> bool:
     if message.get("textAvailable") is False:
-        return True
+        text = message.get("text")
+        return not isinstance(text, str) or not text.strip()
     if "textAvailable" not in message:
         text = message.get("text")
         return not isinstance(text, str) or not text.strip()
+    return False
+
+
+def _message_content_unavailable(message: dict[str, Any]) -> bool:
+    return not _message_content_available(message)
+
+
+def _message_content_available(message: dict[str, Any]) -> bool:
+    text = message.get("text")
+    if isinstance(text, str) and text.strip():
+        return True
+    if message.get("textAvailable") is True:
+        return True
+    return _message_has_attachment_metadata(message)
+
+
+def _message_has_attachment_metadata(message: dict[str, Any]) -> bool:
+    attachments = message.get("attachments")
+    if not isinstance(attachments, list):
+        return False
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            continue
+        status = str(attachment.get("status") or "").strip().lower()
+        if status in {"failed", "error", "unavailable"}:
+            continue
+        if any(
+            attachment.get(key)
+            for key in ("kind", "mimeType", "fileName", "relativePath", "localPath", "attachmentId", "note")
+        ):
+            return True
     return False
 
 

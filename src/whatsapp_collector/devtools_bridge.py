@@ -273,12 +273,84 @@ class ChromeDevToolsBridge:
             raise RuntimeError(f"Timed out waiting for Chrome target URL {self.target_url_substring!r} on port {self.port}: {last_error}") from last_error
         raise RuntimeError(f"Timed out waiting for Chrome target URL {self.target_url_substring!r} on port {self.port}")
 
+    def activate_target_url(self) -> dict[str, Any]:
+        def run() -> dict[str, Any]:
+            target = self._choose_target(require_target_url=True, prefer_marker_window=True)
+            self._send(target, "Target.activateTarget", {"targetId": target["id"]})
+            return {
+                "targetId": target.get("id"),
+                "title": target.get("title"),
+                "url": target.get("url"),
+            }
+
+        return dict(self._run_action("activate-target", run))
+
+    def inspect_whatsapp_readiness(self) -> dict[str, Any]:
+        expression = r'''(() => {
+            const bodyText = (document.body && document.body.innerText || '').replace(/\s+/g, ' ').trim();
+            const pane = document.querySelector('#pane-side');
+            const chatRows = pane ? pane.querySelectorAll('[role="row"], [data-testid^="list-item-"], [data-testid="cell-frame-container"]').length : 0;
+            const loginRequired = /log in|scan|qr code|use whatsapp on your computer|link a device/i.test(bodyText)
+                && !pane;
+            const loading = /loading|connecting|syncing/i.test(bodyText) && !pane;
+            return JSON.stringify({
+                url: location.href,
+                title: document.title,
+                hasChatPane: !!pane,
+                chatRowCount: chatRows,
+                loginRequired,
+                loading,
+                ready: !!pane,
+                bodyPreview: bodyText.slice(0, 220)
+            });
+        })()'''
+        try:
+            return dict(json.loads(self.evaluate(expression)))
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("WhatsApp readiness check returned invalid JSON") from exc
+
+    def wait_until_whatsapp_ready(
+        self,
+        *,
+        attempts: int = 40,
+        delay_seconds: float = 0.5,
+        require_ready: bool = False,
+    ) -> dict[str, Any]:
+        last_state: dict[str, Any] | None = None
+        last_error: Exception | None = None
+        for _ in range(attempts):
+            try:
+                self.activate_target_url()
+                state = self.inspect_whatsapp_readiness()
+                last_state = state
+                if state.get("ready") is True:
+                    return state
+                if state.get("loginRequired") is True and not require_ready:
+                    return state
+            except Exception as exc:  # pragma: no cover - exercised in live retry paths
+                last_error = exc
+            time.sleep(delay_seconds)
+        if require_ready:
+            if last_state:
+                preview = str(last_state.get("bodyPreview") or "").strip()
+                if last_state.get("loginRequired") is True:
+                    raise RuntimeError("WhatsApp Web is not logged in; scan the QR code in the dedicated Chrome profile before exporting.")
+                detail = f"; page preview: {preview}" if preview else ""
+                raise RuntimeError(f"WhatsApp Web did not finish rendering the chat list before export{detail}")
+            if last_error is not None:
+                raise RuntimeError(f"Timed out waiting for WhatsApp Web readiness on port {self.port}: {last_error}") from last_error
+            raise RuntimeError(f"Timed out waiting for WhatsApp Web readiness on port {self.port}")
+        return last_state or {"ready": False, "error": str(last_error) if last_error else "Timed out waiting for WhatsApp Web readiness"}
+
     def version(self) -> dict[str, Any]:
         return dict(self._run_action("version", lambda: self._fetch_json("/json/version")))
 
     def list_targets(self) -> list[dict[str, Any]]:
         payload = self._run_action("list", lambda: self._fetch_json("/json/list"))
         return list(payload)
+
+    def marker_targets(self) -> list[dict[str, Any]]:
+        return [target for target in self._page_targets() if self._matches_marker_target(target)]
 
     def evaluate(self, expression: str) -> str:
         def run() -> str:
@@ -320,6 +392,8 @@ class ChromeDevToolsBridge:
             if self.target_url_substring:
                 target_tab = next((item for item in self._page_targets() if self._matches_url_target(item)), None)
             selected = target_tab or target
+            if target_tab is not None:
+                self._send(target_tab, "Target.activateTarget", {"targetId": target_tab["id"]})
             return {
                 "windowId": window_id,
                 "targetId": selected.get("id"),

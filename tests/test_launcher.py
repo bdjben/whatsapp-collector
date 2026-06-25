@@ -55,6 +55,8 @@ def test_launch_dedicated_chrome_window_opens_background_chrome_instance(monkeyp
     assert "--remote-debugging-port=19220" in command
     assert "--new-window" in command
     assert "https://web.whatsapp.com/" in command
+    assert not any(str(part).startswith("data:text/html,") for part in command)
+    assert command.count("https://web.whatsapp.com/") == 1
 
 
 def test_launch_dedicated_chrome_window_noisily_reports_missing_chrome(monkeypatch, tmp_path: Path) -> None:

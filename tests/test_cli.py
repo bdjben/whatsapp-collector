@@ -328,7 +328,7 @@ def test_cli_dashboard_export_rejects_degraded_payload_without_writing(capsys, t
     assert not output.exists()
     out = capsys.readouterr().out
     assert '"ok": false' in out
-    assert "too-many-latest-messages-without-text" in out
+    assert "too-many-latest-messages-without-content" in out
 
 
 def test_cli_ensure_window_prints_window_payload(monkeypatch, capsys, tmp_path: Path) -> None:

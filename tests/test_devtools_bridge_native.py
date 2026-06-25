@@ -93,8 +93,31 @@ class _FakeDevToolsHandler(BaseHTTPRequestHandler):
             return {"id": request_id, "result": {"windowId": 17}}
         if method == "Browser.setWindowBounds":
             return {"id": request_id, "result": {}}
+        if method == "Target.activateTarget":
+            return {"id": request_id, "result": {}}
         if method == "Runtime.evaluate":
             expression = request.get("params", {}).get("expression")
+            if isinstance(expression, str) and "hasChatPane" in expression:
+                return {
+                    "id": request_id,
+                    "result": {
+                        "result": {
+                            "type": "string",
+                            "value": json.dumps(
+                                {
+                                    "url": "https://web.whatsapp.com/",
+                                    "title": "WhatsApp",
+                                    "hasChatPane": True,
+                                    "chatRowCount": 12,
+                                    "loginRequired": False,
+                                    "loading": False,
+                                    "ready": True,
+                                    "bodyPreview": "WhatsApp chats",
+                                }
+                            ),
+                        }
+                    },
+                }
             if expression == "document.title":
                 return {"id": request_id, "result": {"result": {"type": "string", "value": "WhatsApp"}}}
             if expression == "({x: 12, y: 34})":
@@ -220,7 +243,21 @@ def test_devtools_bridge_evaluates_and_clicks_via_native_websocket_without_node(
     assert "Runtime.evaluate" in methods
     assert methods.count("Input.dispatchMouseEvent") == 3
     assert "Page.bringToFront" not in methods
-    assert "Target.activateTarget" not in methods
+
+
+def test_devtools_bridge_activates_and_waits_for_whatsapp_readiness(fake_devtools_server, monkeypatch) -> None:
+    port, state = fake_devtools_server
+    monkeypatch.setenv("PATH", os.devnull)
+    bridge = ChromeDevToolsBridge(port=port, target_url_substring="https://web.whatsapp.com/")
+
+    activated = bridge.activate_target_url()
+    readiness = bridge.wait_until_whatsapp_ready(attempts=1, delay_seconds=0, require_ready=True)
+
+    assert activated["targetId"] == "page-1"
+    assert readiness["ready"] is True
+    activate_requests = [request for request in state.requests if request["method"] == "Target.activateTarget"]
+    assert activate_requests
+    assert activate_requests[0]["params"] == {"targetId": "page-1"}
 
 
 def test_devtools_bridge_places_window_via_native_websocket_without_node(fake_devtools_server, monkeypatch) -> None:
@@ -237,3 +274,4 @@ def test_devtools_bridge_places_window_via_native_websocket_without_node(fake_de
         "windowId": 17,
         "bounds": {"left": 1, "top": 2, "width": 800, "height": 600, "windowState": "normal"},
     }
+    assert any(request["method"] == "Target.activateTarget" for request in state.requests)

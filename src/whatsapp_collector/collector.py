@@ -1170,6 +1170,7 @@ class WhatsAppCollector:
                 "sender": message.sender,
                 "text": message.text,
                 "textAvailable": message.text_available,
+                "contentAvailable": bool(message.text_available or message.attachments),
                 "messageType": message.message_type,
                 "subtype": message.subtype,
             }
@@ -1247,6 +1248,7 @@ class WhatsAppCollector:
                 "sender": sender,
                 "text": text,
                 "textAvailable": bool(text),
+                "contentAvailable": bool(text or attachments),
                 "messageType": item.get("type") or "unknown",
                 "subtype": item.get("subtype"),
             }

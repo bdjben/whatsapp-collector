@@ -118,11 +118,19 @@ def test_native_run_export_retries_then_writes_when_quality_recovers(tmp_path: P
     output = tmp_path / "export.json"
     calls = {"count": 0}
 
+    class FakeDevToolsBridge:
+        def __init__(self, **kwargs):
+            pass
+
+        def wait_until_whatsapp_ready(self, **kwargs):
+            return {"ready": True}
+
     class FakeCollector:
         def collect_dashboard_export(self, **kwargs):
             calls["count"] += 1
             return _degraded_export() if calls["count"] == 1 else _good_export()
 
+    monkeypatch.setattr(bridge, "ChromeDevToolsBridge", FakeDevToolsBridge)
     monkeypatch.setattr(bridge, "_collector", lambda cfg: FakeCollector())
     monkeypatch.setattr(bridge.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(bridge, "terminate_profile_processes", lambda *args, **kwargs: None)
@@ -150,6 +158,14 @@ def test_native_run_export_rejects_degraded_export_and_restores_last_good(tmp_pa
             calls["count"] += 1
             return _degraded_export()
 
+    class FakeDevToolsBridge:
+        def __init__(self, **kwargs):
+            pass
+
+        def wait_until_whatsapp_ready(self, **kwargs):
+            return {"ready": True}
+
+    monkeypatch.setattr(bridge, "ChromeDevToolsBridge", FakeDevToolsBridge)
     monkeypatch.setattr(bridge, "_collector", lambda cfg: FakeCollector())
     monkeypatch.setattr(bridge.time, "sleep", lambda seconds: None)
 
