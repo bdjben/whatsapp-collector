@@ -121,7 +121,7 @@ struct HelpView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         PathRow(
                             title: "Export JSON",
-                            path: $store.configuration.outputPath,
+                            path: .constant(store.configuration.outputPath),
                             systemImage: "doc.text",
                             actionTitle: "Copy",
                             action: store.copyOutputPath

@@ -206,14 +206,29 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     assert "scheduledRunActive" in components_source
     assert "NSWindow.allowsAutomaticWindowTabbing = false" in app_source
     assert "closeDuplicateMainWindows()" in app_source
+    assert "MainWindowAccessor(store: store)" in app_source
+    assert "windowShouldClose" in app_source
+    assert "unsavedChangesDecision(context: \"before closing the app window\")" in app_source
+    assert "requestSectionChange(section)" in app_source
+    assert "onChange(of: store.configuration)" not in app_source
+    assert "onChange(of: store.scheduleIntervalMinutes)" not in app_source
     assert 'case .dashboard: "WhatsApp Collector"' in section_source
+    assert section_source.index("case labels") < section_source.index("case automation") < section_source.index("case export")
     assert 'title: "WhatsApp Collector"' in dashboard_source
     assert "Chrome window display" in dashboard_source
     assert "Optional macOS display name" in dashboard_source
-    assert "particular monitor, such as LED TV" in dashboard_source
+    assert "macOS System Settings > Displays" in dashboard_source
+    assert "Leave it blank to use the main display" in dashboard_source
+    assert "$store.draftConfiguration.accountLabel" in dashboard_source
+    assert "$store.draftConfiguration.profileDir" in dashboard_source
+    assert "$store.draftConfiguration.outputPath" in dashboard_source
+    assert "SaveChangesBar()" in dashboard_source
     assert "After a successful export, WhatsApp Collector closes only its dedicated Chrome profile" in dashboard_source
     assert "Label rules are optional" in labels_source
     assert "Optional. Most users can leave labels alone" in labels_source
+    assert "store.draftConfiguration.allowLabels" in labels_source
+    assert "store.draftConfiguration.excludeLabels" in labels_source
+    assert "SaveChangesBar()" in labels_source
     assert "Native macOS app" not in dashboard_source
     assert dashboard_source.index('Label("Load Labels"') < dashboard_source.index('Label("Run Export"')
     assert 'Label("Open Export Preview"' in dashboard_source
@@ -230,6 +245,11 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     assert ".frame(maxHeight: 160)" in export_source
     assert "warningDetailsText(warnings)" in export_source
     assert "Current scheduler state" in automation_source
+    assert "$store.draftScheduleIntervalMinutes" in automation_source
+    assert "SaveChangesBar()" in automation_source
+    assert "SaveChangesBar" in components_source
+    assert "store.hasUnsavedChanges" in components_source
+    assert "saveDraftChanges()" in components_source
     assert "View/Copy AI Prompt" in app_source
     assert "View/Copy AI Prompt" in export_source
     assert "Window(\"AI Prompt\", id: \"ai-prompt\")" in app_source
@@ -252,6 +272,12 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     assert "legacy-app-" in migration_source
     assert store_source.index('alert.addButton(withTitle: "Not Now")') < store_source.index('"Back Up Exports and Move Old App to Trash"')
     assert "alertSecondButtonReturn" in store_source
+    assert "@Published var draftConfiguration" in store_source
+    assert "@Published var draftScheduleIntervalMinutes" in store_source
+    assert "var hasUnsavedChanges" in store_source
+    assert "perform(.scheduleInstall, busy: .scheduling, intervalMinutes: scheduleIntervalMinutes)" in store_source
+    assert "Discard Changes" in store_source
+    assert "Save Changes" in store_source
     bridge_source = (project / "native-macos" / "Support" / "native_bridge.py").read_text()
     assert "terminate_profile_processes(cfg[\"profile_dir\"]" in bridge_source
     assert "\"closedAfterExport\": True" in bridge_source

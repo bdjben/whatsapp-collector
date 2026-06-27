@@ -37,6 +37,9 @@ struct LabelsView: View {
                 }
             }
         }
+        .safeAreaInset(edge: .bottom) {
+            SaveChangesBar()
+        }
     }
 
     private var header: some View {
@@ -75,9 +78,9 @@ struct LabelsView: View {
 
                 Spacer()
 
-                Label("\(store.configuration.allowLabels.count) always", systemImage: "checkmark.circle")
+                Label("\(store.draftConfiguration.allowLabels.count) always", systemImage: "checkmark.circle")
                     .foregroundStyle(.green)
-                Label("\(store.configuration.excludeLabels.count) never", systemImage: "minus.circle")
+                Label("\(store.draftConfiguration.excludeLabels.count) never", systemImage: "minus.circle")
                     .foregroundStyle(.orange)
             }
 
@@ -101,7 +104,7 @@ struct LabelsView: View {
     }
 
     private var allLabels: [String] {
-        let labels = store.availableLabels + store.configuration.allowLabels + store.configuration.excludeLabels
+        let labels = store.availableLabels + store.draftConfiguration.allowLabels + store.draftConfiguration.excludeLabels
         var seen = Set<String>()
         return labels.compactMap { label in
             let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -121,10 +124,10 @@ struct LabelsView: View {
     }
 
     private func role(for label: String) -> LabelRole {
-        if store.configuration.allowLabels.contains(where: { $0.caseInsensitiveCompare(label) == .orderedSame }) {
+        if store.draftConfiguration.allowLabels.contains(where: { $0.caseInsensitiveCompare(label) == .orderedSame }) {
             return .alwaysInclude
         }
-        if store.configuration.excludeLabels.contains(where: { $0.caseInsensitiveCompare(label) == .orderedSame }) {
+        if store.draftConfiguration.excludeLabels.contains(where: { $0.caseInsensitiveCompare(label) == .orderedSame }) {
             return .neverInclude
         }
         return .standard

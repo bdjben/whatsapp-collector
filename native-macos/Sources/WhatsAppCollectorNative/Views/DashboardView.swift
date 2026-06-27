@@ -25,6 +25,9 @@ struct DashboardView: View {
             }
             .padding(22)
         }
+        .safeAreaInset(edge: .bottom) {
+            SaveChangesBar()
+        }
     }
 
     private var dashboardHeader: some View {
@@ -109,7 +112,7 @@ struct DashboardView: View {
 
                 Button {
                     store.loadExportPreview()
-                    store.selectedSection = .export
+                    store.requestSectionChange(.export)
                 } label: {
                     Label("Open Export Preview", systemImage: "doc.text.magnifyingglass")
                 }
@@ -144,7 +147,7 @@ struct DashboardView: View {
                 GridRow {
                     Text("Account label")
                         .foregroundStyle(.secondary)
-                    TextField("WhatsApp", text: $store.configuration.accountLabel)
+                    TextField("WhatsApp", text: $store.draftConfiguration.accountLabel)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 360)
                 }
@@ -152,10 +155,10 @@ struct DashboardView: View {
                     Text("Messages per conversation")
                         .foregroundStyle(.secondary)
                     HStack {
-                        TextField("Messages", value: $store.configuration.maxMessages, format: .number)
+                        TextField("Messages", value: $store.draftConfiguration.maxMessages, format: .number)
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 90)
-                        Stepper("", value: $store.configuration.maxMessages, in: 1...500)
+                        Stepper("", value: $store.draftConfiguration.maxMessages, in: 1...500)
                             .labelsHidden()
                         Text("Recent messages saved for each collected thread.")
                             .foregroundStyle(.secondary)
@@ -165,10 +168,10 @@ struct DashboardView: View {
                     Text("Recent chats from All")
                         .foregroundStyle(.secondary)
                     HStack {
-                        TextField("Chats", value: $store.configuration.maxAllChats, format: .number)
+                        TextField("Chats", value: $store.draftConfiguration.maxAllChats, format: .number)
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 90)
-                        Stepper("", value: $store.configuration.maxAllChats, in: 1...500)
+                        Stepper("", value: $store.draftConfiguration.maxAllChats, in: 1...500)
                             .labelsHidden()
                         Text("Additional unlabeled/recent chats to collect.")
                             .foregroundStyle(.secondary)
@@ -178,7 +181,7 @@ struct DashboardView: View {
                     Text("Groups")
                         .foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 6) {
-                        Picker("Groups", selection: $store.configuration.includeGroups) {
+                        Picker("Groups", selection: $store.draftConfiguration.includeGroups) {
                             ForEach(GroupInclusionMode.allCases) { mode in
                                 Text(mode.title).tag(mode)
                             }
@@ -186,7 +189,7 @@ struct DashboardView: View {
                         .labelsHidden()
                         .pickerStyle(.segmented)
                         .frame(maxWidth: 420)
-                        Text(store.configuration.includeGroups.detail)
+                        Text(store.draftConfiguration.includeGroups.detail)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -194,10 +197,10 @@ struct DashboardView: View {
                     Text("Chrome window display")
                         .foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 6) {
-                        TextField("Optional macOS display name", text: $store.configuration.displayName)
+                        TextField("Optional macOS display name", text: $store.draftConfiguration.displayName)
                             .textFieldStyle(.roundedBorder)
                             .frame(maxWidth: 360)
-                        Text("Optional. Use this only if you want the dedicated Chrome window placed on a particular monitor, such as LED TV. Leave it blank to use the normal display.")
+                        Text("Optional. Use this only if you want the dedicated Chrome window placed on a particular monitor. Enter the name of the display as it appears in macOS System Settings > Displays. Leave it blank to use the main display.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -213,10 +216,10 @@ struct DashboardView: View {
         GroupBox("Chrome Profile Folder") {
             PathRow(
                 title: "Dedicated Chrome profile",
-                path: $store.configuration.profileDir,
+                path: $store.draftConfiguration.profileDir,
                 systemImage: "person.crop.square",
                 actionTitle: "Open",
-                action: store.openProfileFolder
+                action: store.openDraftProfileFolder
             )
             .padding(.vertical, 4)
         }
@@ -227,10 +230,10 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: 16) {
                 PathRow(
                     title: "Export data file",
-                    path: $store.configuration.outputPath,
+                    path: $store.draftConfiguration.outputPath,
                     systemImage: "doc.badge.gearshape",
                     actionTitle: "Copy",
-                    action: store.copyOutputPath
+                    action: store.copyDraftOutputPath
                 )
             }
             .padding(.vertical, 4)

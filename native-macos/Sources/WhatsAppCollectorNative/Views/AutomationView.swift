@@ -59,10 +59,10 @@ struct AutomationView: View {
                         HStack {
                             Text("Interval")
                                 .foregroundStyle(.secondary)
-                            TextField("Minutes", value: $store.scheduleIntervalMinutes, format: .number)
+                            TextField("Minutes", value: $store.draftScheduleIntervalMinutes, format: .number)
                                 .textFieldStyle(.roundedBorder)
                                 .frame(width: 90)
-                            Stepper("", value: $store.scheduleIntervalMinutes, in: 1...(24 * 60))
+                            Stepper("", value: $store.draftScheduleIntervalMinutes, in: 1...(24 * 60))
                                 .labelsHidden()
                             Text("minutes")
                                 .foregroundStyle(.secondary)
@@ -151,6 +151,9 @@ struct AutomationView: View {
                 }
             }
             .padding(22)
+        }
+        .safeAreaInset(edge: .bottom) {
+            SaveChangesBar()
         }
     }
 

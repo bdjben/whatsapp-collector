@@ -99,16 +99,10 @@ struct WhatsAppCollectorNativeApp: App {
                 .environmentObject(updateMonitor)
                 .environment(\.appActions, appActions)
                 .frame(minWidth: 1080, minHeight: 700)
-                .background(MainWindowAccessor())
+                .background(MainWindowAccessor(store: store))
                 .task {
                     updateMonitor.startAutomaticChecks()
                     await store.bootstrap()
-                }
-                .onChange(of: store.configuration) {
-                    store.saveConfiguration()
-                }
-                .onChange(of: store.scheduleIntervalMinutes) {
-                    store.saveScheduleInterval()
                 }
         }
         .defaultSize(width: 1180, height: 760)
@@ -214,7 +208,7 @@ struct WhatsAppCollectorNativeApp: App {
 
     @MainActor
     private func showSection(_ section: AppSection) {
-        store.selectedSection = section
+        store.requestSectionChange(section)
         if AppDelegate.showMainWindow() == false {
             openWindow(id: "main")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
@@ -238,10 +232,17 @@ struct WhatsAppCollectorNativeApp: App {
 }
 
 struct MainWindowAccessor: NSViewRepresentable {
+    @ObservedObject var store: CollectorStore
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(store: store)
+    }
+
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
         DispatchQueue.main.async {
             AppDelegate.markMainWindow(view.window)
+            context.coordinator.attach(to: view.window)
         }
         return view
     }
@@ -249,6 +250,53 @@ struct MainWindowAccessor: NSViewRepresentable {
     func updateNSView(_ view: NSView, context: Context) {
         DispatchQueue.main.async {
             AppDelegate.markMainWindow(view.window)
+            context.coordinator.attach(to: view.window)
+        }
+    }
+
+    final class Coordinator: NSObject, NSWindowDelegate {
+        private let store: CollectorStore
+        private weak var window: NSWindow?
+        private var allowNextClose = false
+
+        init(store: CollectorStore) {
+            self.store = store
+        }
+
+        @MainActor
+        func attach(to window: NSWindow?) {
+            guard let window, self.window !== window else { return }
+            if self.window?.delegate === self {
+                self.window?.delegate = nil
+            }
+            self.window = window
+            window.delegate = self
+        }
+
+        func windowShouldClose(_ sender: NSWindow) -> Bool {
+            if allowNextClose {
+                allowNextClose = false
+                return true
+            }
+            switch store.unsavedChangesDecision(context: "before closing the app window") {
+            case .none:
+                return true
+            case .discard:
+                store.discardDraftChanges()
+                return true
+            case .save:
+                Task {
+                    if await store.saveDraftChanges() {
+                        await MainActor.run {
+                            self.allowNextClose = true
+                            sender.close()
+                        }
+                    }
+                }
+                return false
+            case .cancel:
+                return false
+            }
         }
     }
 }
@@ -309,7 +357,7 @@ struct MenuBarContent: View {
 
     @MainActor
     private func show(_ section: AppSection) {
-        store.selectedSection = section
+        store.requestSectionChange(section)
         if AppDelegate.showMainWindow() == false {
             openWindow(id: "main")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {

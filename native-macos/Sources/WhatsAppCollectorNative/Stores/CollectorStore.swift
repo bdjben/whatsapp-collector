@@ -4,6 +4,7 @@ import Foundation
 @MainActor
 final class CollectorStore: ObservableObject {
     @Published var configuration: CollectorConfiguration = .defaults
+    @Published var draftConfiguration: CollectorConfiguration = .defaults
     @Published var exportSummary: ExportSummary = .empty
     @Published var schedule: ScheduleState?
     @Published var availableLabels: [String] = []
@@ -14,6 +15,7 @@ final class CollectorStore: ObservableObject {
     @Published var diagnostics: String = ""
     @Published var aiPrompt: String = DisplayFormatters.aiPrompt(path: CollectorConfiguration.defaultOutputPath)
     @Published var scheduleIntervalMinutes: Int = 15
+    @Published var draftScheduleIntervalMinutes: Int = 15
     @Published var legacyAppCandidate: LegacyAppCandidate?
     @Published var legacyCleanupSummary: String?
     @Published var selectedSection: AppSection = .dashboard
@@ -25,6 +27,11 @@ final class CollectorStore: ObservableObject {
     private var schedulePollingTask: Task<Void, Never>?
 
     var isBusy: Bool { busyState != .idle }
+
+    var hasUnsavedChanges: Bool {
+        draftConfiguration != configuration
+            || draftScheduleIntervalMinutes != scheduleIntervalMinutes
+    }
 
     var scheduledExportIsRunning: Bool { schedule?.isCurrentRunActive == true }
 
@@ -66,7 +73,9 @@ final class CollectorStore: ObservableObject {
             loadedInterval = max(1, UserDefaults.standard.integer(forKey: DefaultsKey.scheduleIntervalMinutes.rawValue))
         }
         configuration = loadedConfiguration
+        draftConfiguration = loadedConfiguration
         scheduleIntervalMinutes = loadedInterval
+        draftScheduleIntervalMinutes = loadedInterval
         aiPrompt = DisplayFormatters.aiPrompt(path: loadedConfiguration.outputPath)
         availableLabels = Self.loadStringArray(for: .availableLabels, from: UserDefaults.standard)
         refreshLaunchAtLoginStatus()
@@ -84,12 +93,69 @@ final class CollectorStore: ObservableObject {
         schedulePollingTask?.cancel()
     }
 
-    func saveConfiguration() {
-        var clean = configuration
-        clean.cleanLabelLists()
-        if clean != configuration {
-            configuration = clean
+    func saveDraftChanges(updateConfiguredSchedule: Bool = true) async -> Bool {
+        configuration = normalized(configuration: draftConfiguration)
+        draftConfiguration = configuration
+        scheduleIntervalMinutes = boundedScheduleInterval(draftScheduleIntervalMinutes)
+        draftScheduleIntervalMinutes = scheduleIntervalMinutes
+        persistConfiguration()
+        persistScheduleInterval()
+        guard updateConfiguredSchedule, schedule?.enabled == true else {
+            return true
         }
+        guard let response = await perform(.scheduleInstall, busy: .scheduling, intervalMinutes: scheduleIntervalMinutes) else {
+            return false
+        }
+        apply(response)
+        return true
+    }
+
+    func discardDraftChanges() {
+        draftConfiguration = configuration
+        draftScheduleIntervalMinutes = scheduleIntervalMinutes
+    }
+
+    func requestSectionChange(_ section: AppSection) {
+        guard section != selectedSection else { return }
+        switch unsavedChangesDecision(context: "before leaving \(selectedSection.title)") {
+        case .none, .discard:
+            discardDraftChanges()
+            selectedSection = section
+        case .save:
+            Task {
+                if await saveDraftChanges() {
+                    selectedSection = section
+                }
+            }
+        case .cancel:
+            break
+        }
+    }
+
+    func unsavedChangesDecision(context: String) -> UnsavedChangesDecision {
+        guard hasUnsavedChanges else { return .none }
+        let alert = NSAlert()
+        alert.messageText = "Save Changes?"
+        alert.informativeText = "You have unsaved WhatsApp Collector settings changes. Save them \(context), discard them, or cancel and keep editing."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Save Changes")
+        alert.addButton(withTitle: "Discard Changes")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            return .save
+        case .alertSecondButtonReturn:
+            return .discard
+        default:
+            return .cancel
+        }
+    }
+
+    func saveConfiguration() {
+        persistConfiguration()
+    }
+
+    private func persistConfiguration() {
         defaults.set(true, forKey: DefaultsKey.hasSavedConfiguration.rawValue)
         defaults.set(configuration.outputPath, forKey: DefaultsKey.outputPath.rawValue)
         defaults.set(configuration.profileDir, forKey: DefaultsKey.profileDir.rawValue)
@@ -108,7 +174,12 @@ final class CollectorStore: ObservableObject {
     }
 
     func saveScheduleInterval() {
-        scheduleIntervalMinutes = max(1, min(scheduleIntervalMinutes, 24 * 60))
+        scheduleIntervalMinutes = boundedScheduleInterval(scheduleIntervalMinutes)
+        draftScheduleIntervalMinutes = scheduleIntervalMinutes
+        persistScheduleInterval()
+    }
+
+    private func persistScheduleInterval() {
         defaults.set(scheduleIntervalMinutes, forKey: DefaultsKey.scheduleIntervalMinutes.rawValue)
     }
 
@@ -120,8 +191,10 @@ final class CollectorStore: ObservableObject {
             if let interval = response.schedule?.intervalMinutes {
                 scheduleIntervalMinutes = interval
             }
-            saveConfiguration()
-            saveScheduleInterval()
+            draftConfiguration = configuration
+            draftScheduleIntervalMinutes = scheduleIntervalMinutes
+            persistConfiguration()
+            persistScheduleInterval()
         }
     }
 
@@ -135,14 +208,12 @@ final class CollectorStore: ObservableObject {
     }
 
     func runExport() async {
-        saveConfiguration()
         guard let response = await perform(.runExport, busy: .exporting) else { return }
         apply(response)
         loadExportPreview()
     }
 
     func loadLabels() async {
-        saveConfiguration()
         guard let response = await perform(.labels, busy: .loadingLabels) else { return }
         apply(response)
         if let labels = response.labels {
@@ -152,8 +223,7 @@ final class CollectorStore: ObservableObject {
     }
 
     func installSchedule() async {
-        saveConfiguration()
-        saveScheduleInterval()
+        guard await saveDraftChanges(updateConfiguredSchedule: false) else { return }
         guard let response = await perform(.scheduleInstall, busy: .scheduling, intervalMinutes: scheduleIntervalMinutes) else { return }
         apply(response)
     }
@@ -228,27 +298,24 @@ final class CollectorStore: ObservableObject {
     func setAllow(_ label: String) {
         let clean = label.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return }
-        configuration.excludeLabels.removeAll { $0.caseInsensitiveCompare(clean) == .orderedSame }
-        if configuration.allowLabels.contains(where: { $0.caseInsensitiveCompare(clean) == .orderedSame }) == false {
-            configuration.allowLabels.append(clean)
+        draftConfiguration.excludeLabels.removeAll { $0.caseInsensitiveCompare(clean) == .orderedSame }
+        if draftConfiguration.allowLabels.contains(where: { $0.caseInsensitiveCompare(clean) == .orderedSame }) == false {
+            draftConfiguration.allowLabels.append(clean)
         }
-        saveConfiguration()
     }
 
     func setExclude(_ label: String) {
         let clean = label.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return }
-        configuration.allowLabels.removeAll { $0.caseInsensitiveCompare(clean) == .orderedSame }
-        if configuration.excludeLabels.contains(where: { $0.caseInsensitiveCompare(clean) == .orderedSame }) == false {
-            configuration.excludeLabels.append(clean)
+        draftConfiguration.allowLabels.removeAll { $0.caseInsensitiveCompare(clean) == .orderedSame }
+        if draftConfiguration.excludeLabels.contains(where: { $0.caseInsensitiveCompare(clean) == .orderedSame }) == false {
+            draftConfiguration.excludeLabels.append(clean)
         }
-        saveConfiguration()
     }
 
     func clearLabelDecision(_ label: String) {
-        configuration.allowLabels.removeAll { $0.caseInsensitiveCompare(label) == .orderedSame }
-        configuration.excludeLabels.removeAll { $0.caseInsensitiveCompare(label) == .orderedSame }
-        saveConfiguration()
+        draftConfiguration.allowLabels.removeAll { $0.caseInsensitiveCompare(label) == .orderedSame }
+        draftConfiguration.excludeLabels.removeAll { $0.caseInsensitiveCompare(label) == .orderedSame }
     }
 
     func removeLabel(_ label: String) {
@@ -261,6 +328,10 @@ final class CollectorStore: ObservableObject {
 
     func copyOutputPath() {
         copy(configuration.outputPath)
+    }
+
+    func copyDraftOutputPath() {
+        copy(draftConfiguration.outputPath)
     }
 
     func copyPrompt() {
@@ -352,6 +423,11 @@ final class CollectorStore: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
+    func openDraftProfileFolder() {
+        let url = URL(fileURLWithPath: NSString(string: draftConfiguration.profileDir).expandingTildeInPath)
+        NSWorkspace.shared.open(url)
+    }
+
     private func perform(_ command: BridgeCommand, busy: BusyState, intervalMinutes: Int? = nil) async -> BridgeResponse? {
         busyState = busy
         lastError = nil
@@ -392,9 +468,13 @@ final class CollectorStore: ObservableObject {
     }
 
     private func apply(_ schedule: ScheduleState) {
+        let hadUnsavedChanges = hasUnsavedChanges
         self.schedule = schedule
         if let interval = schedule.intervalMinutes {
             scheduleIntervalMinutes = interval
+            if hadUnsavedChanges == false {
+                draftScheduleIntervalMinutes = interval
+            }
         }
     }
 
@@ -493,11 +573,38 @@ final class CollectorStore: ObservableObject {
         return []
     }
 
+    private func normalized(configuration: CollectorConfiguration) -> CollectorConfiguration {
+        var copy = configuration
+        copy.maxMessages = max(1, min(copy.maxMessages, 500))
+        copy.maxAllChats = max(1, min(copy.maxAllChats, 500))
+        copy.accountLabel = copy.accountLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        copy.displayName = copy.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        copy.outputPath = copy.outputPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        copy.profileDir = copy.profileDir.trimmingCharacters(in: .whitespacesAndNewlines)
+        copy.markerTitle = copy.markerTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        copy.markerUrlSubstring = copy.markerUrlSubstring.trimmingCharacters(in: .whitespacesAndNewlines)
+        copy.targetUrl = copy.targetUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        copy.debugPort = max(1, min(copy.debugPort, 65535))
+        copy.cleanLabelLists()
+        return copy
+    }
+
+    private func boundedScheduleInterval(_ value: Int) -> Int {
+        max(1, min(value, 24 * 60))
+    }
+
     private static let isoFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter
     }()
+}
+
+enum UnsavedChangesDecision {
+    case none
+    case save
+    case discard
+    case cancel
 }
 
 private enum DefaultsKey: String {

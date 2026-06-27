@@ -8,7 +8,7 @@ struct ContentView: View {
     private var selection: Binding<AppSection> {
         Binding(
             get: { store.selectedSection },
-            set: { store.selectedSection = $0 }
+            set: { store.requestSectionChange($0) }
         )
     }
 

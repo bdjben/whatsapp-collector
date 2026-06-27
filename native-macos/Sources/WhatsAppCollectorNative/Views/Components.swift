@@ -179,6 +179,40 @@ struct PathRow: View {
     }
 }
 
+struct SaveChangesBar: View {
+    @EnvironmentObject private var store: CollectorStore
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Label(statusText, systemImage: store.hasUnsavedChanges ? "exclamationmark.circle" : "checkmark.circle")
+                .font(.callout)
+                .foregroundStyle(store.hasUnsavedChanges ? .orange : .secondary)
+            Spacer()
+            Button("Discard Changes") {
+                store.discardDraftChanges()
+            }
+            .disabled(store.isBusy || store.hasUnsavedChanges == false)
+            Button {
+                Task { await store.saveDraftChanges() }
+            } label: {
+                Label("Save Changes", systemImage: "checkmark.circle")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(store.isBusy || store.hasUnsavedChanges == false)
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 12)
+        .background(.bar)
+        .overlay(alignment: .top) {
+            Divider()
+        }
+    }
+
+    private var statusText: String {
+        store.hasUnsavedChanges ? "Unsaved changes" : "Settings saved"
+    }
+}
+
 struct LabelChip: View {
     var title: String
     var role: LabelRole

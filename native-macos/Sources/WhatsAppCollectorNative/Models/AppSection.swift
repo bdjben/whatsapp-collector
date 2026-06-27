@@ -3,8 +3,8 @@ import Foundation
 enum AppSection: String, CaseIterable, Identifiable {
     case dashboard
     case labels
-    case export
     case automation
+    case export
     case diagnostics
     case help
 
