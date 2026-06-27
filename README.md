@@ -6,6 +6,7 @@
 ![License](https://img.shields.io/badge/license-MIT-111827)
 
 Read-only WhatsApp Web collector for macOS. It works with both WhatsApp Web and WhatsApp Business Web, turning an already logged-in Chrome session into structured JSON exports for dashboards, automations, and local reporting.
+
 <img width="203" height="157" alt="Screenshot 2026-06-28 at 1 32 53 AM" src="https://github.com/user-attachments/assets/e59c096b-4710-4d8c-8f52-ac03336a40a2" />
 <img width="1057" height="763" alt="Screenshot 2026-06-28 at 1 35 27 AM" src="https://github.com/user-attachments/assets/d3ce3783-b4d7-4d3a-83d5-a50b1d9aa036" />
 
