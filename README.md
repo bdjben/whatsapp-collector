@@ -20,6 +20,7 @@ This project is deliberately not a bot and not a sender. It never types into Wha
 | Safe automation | A user LaunchAgent can refresh exports on a schedule without a localhost web UI. |
 
 ## Quick start
+Download the .DMG installer file from the "Releases" page on the right, or:
 
 ```bash
 curl -L -o WhatsApp-Collector-macOS.dmg \
