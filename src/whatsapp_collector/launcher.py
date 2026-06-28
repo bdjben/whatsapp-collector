@@ -148,15 +148,25 @@ def debug_port_has_profile_conflict(debug_port: int, profile_dir: Path) -> bool:
 def load_display_frames() -> dict[str, DisplayFrame]:
     script = r'''
 import AppKit
+import CoreGraphics
 import Foundation
 let screens = NSScreen.screens.map { screen in
-    let frame = screen.visibleFrame
+    let screenFrame = screen.frame
+    let visibleFrame = screen.visibleFrame
+    let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID ?? 0
+    let cgFrame = CGDisplayBounds(displayID)
     return [
         "name": screen.localizedName,
-        "x": Int(frame.origin.x),
-        "y": Int(frame.origin.y),
-        "width": Int(frame.size.width),
-        "height": Int(frame.size.height),
+        "screenX": screenFrame.origin.x,
+        "screenY": screenFrame.origin.y,
+        "screenWidth": screenFrame.size.width,
+        "screenHeight": screenFrame.size.height,
+        "visibleX": visibleFrame.origin.x,
+        "visibleY": visibleFrame.origin.y,
+        "visibleWidth": visibleFrame.size.width,
+        "visibleHeight": visibleFrame.size.height,
+        "cgX": cgFrame.origin.x,
+        "cgY": cgFrame.origin.y,
     ]
 }
 let data = try! JSONSerialization.data(withJSONObject: screens, options: [])
@@ -164,7 +174,50 @@ print(String(data: data, encoding: .utf8)!)
 '''
     completed = _run(["swift", "-e", script])
     payload = json.loads(completed.stdout)
-    return {item["name"]: DisplayFrame(**item) for item in payload}
+    return {item["name"]: _display_frame_from_payload(item) for item in payload}
+
+
+def _display_frame_from_payload(item: dict[str, object]) -> DisplayFrame:
+    legacy_keys = {"name", "x", "y", "width", "height"}
+    screen_keys = {
+        "name",
+        "screenX",
+        "screenY",
+        "screenHeight",
+        "visibleX",
+        "visibleY",
+        "visibleWidth",
+        "visibleHeight",
+        "cgX",
+        "cgY",
+    }
+    if screen_keys.issubset(item):
+        screen_y = float(item["screenY"])
+        screen_height = float(item["screenHeight"])
+        visible_x = float(item["visibleX"])
+        visible_y = float(item["visibleY"])
+        visible_width = float(item["visibleWidth"])
+        visible_height = float(item["visibleHeight"])
+        cg_x = float(item["cgX"])
+        cg_y = float(item["cgY"])
+        x = cg_x + (visible_x - float(item.get("screenX", visible_x)))
+        y = cg_y + ((screen_y + screen_height) - (visible_y + visible_height))
+        return DisplayFrame(
+            name=str(item["name"]),
+            x=int(round(x)),
+            y=int(round(y)),
+            width=int(round(visible_width)),
+            height=int(round(visible_height)),
+        )
+    if legacy_keys.issubset(item):
+        return DisplayFrame(
+            name=str(item["name"]),
+            x=int(item["x"]),
+            y=int(item["y"]),
+            width=int(item["width"]),
+            height=int(item["height"]),
+        )
+    raise ValueError(f"Display payload is missing required geometry keys: {sorted(item)}")
 
 
 def marker_data_url(marker_title: str = DEFAULT_MARKER_TITLE, marker_slug: str = DEFAULT_MARKER_URL_SUBSTRING) -> str:

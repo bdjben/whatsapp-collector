@@ -14,6 +14,7 @@ from whatsapp_collector.launcher import (
     terminate_debug_port_processes,
     terminate_profile_processes,
     visible_bounds,
+    _display_frame_from_payload,
 )
 
 
@@ -225,6 +226,48 @@ def test_visible_bounds_insets_window_inside_display() -> None:
         "width": 1280,
         "height": 960,
     }
+
+
+def test_display_frame_payload_converts_appkit_to_chrome_coordinates_for_stacked_displays() -> None:
+    display = _display_frame_from_payload(
+        {
+            "name": "AICRONSMONITOR",
+            "screenX": -404,
+            "screenY": 2196,
+            "screenWidth": 2304,
+            "screenHeight": 1440,
+            "visibleX": -404,
+            "visibleY": 2196,
+            "visibleWidth": 2304,
+            "visibleHeight": 1440,
+            "cgX": -404,
+            "cgY": -2736,
+        }
+    )
+
+    assert display == DisplayFrame(name="AICRONSMONITOR", x=-404, y=-2736, width=2304, height=1440)
+    assert visible_bounds(display) == {"left": -284, "top": -2656, "width": 1280, "height": 960}
+
+
+def test_display_frame_payload_keeps_menu_bar_out_of_main_display_bounds() -> None:
+    display = _display_frame_from_payload(
+        {
+            "name": "CX158",
+            "screenX": 0,
+            "screenY": 0,
+            "screenWidth": 1440,
+            "screenHeight": 900,
+            "visibleX": 0,
+            "visibleY": 54,
+            "visibleWidth": 1440,
+            "visibleHeight": 815,
+            "cgX": 0,
+            "cgY": 0,
+        }
+    )
+
+    assert display == DisplayFrame(name="CX158", x=0, y=31, width=1440, height=815)
+    assert visible_bounds(display) == {"left": 120, "top": 111, "width": 1200, "height": 655}
 
 
 def test_ensure_dedicated_whatsapp_window_launches_when_debug_port_is_not_ready(monkeypatch, tmp_path: Path) -> None:
