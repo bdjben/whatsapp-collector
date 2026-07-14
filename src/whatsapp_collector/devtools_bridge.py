@@ -369,6 +369,224 @@ class ChromeDevToolsBridge:
 
         return str(self._run_action("evaluate", run))
 
+    def read_cached_media(
+        self,
+        file_hash: str,
+        *,
+        max_bytes: int,
+        chunk_bytes: int = 4_000_000,
+    ) -> dict[str, Any]:
+        """Read decrypted WhatsApp media from Cache Storage in bounded CDP chunks."""
+
+        def run() -> dict[str, Any]:
+            cache_key = json.dumps(file_hash)
+            prepare_expression = f'''(async () => {{
+                const fileHash = {cache_key};
+                let metadata = null;
+                try {{
+                    const database = await new Promise((resolve, reject) => {{
+                        const request = indexedDB.open('lru-media-storage-idb');
+                        request.onsuccess = () => resolve(request.result);
+                        request.onerror = () => reject(request.error);
+                    }});
+                    metadata = await new Promise((resolve, reject) => {{
+                        const transaction = database.transaction('lru-media-meta-info', 'readonly');
+                        const request = transaction.objectStore('lru-media-meta-info').get(fileHash);
+                        request.onsuccess = () => resolve(request.result || null);
+                        request.onerror = () => reject(request.error);
+                    }});
+                    database.close();
+                }} catch (_) {{
+                    metadata = null;
+                }}
+                const cache = await caches.open('lru-media-array-buffer-cache');
+                const url = 'https://_media_cache_v2_.whatsapp.com/lru-media-array-buffer-cache_' + encodeURIComponent(fileHash);
+                const response = await cache.match(url);
+                if (!response) return JSON.stringify({{available:false,metadataPresent:!!metadata,metadataSizeBytes:metadata && metadata.size || null}});
+                const blob = await response.blob();
+                window.__waCollectorMediaReads = window.__waCollectorMediaReads || new Map();
+                window.__waCollectorMediaReads.set(fileHash, blob);
+                return JSON.stringify({{available:true,sizeBytes:blob.size,mimeType:blob.type || null,metadataPresent:!!metadata,metadataSizeBytes:metadata && metadata.size || null}});
+            }})()'''
+            info = json.loads(self.evaluate(prepare_expression))
+            if not info.get("available"):
+                return info
+            size_bytes = int(info.get("sizeBytes") or 0)
+            if size_bytes > max(0, int(max_bytes)):
+                self._release_cached_media(file_hash)
+                return {
+                    **info,
+                    "data": None,
+                    "skippedReason": "file-size-limit",
+                }
+
+            data = bytearray()
+            try:
+                for offset in range(0, size_bytes, max(1, int(chunk_bytes))):
+                    length = min(max(1, int(chunk_bytes)), size_bytes - offset)
+                    chunk_expression = f'''(async () => {{
+                        const fileHash = {cache_key};
+                        const reads = window.__waCollectorMediaReads;
+                        const blob = reads && reads.get(fileHash);
+                        if (!blob) return JSON.stringify({{ok:false,error:'cache-read-not-prepared'}});
+                        const chunk = blob.slice({offset}, {offset + length});
+                        const dataUrl = await new Promise((resolve, reject) => {{
+                            const reader = new FileReader();
+                            reader.onload = () => resolve(String(reader.result || ''));
+                            reader.onerror = () => reject(reader.error);
+                            reader.readAsDataURL(chunk);
+                        }});
+                        return JSON.stringify({{ok:true,data:dataUrl.split(',', 2)[1] || ''}});
+                    }})()'''
+                    chunk = json.loads(self.evaluate(chunk_expression))
+                    if not chunk.get("ok"):
+                        raise RuntimeError(str(chunk.get("error") or "WhatsApp media cache chunk read failed"))
+                    data.extend(base64.b64decode(str(chunk.get("data") or ""), validate=True))
+            finally:
+                self._release_cached_media(file_hash)
+            if len(data) != size_bytes:
+                raise RuntimeError(f"WhatsApp media cache returned {len(data)} of {size_bytes} bytes")
+            return {**info, "data": bytes(data), "source": "whatsapp-media-cache"}
+
+        return dict(self._run_action("read-cached-media", run))
+
+    def request_visible_media_download(self, message_id: str, *, file_hash: str | None, force: bool) -> dict[str, Any]:
+        """Ask WhatsApp's live message model to fetch and decrypt one visible media item."""
+
+        expression = f'''(async () => {{
+            const targetId = {json.dumps(message_id)};
+            const expectedHash = {json.dumps(file_hash)};
+            const messageId = (value) => typeof value === 'string'
+                ? value
+                : value && (value._serialized || value.$1 || String(value));
+            let message = window.__waCollectorSelectedMediaMessages && window.__waCollectorSelectedMediaMessages.get(targetId) || null;
+            for (const container of [...document.querySelectorAll('#main [data-testid="msg-container"]')]) {{
+                if (message) break;
+                const fiberKey = Object.keys(container).find(key => key.startsWith('__reactFiber$'));
+                let fiber = fiberKey ? container[fiberKey] : null;
+                while (fiber) {{
+                    const candidate = fiber.memoizedProps && fiber.memoizedProps.msg;
+                    if (candidate && messageId(candidate.id) === targetId) {{
+                        message = candidate;
+                        break;
+                    }}
+                    fiber = fiber.return;
+                }}
+                if (message) break;
+            }}
+            if (!message) return JSON.stringify({{ok:false,error:'message-not-visible'}});
+            if (expectedHash && message.filehash && message.filehash !== expectedHash) {{
+                return JSON.stringify({{ok:false,error:'message-filehash-mismatch'}});
+            }}
+            try {{
+                if ({str(bool(force)).lower()}) {{
+                    if (typeof message.forceDownloadMediaEvenIfExpensive !== 'function') {{
+                        return JSON.stringify({{ok:false,error:'forced-download-method-unavailable'}});
+                    }}
+                    await message.forceDownloadMediaEvenIfExpensive();
+                }} else {{
+                    if (typeof message.downloadMedia !== 'function') {{
+                        return JSON.stringify({{ok:false,error:'download-method-unavailable'}});
+                    }}
+                    await message.downloadMedia({{downloadEvenIfExpensive:true}});
+                }}
+                const hash = expectedHash || message.filehash || '';
+                const cache = await caches.open('lru-media-array-buffer-cache');
+                const url = 'https://_media_cache_v2_.whatsapp.com/lru-media-array-buffer-cache_' + encodeURIComponent(hash);
+                for (let pass = 0; pass < 40; pass += 1) {{
+                    const response = hash ? await cache.match(url) : null;
+                    if (response) {{
+                        const blob = await response.blob();
+                        return JSON.stringify({{ok:true,cachePresent:true,sizeBytes:blob.size,method:{json.dumps('forced-message-model' if force else 'message-model')}}});
+                    }}
+                    await new Promise(resolve => setTimeout(resolve, 250));
+                }}
+                return JSON.stringify({{ok:false,error:'download-completed-without-cache-entry'}});
+            }} catch (error) {{
+                return JSON.stringify({{ok:false,error:String(error && error.stack || error)}});
+            }}
+        }})()'''
+        return dict(json.loads(self.evaluate(expression)))
+
+    def trigger_visible_attachment_download(self, message_id: str, *, viewer: bool = False) -> dict[str, Any]:
+        """Trigger only WhatsApp's inbound Download action for an exact visible message."""
+
+        def run() -> dict[str, Any]:
+            target = self._choose_target(require_target_url=True, prefer_marker_window=True)
+            message_expression = f'''(() => {{
+                const targetId = {json.dumps(message_id)};
+                const messageId = (value) => typeof value === 'string'
+                    ? value
+                    : value && (value._serialized || value.$1 || String(value));
+                for (const container of [...document.querySelectorAll('#main [data-testid="msg-container"]')]) {{
+                    const fiberKey = Object.keys(container).find(key => key.startsWith('__reactFiber$'));
+                    let fiber = fiberKey ? container[fiberKey] : null;
+                    while (fiber) {{
+                        const candidate = fiber.memoizedProps && fiber.memoizedProps.msg;
+                        if (candidate && messageId(candidate.id) === targetId) {{
+                            const clickTarget = {str(bool(viewer)).lower()}
+                                ? (container.querySelector('[data-testid="document-thumb"]') || container.querySelector('[data-icon="document"]') || container)
+                                : container;
+                            clickTarget.scrollIntoView({{block:'center'}});
+                            const rect = clickTarget.getBoundingClientRect();
+                            return {{x:rect.left + rect.width / 2,y:rect.top + rect.height / 2}};
+                        }}
+                        fiber = fiber.return;
+                    }}
+                }}
+                return null;
+            }})()'''
+            point = self._evaluate_point(target, message_expression)
+            if viewer:
+                self._dispatch_mouse_click(target, point, button="left")
+                time.sleep(0.8)
+                control_expression = '''(() => {
+                    const candidates = [...document.querySelectorAll('[aria-label="Download"], [data-icon="download"]')]
+                        .map(element => element.closest('button,[role="button"]') || element)
+                        .filter(element => element && element.offsetParent !== null);
+                    const element = candidates[0];
+                    if (!element) return null;
+                    const rect = element.getBoundingClientRect();
+                    return {x:rect.left + rect.width / 2,y:rect.top + rect.height / 2};
+                })()'''
+                control_point = self._evaluate_point(target, control_expression)
+                self._dispatch_mouse_click(target, control_point, button="left")
+                return {"ok": True, "method": "document-viewer"}
+
+            self._dispatch_mouse_click(target, point, button="right")
+            time.sleep(0.35)
+            menu_expression = '''(() => {
+                const items = [...document.querySelectorAll('[role="menuitem"]')].filter(element => element.offsetParent !== null);
+                const element = items.find(item => /^download$/i.test((item.innerText || '').trim()))
+                    || items.find(item => item.querySelector('[data-icon="download"]'));
+                if (!element) return null;
+                const rect = element.getBoundingClientRect();
+                return {x:rect.left + rect.width / 2,y:rect.top + rect.height / 2};
+            })()'''
+            menu_point = self._evaluate_point(target, menu_expression)
+            self._dispatch_mouse_click(target, menu_point, button="left")
+            return {"ok": True, "method": "context-menu"}
+
+        return dict(self._run_action("download-visible-attachment", run))
+
+    def dismiss_transient_ui(self) -> None:
+        def run() -> None:
+            target = self._choose_target(require_target_url=True, prefer_marker_window=True)
+            for event_type in ("keyDown", "keyUp"):
+                self._send(
+                    target,
+                    "Input.dispatchKeyEvent",
+                    {
+                        "type": event_type,
+                        "key": "Escape",
+                        "code": "Escape",
+                        "windowsVirtualKeyCode": 27,
+                        "nativeVirtualKeyCode": 53,
+                    },
+                )
+
+        self._run_action("dismiss-transient-ui", run)
+
     def place_window(self, *, left: int, top: int, width: int, height: int) -> dict[str, Any]:
         def run() -> dict[str, Any]:
             target = self._choose_target(require_target_url=False, prefer_marker_window=False)
@@ -406,23 +624,42 @@ class ChromeDevToolsBridge:
     def click_point(self, expression: str) -> dict[str, Any]:
         def run() -> dict[str, Any]:
             target = self._choose_target(require_target_url=True, prefer_marker_window=True)
-            result = self._send(target, "Runtime.evaluate", {"expression": expression, "returnByValue": True, "awaitPromise": True})
-            if result.get("exceptionDetails"):
-                details = result["exceptionDetails"]
-                raise RuntimeError(details.get("text") if isinstance(details, dict) else "Runtime.evaluate failed while locating click point")
-            remote_value = result.get("result", {})
-            point = remote_value.get("value") if isinstance(remote_value, dict) else None
-            if not isinstance(point, dict) or not isinstance(point.get("x"), (int, float)) or not isinstance(point.get("y"), (int, float)):
-                raise RuntimeError("Click expression did not return numeric {x,y}")
-            for event in (
-                {"type": "mouseMoved", "x": point["x"], "y": point["y"], "button": "left", "buttons": 1, "clickCount": 0},
-                {"type": "mousePressed", "x": point["x"], "y": point["y"], "button": "left", "buttons": 1, "clickCount": 1},
-                {"type": "mouseReleased", "x": point["x"], "y": point["y"], "button": "left", "buttons": 0, "clickCount": 1},
-            ):
-                self._send(target, "Input.dispatchMouseEvent", event)
+            point = self._evaluate_point(target, expression)
+            self._dispatch_mouse_click(target, point, button="left")
             return point
 
         return dict(self._run_action("click-point", run))
+
+    def _release_cached_media(self, file_hash: str) -> None:
+        expression = f'''(() => {{
+            const reads = window.__waCollectorMediaReads;
+            if (reads) reads.delete({json.dumps(file_hash)});
+            return true;
+        }})()'''
+        try:
+            self.evaluate(expression)
+        except Exception:
+            pass
+
+    def _evaluate_point(self, target: dict[str, Any], expression: str) -> dict[str, float]:
+        result = self._send(target, "Runtime.evaluate", {"expression": expression, "returnByValue": True, "awaitPromise": True})
+        if result.get("exceptionDetails"):
+            details = result["exceptionDetails"]
+            raise RuntimeError(details.get("text") if isinstance(details, dict) else "Runtime.evaluate failed while locating click point")
+        remote_value = result.get("result", {})
+        point = remote_value.get("value") if isinstance(remote_value, dict) else None
+        if not isinstance(point, dict) or not isinstance(point.get("x"), (int, float)) or not isinstance(point.get("y"), (int, float)):
+            raise RuntimeError("Click expression did not return numeric {x,y}")
+        return {"x": float(point["x"]), "y": float(point["y"])}
+
+    def _dispatch_mouse_click(self, target: dict[str, Any], point: dict[str, float], *, button: str) -> None:
+        pressed_buttons = 2 if button == "right" else 1
+        for event in (
+            {"type": "mouseMoved", "x": point["x"], "y": point["y"], "button": button, "buttons": pressed_buttons, "clickCount": 0},
+            {"type": "mousePressed", "x": point["x"], "y": point["y"], "button": button, "buttons": pressed_buttons, "clickCount": 1},
+            {"type": "mouseReleased", "x": point["x"], "y": point["y"], "button": button, "buttons": 0, "clickCount": 1},
+        ):
+            self._send(target, "Input.dispatchMouseEvent", event)
 
     def _fetch_json(self, path: str) -> Any:
         url = f"http://127.0.0.1:{self.port}{path}"

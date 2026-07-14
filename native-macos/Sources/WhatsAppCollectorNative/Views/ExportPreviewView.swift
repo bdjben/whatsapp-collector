@@ -343,6 +343,17 @@ struct ExportPreviewView: View {
             Text(attachment.status ?? "unknown")
                 .font(.caption)
                 .foregroundStyle(attachment.status == "downloaded" ? .green : .orange)
+            if attachment.verified == true {
+                Text("verified")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            }
+            if let method = attachment.downloadMethod {
+                Text(method)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
             if let reason = attachment.skippedReason {
                 Text(reason)
                     .font(.caption)

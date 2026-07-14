@@ -1,3 +1,6 @@
+import base64
+import hashlib
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -142,3 +145,22 @@ def test_run_async_json_uses_single_devtools_evaluation(monkeypatch: pytest.Monk
     assert "indexedDB.open('model-storage')" in expression
     assert 'window["__hermes_probe"]' in expression
     assert 'setTimeout(resolve, 200)' in expression
+
+
+def test_download_wait_matches_collision_name_and_whatsapp_hash(tmp_path: Path) -> None:
+    data = b"OggS" + b"voice-note"
+    path = tmp_path / "voice-note (3).ogg"
+    path.write_bytes(data)
+    file_hash = base64.b64encode(hashlib.sha256(data).digest()).decode("ascii")
+
+    matched = ChromeWhatsAppSession._wait_for_download(
+        [tmp_path],
+        baseline={},
+        file_hash=file_hash,
+        expected_size=len(data),
+        expected_file_name="voice-note.ogg",
+        timeout_seconds=1,
+    )
+
+    assert matched == path
+    assert ChromeWhatsAppSession._download_name_matches("voice-note (3).ogg", "voice-note.ogg") is True

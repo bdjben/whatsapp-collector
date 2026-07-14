@@ -9,6 +9,8 @@ struct CollectorConfiguration: Codable, Equatable, Sendable {
     var allowLabels: [String]
     var excludeLabels: [String]
     var includeGroups: GroupInclusionMode
+    var downloadAttachments: Bool
+    var attachmentStorageLimitBytes: Int64
     var displayName: String
     var debugPort: Int
     var markerTitle: String
@@ -33,6 +35,8 @@ struct CollectorConfiguration: Codable, Equatable, Sendable {
             allowLabels: [],
             excludeLabels: [],
             includeGroups: .standard,
+            downloadAttachments: true,
+            attachmentStorageLimitBytes: 1_500_000_000,
             displayName: "",
             debugPort: 19220,
             markerTitle: "WhatsApp Collector",
@@ -50,6 +54,8 @@ struct CollectorConfiguration: Codable, Equatable, Sendable {
         copy.allowLabels = payload.allowLabels ?? copy.allowLabels
         copy.excludeLabels = payload.excludeLabels ?? copy.excludeLabels
         copy.includeGroups = payload.includeGroups ?? copy.includeGroups
+        copy.downloadAttachments = payload.downloadAttachments ?? copy.downloadAttachments
+        copy.attachmentStorageLimitBytes = payload.attachmentStorageLimitBytes ?? copy.attachmentStorageLimitBytes
         copy.displayName = payload.displayName ?? copy.displayName
         copy.profileDir = payload.profileDir ?? copy.profileDir
         copy.outputPath = payload.outputPath ?? copy.outputPath
@@ -77,6 +83,11 @@ struct CollectorConfiguration: Codable, Equatable, Sendable {
     mutating func cleanLabelLists() {
         allowLabels = normalizedLabels(allowLabels)
         excludeLabels = normalizedLabels(excludeLabels)
+    }
+
+    var attachmentStorageLimitGB: Double {
+        get { Double(attachmentStorageLimitBytes) / 1_000_000_000 }
+        set { attachmentStorageLimitBytes = Int64((newValue * 1_000_000_000).rounded()) }
     }
 }
 
@@ -112,6 +123,8 @@ struct BridgeRequest: Encodable, Sendable {
     var allowLabels: [String]
     var excludeLabels: [String]
     var includeGroups: String
+    var downloadAttachments: Bool
+    var attachmentStorageLimitBytes: Int64
     var displayName: String?
     var debugPort: Int
     var markerTitle: String
@@ -128,6 +141,8 @@ struct BridgeRequest: Encodable, Sendable {
         allowLabels = configuration.allowLabels
         excludeLabels = configuration.excludeLabels
         includeGroups = configuration.includeGroups.rawValue
+        downloadAttachments = configuration.downloadAttachments
+        attachmentStorageLimitBytes = configuration.attachmentStorageLimitBytes
         displayName = configuration.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : configuration.displayName
         debugPort = configuration.debugPort
         markerTitle = configuration.markerTitle

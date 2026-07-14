@@ -41,6 +41,8 @@ def test_native_schedule_install_persists_browser_control_settings(tmp_path: Pat
             "allowLabels": ["Clients"],
             "excludeLabels": ["Groups"],
             "includeGroups": "labeledAlways",
+            "downloadAttachments": False,
+            "attachmentStorageLimitBytes": 2_500_000_000,
             "debugPort": 19300,
             "markerTitle": "Custom Collector",
             "markerUrlSubstring": "custom-marker",
@@ -54,6 +56,17 @@ def test_native_schedule_install_persists_browser_control_settings(tmp_path: Pat
     assert captured["payload"]["markerTitle"] == "Custom Collector"
     assert captured["payload"]["markerUrlSubstring"] == "custom-marker"
     assert captured["payload"]["targetUrl"] == "https://web.whatsapp.com/"
+    assert captured["payload"]["downloadAttachments"] is False
+    assert captured["payload"]["attachmentStorageLimitBytes"] == 2_500_000_000
+
+
+def test_native_bridge_uses_backward_compatible_attachment_defaults() -> None:
+    bridge = _load_native_bridge()
+
+    config = bridge._config({})
+
+    assert config["download_attachments"] is True
+    assert config["attachment_storage_limit_bytes"] == 1_500_000_000
 
 
 def _good_export() -> dict[str, Any]:
@@ -125,8 +138,11 @@ def test_native_run_export_retries_then_writes_when_quality_recovers(tmp_path: P
         def wait_until_whatsapp_ready(self, **kwargs):
             return {"ready": True}
 
+    captured_kwargs: list[dict[str, Any]] = []
+
     class FakeCollector:
         def collect_dashboard_export(self, **kwargs):
+            captured_kwargs.append(kwargs)
             calls["count"] += 1
             return _degraded_export() if calls["count"] == 1 else _good_export()
 
@@ -140,6 +156,8 @@ def test_native_run_export_retries_then_writes_when_quality_recovers(tmp_path: P
     assert result["ok"] is True
     assert result["threadCount"] == 1
     assert calls["count"] == 2
+    assert captured_kwargs[-1]["download_attachments"] is True
+    assert captured_kwargs[-1]["max_total_attachment_bytes"] == 1_500_000_000
     assert json.loads(output.read_text())["threads"][0]["chatTitle"] == "Good Thread"
 
 

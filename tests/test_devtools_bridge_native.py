@@ -122,6 +122,16 @@ class _FakeDevToolsHandler(BaseHTTPRequestHandler):
                 return {"id": request_id, "result": {"result": {"type": "string", "value": "WhatsApp"}}}
             if expression == "({x: 12, y: 34})":
                 return {"id": request_id, "result": {"result": {"type": "object", "value": {"x": 12, "y": 34}}}}
+            if isinstance(expression, str) and "download-completed-without-cache-entry" in expression:
+                return {
+                    "id": request_id,
+                    "result": {
+                        "result": {
+                            "type": "string",
+                            "value": json.dumps({"ok": False, "error": "message-not-visible"}),
+                        }
+                    },
+                }
             return {"id": request_id, "result": {"result": {"type": "undefined"}}}
         if method == "Input.dispatchMouseEvent":
             return {"id": request_id, "result": {}}
@@ -275,3 +285,19 @@ def test_devtools_bridge_places_window_via_native_websocket_without_node(fake_de
         "bounds": {"left": 1, "top": 2, "width": 800, "height": 600, "windowState": "normal"},
     }
     assert any(request["method"] == "Target.activateTarget" for request in state.requests)
+
+
+def test_visible_media_download_uses_stable_whatsapp_message_id(fake_devtools_server, monkeypatch) -> None:
+    port, state = fake_devtools_server
+    monkeypatch.setenv("PATH", os.devnull)
+    bridge = ChromeDevToolsBridge(port=port, target_url_substring="https://web.whatsapp.com/")
+
+    result = bridge.request_visible_media_download("false_chat_message", file_hash="hash", force=False)
+
+    assert result == {"ok": False, "error": "message-not-visible"}
+    expressions = [
+        request["params"]["expression"]
+        for request in state.requests
+        if request["method"] == "Runtime.evaluate"
+    ]
+    assert any("value._serialized || value.$1 || String(value)" in expression for expression in expressions)

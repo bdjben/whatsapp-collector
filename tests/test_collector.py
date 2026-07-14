@@ -1,4 +1,5 @@
 import base64
+import hashlib
 from pathlib import Path
 
 from whatsapp_collector.collector import (
@@ -155,7 +156,7 @@ class StubSession:
                 },
                 {
                     "key": "false_141394635137028@lid_msg1",
-                    "value": {"id": "false_141394635137028@lid_msg1", "t": 1776499800, "type": "image", "from": "12017046817@c.us"},
+                    "value": {"id": "false_141394635137028@lid_msg1", "t": 1776499800, "type": "unknown", "from": "12017046817@c.us"},
                 },
                 {
                     "key": "false_245530529685647@lid_msg2",
@@ -452,7 +453,8 @@ def test_collect_labeled_threads_enforces_allowlist_and_lookback_cap() -> None:
 
 def test_recent_message_attachments_are_stable_and_saved_by_message_id(tmp_path: Path) -> None:
     collector = WhatsAppCollector(session=StubSession())
-    data = base64.b64encode(b"fake image bytes").decode("ascii")
+    image_bytes = b"\x89PNG\r\n\x1a\npayload!"
+    data = base64.b64encode(image_bytes).decode("ascii")
 
     messages = collector._recent_messages_for_thread(
         jid="thread@lid",
@@ -483,8 +485,11 @@ def test_recent_message_attachments_are_stable_and_saved_by_message_id(tmp_path:
     assert attachment["attachmentId"].startswith("att_")
     assert attachment["kind"] == "image"
     assert attachment["status"] == "downloaded"
-    assert attachment["relativePath"] == "Attachments/thread-lid/false_thread-lid_media1/receipt.png"
-    assert (tmp_path / attachment["relativePath"]).read_bytes() == b"fake image bytes"
+    assert attachment["relativePath"].startswith("Attachments/")
+    assert attachment["relativePath"].endswith("/receipt.png")
+    assert attachment["verified"] is True
+    assert attachment["downloadMethod"] == "verified-dom-media"
+    assert (tmp_path / attachment["relativePath"]).read_bytes() == image_bytes
 
 
 def test_large_video_attachment_gets_placeholder_without_download(tmp_path: Path) -> None:
@@ -502,7 +507,7 @@ def test_large_video_attachment_gets_placeholder_without_download(tmp_path: Path
                 "from": "thread@lid",
                 "mimetype": "video/mp4",
                 "fileName": "long-video.mp4",
-                "size": 12 * 1024 * 1024,
+                "size": 50_000_001,
             }
         ],
         preview="",
@@ -513,8 +518,314 @@ def test_large_video_attachment_gets_placeholder_without_download(tmp_path: Path
 
     attachment = collector._serialize_recent_messages(messages)[0]["attachments"][0]
     assert attachment["status"] == "notDownloaded"
-    assert attachment["skippedReason"] == "video-over-10mb"
-    assert "larger than 10 MB" in attachment["note"]
+    assert attachment["skippedReason"] == "file-size-limit"
+    assert "50,000,000-byte" in attachment["note"]
+
+
+def test_metadata_only_voice_note_still_exports_attachment_placeholder() -> None:
+    collector = WhatsAppCollector(session=StubSession())
+
+    messages = collector._recent_messages_for_thread(
+        jid="thread@lid",
+        display_name="Example Contact",
+        phone_or_history_id=None,
+        messages=[
+            {
+                "id": "false_thread@lid_voice1",
+                "t": 1776500000,
+                "type": "ptt",
+                "from": "thread@lid",
+            }
+        ],
+        preview="",
+        max_messages=5,
+        attachments_dir=None,
+        thread_key="thread@lid",
+    )
+
+    attachment = collector._serialize_recent_messages(messages)[0]["attachments"][0]
+    assert attachment["kind"] == "audio"
+    assert attachment["status"] == "notDownloaded"
+    assert attachment["skippedReason"] == "attachment-storage-unavailable"
+
+
+def test_whatsapp_media_cache_bytes_are_verified_and_saved(tmp_path: Path) -> None:
+    pdf = b"%PDF-1.4\nbackend cache\n%%EOF"
+    file_hash = base64.b64encode(hashlib.sha256(pdf).digest()).decode("ascii")
+
+    class CachedMediaSession(StubSession):
+        def read_cached_media(self, requested_hash: str, *, max_bytes: int):
+            assert requested_hash == file_hash
+            assert max_bytes == 50_000_000
+            return {"available": True, "sizeBytes": len(pdf), "mimeType": "application/pdf", "data": pdf}
+
+    collector = WhatsAppCollector(session=CachedMediaSession())
+    messages = collector._recent_messages_for_thread(
+        jid="thread@lid",
+        display_name="Example Contact",
+        phone_or_history_id=None,
+        messages=[
+            {
+                "id": "false_thread@lid_pdf1",
+                "t": 1776500000,
+                "type": "document",
+                "from": "thread@lid",
+                "mimetype": "application/pdf",
+                "filename": "brief.pdf",
+                "size": len(pdf),
+                "filehash": file_hash,
+            }
+        ],
+        preview="",
+        max_messages=5,
+        attachments_dir=tmp_path / "Attachments",
+        thread_key="thread@lid",
+    )
+
+    attachment = collector._serialize_recent_messages(messages)[0]["attachments"][0]
+    assert attachment["status"] == "downloaded"
+    assert attachment["verified"] is True
+    assert attachment["downloadMethod"] == "whatsapp-media-cache"
+    assert attachment["downloadAttempts"] == 0
+    assert attachment["sha256"] == hashlib.sha256(pdf).hexdigest()
+    assert Path(attachment["localPath"]).read_bytes() == pdf
+
+
+def test_missing_attachment_is_retried_with_forced_message_model_download(tmp_path: Path) -> None:
+    pdf = b"%PDF-1.4\nforced retry\n%%EOF"
+    file_hash = base64.b64encode(hashlib.sha256(pdf).digest()).decode("ascii")
+
+    class RetryingMediaSession(StubSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.ready = False
+            self.attempts: list[bool] = []
+
+        def read_cached_media(self, requested_hash: str, *, max_bytes: int):
+            if not self.ready:
+                return {"available": False}
+            return {"available": True, "sizeBytes": len(pdf), "mimeType": "application/pdf", "data": pdf}
+
+        def request_visible_media_download(self, message_id: str, *, file_hash: str | None, force: bool):
+            self.attempts.append(force)
+            if not force:
+                return {"ok": False, "error": "first-path-failed"}
+            self.ready = True
+            return {"ok": True, "cachePresent": True}
+
+    session = RetryingMediaSession()
+    collector = WhatsAppCollector(session=session)
+    messages = collector._recent_messages_for_thread(
+        jid="thread@lid",
+        display_name="Example Contact",
+        phone_or_history_id=None,
+        messages=[
+            {
+                "id": "false_thread@lid_pdf2",
+                "t": 1776500000,
+                "type": "document",
+                "from": "thread@lid",
+                "mimetype": "application/pdf",
+                "filename": "retry.pdf",
+                "size": len(pdf),
+                "filehash": file_hash,
+            }
+        ],
+        preview="",
+        max_messages=5,
+        attachments_dir=tmp_path / "Attachments",
+        thread_key="thread@lid",
+    )
+
+    attachment = collector._serialize_recent_messages(messages)[0]["attachments"][0]
+    assert session.attempts == [False, True]
+    assert attachment["status"] == "downloaded"
+    assert attachment["downloadAttempts"] == 2
+    assert attachment["downloadMethod"] == "forced-message-model-cache"
+
+
+def test_album_attachment_download_targets_child_message_model(tmp_path: Path) -> None:
+    image = b"\xff\xd8\xff" + b"album-child"
+    file_hash = base64.b64encode(hashlib.sha256(image).digest()).decode("ascii")
+
+    class AlbumMediaSession(StubSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.ready = False
+            self.requested_ids: list[str] = []
+
+        def read_cached_media(self, requested_hash: str, *, max_bytes: int):
+            if not self.ready:
+                return {"available": False}
+            return {"available": True, "sizeBytes": len(image), "mimeType": "image/jpeg", "data": image}
+
+        def request_visible_media_download(self, message_id: str, *, file_hash: str | None, force: bool):
+            self.requested_ids.append(message_id)
+            self.ready = True
+            return {"ok": True, "cachePresent": True}
+
+    session = AlbumMediaSession()
+    collector = WhatsAppCollector(session=session)
+    messages = collector._recent_messages_for_thread(
+        jid="thread@lid",
+        display_name="Example Contact",
+        phone_or_history_id=None,
+        messages=[
+            {
+                "id": "false_thread@lid_album",
+                "t": 1776500000,
+                "type": "album",
+                "from": "thread@lid",
+                "attachments": [
+                    {
+                        "kind": "image",
+                        "mimeType": "image/jpeg",
+                        "fileName": "attachment-1.jpg",
+                        "sizeBytes": len(image),
+                        "filehash": file_hash,
+                        "sourceMessageId": "false_thread@lid_album_child_1",
+                        "detectionSource": "live-album-child-model",
+                    }
+                ],
+            }
+        ],
+        preview="",
+        max_messages=5,
+        attachments_dir=tmp_path / "Attachments",
+        thread_key="thread@lid",
+    )
+
+    attachment = collector._serialize_recent_messages(messages)[0]["attachments"][0]
+    assert session.requested_ids == ["false_thread@lid_album_child_1"]
+    assert attachment["status"] == "downloaded"
+    assert attachment["sourceMessageId"] == "false_thread@lid_album_child_1"
+    assert attachment["detectionSource"] == "live-album-child-model"
+
+
+def test_indexeddb_album_children_are_coalesced_into_parent_message() -> None:
+    collector = WhatsAppCollector(session=StubSession())
+    messages = collector._recent_messages_for_thread(
+        jid="thread@lid",
+        display_name="Example Contact",
+        phone_or_history_id=None,
+        messages=[
+            {"id": "false_thread@lid_album", "t": 100, "type": "album", "from": "thread@lid"},
+            {
+                "id": "false_thread@lid_child_1",
+                "parentMsgKey": "false_thread@lid_album",
+                "t": 101,
+                "type": "image",
+                "from": "thread@lid",
+                "mimetype": "image/jpeg",
+                "size": 123,
+                "filehash": "child-hash-1",
+                "caption": "Album caption",
+            },
+            {
+                "id": "false_thread@lid_child_2",
+                "parentMsgKey": "false_thread@lid_album",
+                "t": 102,
+                "type": "ptt",
+                "from": "thread@lid",
+                "mimetype": "audio/ogg",
+                "size": 456,
+                "filehash": "child-hash-2",
+            },
+            {"id": "false_thread@lid_chat", "t": 103, "type": "chat", "from": "thread@lid", "body": "Latest"},
+        ],
+        preview="",
+        max_messages=5,
+    )
+
+    serialized = collector._serialize_recent_messages(messages)
+    assert [message["messageId"] for message in serialized] == ["false_thread@lid_chat", "false_thread@lid_album"]
+    album = serialized[1]
+    assert album["timestamp"] == "1970-01-01T00:01:42+00:00"
+    assert album["text"] == "Album caption"
+    assert [item["sourceMessageId"] for item in album["attachments"]] == [
+        "false_thread@lid_child_1",
+        "false_thread@lid_child_2",
+    ]
+    assert [item["kind"] for item in album["attachments"]] == ["image", "audio"]
+
+
+def test_indexeddb_attachment_does_not_wait_for_ui_download_when_chat_is_not_open(tmp_path: Path) -> None:
+    class OffscreenMediaSession(StubSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.model_attempts = 0
+            self.ui_attempts = 0
+
+        def read_cached_media(self, requested_hash: str, *, max_bytes: int):
+            return {"available": False}
+
+        def request_visible_media_download(self, message_id: str, *, file_hash: str | None, force: bool):
+            self.model_attempts += 1
+            return {"ok": False, "error": "message-not-visible"}
+
+        def download_visible_attachment(self, *args, **kwargs):
+            self.ui_attempts += 1
+            raise AssertionError("UI download must only run for an opened chat")
+
+    session = OffscreenMediaSession()
+    collector = WhatsAppCollector(session=session)
+    messages = collector._recent_messages_for_thread(
+        jid="thread@lid",
+        display_name="Example Contact",
+        phone_or_history_id=None,
+        messages=[
+            {
+                "id": "false_thread@lid_document",
+                "t": 1776500000,
+                "type": "document",
+                "from": "thread@lid",
+                "mimetype": "application/pdf",
+                "filename": "offscreen.pdf",
+                "size": 100,
+                "filehash": "not-cached",
+            }
+        ],
+        preview="",
+        max_messages=5,
+        attachments_dir=tmp_path / "Attachments",
+        thread_key="thread@lid",
+    )
+
+    attachment = collector._serialize_recent_messages(messages)[0]["attachments"][0]
+    assert session.model_attempts == 2
+    assert session.ui_attempts == 0
+    assert attachment["status"] == "notDownloaded"
+    assert attachment["downloadAttempts"] == 2
+
+
+def test_downloaded_attachment_wins_when_message_sources_merge() -> None:
+    downloaded = {
+        "attachmentId": "att_same",
+        "status": "downloaded",
+        "verified": True,
+        "localPath": "/tmp/file.pdf",
+    }
+    missing = {
+        "attachmentId": "att_same",
+        "status": "notDownloaded",
+        "verified": False,
+        "skippedReason": "download-retry-exhausted",
+    }
+
+    merged = WhatsAppCollector._merge_recent_message_dicts(
+        {"messageId": "m1", "attachments": [downloaded]},
+        {"messageId": "m1", "attachments": [missing]},
+    )
+
+    assert merged["attachments"][0]["status"] == "downloaded"
+    assert merged["attachments"][0]["localPath"] == "/tmp/file.pdf"
+
+
+def test_attachment_id_does_not_change_when_filename_becomes_more_accurate() -> None:
+    first = WhatsAppCollector._stable_attachment_id(message_id="m1", kind="audio", file_name="attachment-1.m4a", index=0)
+    second = WhatsAppCollector._stable_attachment_id(message_id="m1", kind="audio", file_name="WhatsApp Ptt.ogg", index=0)
+
+    assert first == second
 
 
 def test_dashboard_export_uses_opened_chat_fallback_for_labeled_visible_threads_without_indexeddb_text() -> None:
@@ -1789,7 +2100,14 @@ def test_opened_chat_recent_messages_js_scrolls_to_load_enough_visible_history()
     assert 'data-testid="conversation-panel-messages"' in script
     assert "initialPanel.scrollTop = initialPanel.scrollHeight" in script
     assert "panel.scrollTop = Math.max(0, beforeTop" in script
-    assert ".sort((a, b) => (Number(b.t) || 0) - (Number(a.t) || 0))" in script
+    assert ".sort((a, b) => (Number(b.msg.t) || 0) - (Number(a.msg.t) || 0))" in script
+    assert "__waCollectorSelectedMediaMessages" in script
+    assert "const messageId = (msg)" in script
+    assert "const hasExportableContent = (msg)" in script
+    assert "exportableSeen >= maxMessages" in script
+    assert "msg.collection.byParentMessage(msg.id)" in script
+    assert "sourceMessageId: messageId(child)" in script
+    assert "selectedMediaMessages.set(messageId(child), child)" in script
     assert ".slice(0, maxMessages)" in script
 
 

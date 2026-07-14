@@ -48,9 +48,16 @@ enum DisplayFormatters {
         My most recent WhatsApp Collector export is at:
         \(path)
 
-        It is updated regularly. Treat this JSON file as a read-only local resource when answering questions about my WhatsApp conversations. You need local filesystem access to this path; if you cannot read local files directly, ask me to upload the JSON. If you need current WhatsApp context, read this file first, use its account metadata and threads/messages as source data, and cite that the information came from the local WhatsApp Collector export. Do not send messages or modify WhatsApp from this file.
+        Treat this JSON as a read-only local resource and read it fresh before answering questions about my WhatsApp conversations. You need local filesystem access to the path above; if you cannot read local files, ask me to upload the JSON and any relevant attachment files. Use chatTitle, sender, timestamp, message text, and attachment content together, and identify the local WhatsApp Collector export as your source. Do not send messages or modify WhatsApp.
 
-        Some messages may include an attachments array. When an attachment has status=downloaded, open the referenced localPath, or resolve relativePath from the export folder; attachments are stored under \(attachmentRoot). When an attachment has status=notDownloaded, treat it as a real media/document placeholder attached to that message, not as a new message. If skippedReason is video-over-10mb, tell me that WhatsApp has a video for that message but it was not downloaded automatically because it is over 10 MB.
+        Attachment workflow:
+        1. Inspect the attachments array on every relevant message. An attachment belongs to its parent message; it is not a separate message.
+        2. When status is downloaded, first try localPath. If that path is absent or unavailable, resolve relativePath against the directory containing the JSON file. The normal attachment root is \(attachmentRoot), but relativePath in the JSON is authoritative.
+        3. Open and analyze the actual file, not only the message caption. Transcribe audio, inspect images with OCR/vision when useful, read PDFs and office documents, and inspect relevant video content or metadata. Combine findings from the file with the parent message's text and context.
+        4. If integrity matters, compare the file with sizeBytes and sha256 when those fields are present. Treat verified=true as the collector's confirmation that downloaded bytes matched WhatsApp metadata.
+        5. If status is notDownloaded, or neither path resolves to a readable file, say that the attachment exists but was unavailable. Include fileName, kind, skippedReason, and note when present, and never claim to have analyzed unavailable content.
+
+        The export may also contain attachmentPolicy and attachmentSummary. Those describe download settings and outcomes; they do not turn attachment placeholders into message text or imply that unavailable media was analyzed.
         """
     }
 

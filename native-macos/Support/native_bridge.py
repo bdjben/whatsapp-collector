@@ -35,6 +35,7 @@ from whatsapp_collector.collector import (  # noqa: E402
     MAX_MESSAGE_LOOKBACK_HARD_LIMIT,
     WhatsAppCollector,
 )
+from whatsapp_collector.attachment_store import DEFAULT_MAX_ATTACHMENT_TOTAL_BYTES  # noqa: E402
 from whatsapp_collector.devtools_bridge import ChromeDevToolsBridge  # noqa: E402
 from whatsapp_collector.export_quality import (  # noqa: E402
     ExportQualityError,
@@ -101,6 +102,20 @@ def _int(value: Any, default: int) -> int:
         return default
 
 
+def _bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
 def _group_include(value: Any) -> str:
     value = str(value or "").strip()
     if value in {"labeledAlways", "labeled-always", "always-labeled", "alwaysIncludeOnly"}:
@@ -123,6 +138,11 @@ def _config(payload: dict[str, Any]) -> dict[str, Any]:
         "allow_labels": _normalize_label_list(payload.get("allowLabels")),
         "exclude_labels": _normalize_label_list(payload.get("excludeLabels")),
         "include_groups": _group_include(payload.get("includeGroups")),
+        "download_attachments": _bool(payload.get("downloadAttachments"), True),
+        "attachment_storage_limit_bytes": max(
+            100_000_000,
+            min(_int(payload.get("attachmentStorageLimitBytes"), DEFAULT_MAX_ATTACHMENT_TOTAL_BYTES), 100_000_000_000),
+        ),
     }
 
 
@@ -141,6 +161,8 @@ def _schedule_payload(cfg: dict[str, Any]) -> dict[str, Any]:
         "targetUrl": cfg["target_url"],
         "profileDir": str(cfg["profile_dir"]),
         "outputPath": str(cfg["output_path"]),
+        "downloadAttachments": cfg["download_attachments"],
+        "attachmentStorageLimitBytes": cfg["attachment_storage_limit_bytes"],
     }
 
 
@@ -150,7 +172,7 @@ def _collector(cfg: dict[str, Any]) -> WhatsAppCollector:
         marker_url_substring=cfg["marker_url_substring"],
         target_url_substring=cfg["target_url"],
     )
-    session = ChromeWhatsAppSession(target=target, debug_port=cfg["debug_port"])
+    session = ChromeWhatsAppSession(target=target, debug_port=cfg["debug_port"], profile_dir=cfg["profile_dir"])
     return WhatsAppCollector(session=session)
 
 
@@ -198,6 +220,8 @@ def _run_export(cfg: dict[str, Any]) -> dict[str, Any]:
             exclude_labels=cfg["exclude_labels"],
             include_groups=cfg["include_groups"],
             attachments_dir=cfg["output_path"].parent / "Attachments",
+            download_attachments=cfg["download_attachments"],
+            max_total_attachment_bytes=cfg["attachment_storage_limit_bytes"],
         )
         try:
             validate_export_quality(export)

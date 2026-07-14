@@ -246,7 +246,12 @@ async function prepopulateLabels() {{ setBusy('Reading current WhatsApp labels..
 function pathForHumans(fieldId, configKey) {{ const path = document.getElementById(fieldId).value || initialConfig[configKey]; if (path.startsWith('/')) return path; if (path.startsWith('~')) return path + ' (expanded by the server when running)'; return `${{initialConfig.workingDirectory}}/${{path}}`; }}
 function currentOutputPathForHumans() {{ return pathForHumans('outputPath', 'outputPath'); }}
 function currentProfileDirForHumans() {{ return pathForHumans('profileDir', 'profileDir'); }}
-function aiPromptForPath(path) {{ return `My most recent WhatsApp Collector export is at:\n${{path}}\n\nIt is updated regularly. Treat this JSON file as a read-only local resource when answering questions about my WhatsApp conversations. You need local filesystem access to this path; if you cannot read local files directly, ask me to upload the JSON. If you need current WhatsApp context, read this file first, use its account metadata and threads/messages as source data, and cite that the information came from the local WhatsApp Collector export. Do not send messages or modify WhatsApp from this file.`; }}
+function aiPromptForPath(path) {{
+  const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\\\'));
+  const parent = slash >= 0 ? path.slice(0, slash) : '.';
+  const attachmentRoot = `${{parent}}/Attachments`;
+  return `My most recent WhatsApp Collector export is at:\n${{path}}\n\nTreat this JSON as a read-only local resource and read it fresh before answering questions about my WhatsApp conversations. You need local filesystem access to the path above; if you cannot read local files, ask me to upload the JSON and any relevant attachment files. Use chatTitle, sender, timestamp, message text, and attachment content together, and identify the local WhatsApp Collector export as your source. Do not send messages or modify WhatsApp.\n\nAttachment workflow:\n1. Inspect the attachments array on every relevant message. An attachment belongs to its parent message; it is not a separate message.\n2. When status is downloaded, first try localPath. If that path is absent or unavailable, resolve relativePath against the directory containing the JSON file. The normal attachment root is ${{attachmentRoot}}, but relativePath in the JSON is authoritative.\n3. Open and analyze the actual file, not only the message caption. Transcribe audio, inspect images with OCR/vision when useful, read PDFs and office documents, and inspect relevant video content or metadata. Combine findings from the file with the parent message's text and context.\n4. If integrity matters, compare the file with sizeBytes and sha256 when those fields are present. Treat verified=true as the collector's confirmation that downloaded bytes matched WhatsApp metadata.\n5. If status is notDownloaded, or neither path resolves to a readable file, say that the attachment exists but was unavailable. Include fileName, kind, skippedReason, and note when present, and never claim to have analyzed unavailable content.\n\nThe export may also contain attachmentPolicy and attachmentSummary. Those describe download settings and outcomes; they do not turn attachment placeholders into message text or imply that unavailable media was analyzed.`;
+}}
 function scheduleCfg() {{ return {{ ...cfg(), intervalMinutes: Math.max(1, Number(document.getElementById('scheduleInterval').value || 15)) }}; }}
 function renderScheduleStatus(schedule) {{ const state = schedule.enabled ? (schedule.loaded ? 'On' : 'Configured') : 'Off'; const interval = schedule.intervalMinutes ? ` · every ${{schedule.intervalMinutes}} minutes` : ''; document.getElementById('scheduleStatus').textContent = `Automatic exports: ${{state}}${{interval}}. ${{schedule.nextStep || ''}}`; }}
 async function refreshScheduleStatus() {{ try {{ const j=await get('/api/schedule'); renderScheduleStatus(j.schedule); setLog(j); }} catch(e) {{ setLog(e); setError('Schedule status failed', e); }} }}
@@ -293,16 +298,18 @@ def _ai_harness_prompt(output_display_path: str) -> str:
     return (
         "My most recent WhatsApp Collector export is at:\n"
         f"{output_display_path}\n\n"
-        "It is updated regularly. Treat this JSON file as a read-only local resource when answering "
-        "questions about my WhatsApp conversations. You need local filesystem access to this path; "
-        "if you cannot read local files directly, ask me to upload the JSON. If you need current "
-        "WhatsApp context, read this file first, use its account metadata and threads/messages as source data, and cite that the "
-        "information came from the local WhatsApp Collector export. Do not send messages or modify "
-        "WhatsApp from this file.\n\n"
-        "Some messages may include an attachments array. When an attachment has status=downloaded, "
-        f"open the referenced localPath, or resolve relativePath from the export folder; attachments are stored under {attachment_root}. "
-        "When an attachment has status=notDownloaded, treat it as a real media/document placeholder attached to that message, not as a new message. "
-        "If skippedReason is video-over-10mb, tell me that WhatsApp has a video for that message but it was not downloaded automatically because it is over 10 MB."
+        "Treat this JSON as a read-only local resource and read it fresh before answering questions about my WhatsApp conversations. "
+        "You need local filesystem access to the path above; if you cannot read local files, ask me to upload the JSON and any relevant attachment files. "
+        "Use chatTitle, sender, timestamp, message text, and attachment content together, and identify the local WhatsApp Collector export as your source. "
+        "Do not send messages or modify WhatsApp.\n\n"
+        "Attachment workflow:\n"
+        "1. Inspect the attachments array on every relevant message. An attachment belongs to its parent message; it is not a separate message.\n"
+        "2. When status is downloaded, first try localPath. If that path is absent or unavailable, resolve relativePath against the directory containing the JSON file. "
+        f"The normal attachment root is {attachment_root}, but relativePath in the JSON is authoritative.\n"
+        "3. Open and analyze the actual file, not only the message caption. Transcribe audio, inspect images with OCR/vision when useful, read PDFs and office documents, and inspect relevant video content or metadata. Combine findings from the file with the parent message's text and context.\n"
+        "4. If integrity matters, compare the file with sizeBytes and sha256 when those fields are present. Treat verified=true as the collector's confirmation that downloaded bytes matched WhatsApp metadata.\n"
+        "5. If status is notDownloaded, or neither path resolves to a readable file, say that the attachment exists but was unavailable. Include fileName, kind, skippedReason, and note when present, and never claim to have analyzed unavailable content.\n\n"
+        "The export may also contain attachmentPolicy and attachmentSummary. Those describe download settings and outcomes; they do not turn attachment placeholders into message text or imply that unavailable media was analyzed."
     )
 
 

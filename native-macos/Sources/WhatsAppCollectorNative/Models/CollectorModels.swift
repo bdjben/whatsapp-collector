@@ -94,6 +94,8 @@ struct SchedulePayload: Codable, Equatable, Sendable {
     var allowLabels: [String]?
     var excludeLabels: [String]?
     var includeGroups: GroupInclusionMode?
+    var downloadAttachments: Bool?
+    var attachmentStorageLimitBytes: Int64?
     var displayName: String?
     var profileDir: String?
     var outputPath: String?
@@ -128,8 +130,25 @@ struct WhatsAppExport: Decodable, Sendable {
     var maxAllViewChats: Int?
     var includeGroups: String?
     var attachmentsRoot: String?
+    var attachmentPolicy: ExportAttachmentPolicy?
+    var attachmentSummary: ExportAttachmentSummary?
     var threads: [ExportThread]
     var exportWarnings: [String]?
+}
+
+struct ExportAttachmentPolicy: Decodable, Sendable {
+    var enabled: Bool?
+    var maxFileBytes: Int?
+    var maxThreadBytes: Int?
+    var maxTotalBytes: Int?
+}
+
+struct ExportAttachmentSummary: Decodable, Sendable {
+    var detected: Int?
+    var downloaded: Int?
+    var notDownloaded: Int?
+    var downloadedBytes: Int?
+    var retried: Int?
 }
 
 struct ExportAccount: Decodable, Sendable {
@@ -250,6 +269,12 @@ struct ExportAttachment: Codable, Identifiable, Sendable {
     var status: String?
     var relativePath: String?
     var localPath: String?
+    var sha256: String?
+    var downloadMethod: String?
+    var verified: Bool?
+    var downloadAttempts: Int?
+    var detectionSource: String?
+    var sourceMessageId: String?
     var skippedReason: String?
     var note: String?
 

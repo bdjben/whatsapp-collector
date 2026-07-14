@@ -30,6 +30,12 @@ class RecentAttachment:
     status: str
     relative_path: str | None = None
     local_path: str | None = None
+    sha256: str | None = None
+    download_method: str | None = None
+    verified: bool = False
+    download_attempts: int = 0
+    detection_source: str | None = None
+    source_message_id: str | None = None
     skipped_reason: str | None = None
     note: str | None = None
 

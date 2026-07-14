@@ -55,8 +55,9 @@ def test_render_dashboard_html_has_setup_controls_without_display_assumption(tmp
     assert "Use this export with your AI tools" in html
     assert "Copy AI prompt" in html
     assert "most recent WhatsApp Collector export is at" in html
-    assert "Some messages may include an attachments array" in html
-    assert "video-over-10mb" in html
+    assert "Inspect the attachments array on every relevant message" in html
+    assert "Open and analyze the actual file, not only the message caption" in html
+    assert "attachmentPolicy and attachmentSummary" in html
     assert "Automatic exports" in html
     assert "Start automatic exports" in html
     assert "Stop automatic exports" in html

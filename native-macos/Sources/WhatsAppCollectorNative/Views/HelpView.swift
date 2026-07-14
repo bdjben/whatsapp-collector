@@ -67,6 +67,17 @@ struct HelpView: View {
                     .padding(.vertical, 4)
                 }
 
+                GroupBox("Attachments") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Attachment downloads are optional. Turn them on and choose a total storage limit in the Dashboard. WhatsApp Collector detects media from WhatsApp message metadata, checks WhatsApp Web's local media cache, and retries through the live message download path when verified bytes are missing.")
+                        Text("A single file is limited to 50 MB and one thread is limited to 150 MB. Downloaded files are stored beside the export JSON under Attachments. The JSON records localPath, relativePath, size, verification hash, download method, and any reason a detected attachment could not be retained. The AI Prompt tells an agent to open and analyze those files as part of their parent messages.")
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.callout)
+                    .textSelection(.enabled)
+                    .padding(.vertical, 4)
+                }
+
                 GroupBox("Automation") {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Use the Automation tab to start or stop recurring exports. When automatic exports are on, macOS runs WhatsApp Collector on the interval you choose while you are logged in, refreshes the same JSON file, and records the last successful run in the app.")

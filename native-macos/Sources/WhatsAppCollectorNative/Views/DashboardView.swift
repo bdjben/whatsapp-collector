@@ -19,6 +19,7 @@ struct DashboardView: View {
                 metrics
                 actions
                 collectionSettings
+                attachmentDownloads
                 browserReadiness
                 chromeProfile
                 files
@@ -221,6 +222,49 @@ struct DashboardView: View {
                 actionTitle: "Open",
                 action: store.openDraftProfileFolder
             )
+            .padding(.vertical, 4)
+        }
+    }
+
+    private var attachmentDownloads: some View {
+        GroupBox("Attachment Downloads") {
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle("Download attachments automatically", isOn: $store.draftConfiguration.downloadAttachments)
+
+                HStack(spacing: 10) {
+                    Text("Total attachment storage limit")
+                        .foregroundStyle(.secondary)
+                    TextField(
+                        "GB",
+                        value: $store.draftConfiguration.attachmentStorageLimitGB,
+                        format: .number.precision(.fractionLength(1))
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 90)
+                    Stepper(
+                        "",
+                        value: $store.draftConfiguration.attachmentStorageLimitGB,
+                        in: 0.1...100,
+                        step: 0.1
+                    )
+                    .labelsHidden()
+                    Text("GB")
+                        .foregroundStyle(.secondary)
+                }
+                .disabled(store.draftConfiguration.downloadAttachments == false)
+
+                Text("Attachments for exported messages are stored beside the JSON. Downloads are limited to 50 MB per file and 150 MB per thread, and existing files count toward the total limit. If downloading is off or a limit is reached, the JSON still records the attachment and the reason it was not downloaded. WhatsApp Collector does not delete retained attachments automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let summary = store.export?.attachmentSummary, let detected = summary.detected, detected > 0 {
+                    Text("Current export: \(summary.downloaded ?? 0) of \(detected) attachments downloaded and verified (\(DisplayFormatters.bytes(summary.downloadedBytes))).")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 4)
         }
     }

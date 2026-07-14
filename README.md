@@ -9,8 +9,10 @@ WhatsApp Collector is a native macOS app that works with both WhatsApp Web and
 WhatsApp Business Web. It reads your logged-in browser session and writes a
 structured JSON export for local dashboards, automations, and AI agents.
 
-It is deliberately read-only. It does not send messages, type into WhatsApp,
-target the composer, create chats, place calls, or interact with attachments.
+It is deliberately non-sending. It does not type into WhatsApp, target the
+composer, create chats, place calls, upload files, or send messages. When you
+enable attachment downloads, it may use WhatsApp Web's received-media cache and
+Download controls to retain files that belong to exported messages.
 
 <p>
   <img width="203" height="157" alt="WhatsApp Collector menu bar item" src="https://github.com/user-attachments/assets/e59c096b-4710-4d8c-8f52-ac03336a40a2" />
@@ -74,6 +76,7 @@ dashboards that should read your WhatsApp context.
 | Native macOS dashboard | Configure collection, run exports, preview results, and see status without a browser-based UI. |
 | Dedicated Chrome profile | Keeps the collector's WhatsApp login separate from your normal Chrome browsing. |
 | JSON export | Writes a stable local file that other tools can read. |
+| Verified attachments | Optionally saves received media beside the JSON, with hashes, paths, extraction method, and clear failure reasons. |
 | Label rules | Optionally include or exclude chats based on WhatsApp labels. |
 | Scheduled exports | Refreshes the same JSON file on a recurring macOS LaunchAgent schedule. |
 | Sparkle updates | Checks GitHub releases and shows when a newer app version is available. |
@@ -102,6 +105,7 @@ Use **Dashboard** for the normal workflow:
 - set collection limits
 - choose the Chrome profile folder and export file path
 - copy the AI-agent prompt or reveal the output file in Finder
+- enable verified attachment downloads and set a total storage cap
 
 ### Labels
 
@@ -129,6 +133,7 @@ manually. It is useful for checking:
 - unread/requires-response flags
 - labels and chat type
 - skipped or incomplete collection details
+- downloaded attachment paths, verification state, and extraction method
 
 ### Automation
 
@@ -155,6 +160,8 @@ cleanup.
 | Chrome window display | Optional. Use this only if you want the dedicated Chrome window placed on a particular monitor. Enter the display name as it appears in macOS System Settings > Displays. Leave blank to use the main display. |
 | Chrome profile folder | The isolated Chrome profile used by the collector. Most users should leave this alone. |
 | Export data file | The JSON file written by **Run Export** and scheduled exports. |
+| Download attachments automatically | Optional. Saves media attached to exported messages after validating WhatsApp's metadata and file hash. |
+| Total attachment storage limit | Maximum retained attachment storage. Each file is also limited to 50 MB and each thread to 150 MB. Existing files count toward the limit. |
 
 ## Using The Export With AI Agents
 
@@ -164,10 +171,12 @@ The app includes a **Copy Prompt** action. It produces text like this:
 My most recent WhatsApp Collector export is at:
 ~/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json
 
-It is updated regularly. Treat this JSON file as a read-only local resource when answering questions about my WhatsApp conversations. You need local filesystem access to this path; if you cannot read local files directly, ask me to upload the JSON. If you need current WhatsApp context, read this file first, use its account metadata and threads/messages as source data, and cite that the information came from the local WhatsApp Collector export. Do not send messages or modify WhatsApp from this file.
+Treat this JSON as a read-only local resource and read it fresh before answering questions about my WhatsApp conversations. Inspect the attachments array on every relevant message. When status is downloaded, resolve localPath or relativePath, open and analyze the actual file, and combine its content with the parent message. When a file is unavailable, say so and do not claim to have analyzed it. Do not send messages or modify WhatsApp.
 ```
 
 Use that prompt in local agents that can read files from your Mac.
+The prompt used through `0.4.14` is preserved in
+[PROMPT_HISTORY.md](PROMPT_HISTORY.md) for reference.
 
 ## Export Shape
 
@@ -179,6 +188,9 @@ The dashboard export is JSON. Top-level fields include:
 - `allowLabels`
 - `excludeLabels`
 - `maxRecentMessages`
+- `attachmentsRoot`
+- `attachmentPolicy`
+- `attachmentSummary`
 - `threads[]`
 
 Each thread includes metadata plus recent messages:
@@ -202,7 +214,24 @@ Each thread includes metadata plus recent messages:
       "text": "Hello",
       "textAvailable": true,
       "messageType": "chat",
-      "subtype": null
+      "subtype": null,
+      "attachments": [
+        {
+          "attachmentId": "att_0123456789abcdef",
+          "kind": "document",
+          "mimeType": "application/pdf",
+          "fileName": "example.pdf",
+          "sizeBytes": 60646,
+          "status": "downloaded",
+          "relativePath": "Attachments/.../example.pdf",
+          "localPath": "/Users/.../Attachments/.../example.pdf",
+          "sha256": "e94b...",
+          "downloadMethod": "whatsapp-media-cache",
+          "verified": true,
+          "downloadAttempts": 0,
+          "sourceMessageId": "false_123456789@c.us_ABCDEF"
+        }
+      ]
     }
   ],
   "messages": []
@@ -211,6 +240,11 @@ Each thread includes metadata plus recent messages:
 
 `messages` is kept as a compatibility alias for older consumers. New consumers
 should read `recentMessages`.
+
+WhatsApp albums remain one parent message in `recentMessages`; their complete
+set of child images/videos appears in that message's `attachments` array. Each
+child keeps its own `sourceMessageId`, WhatsApp hash, size, and verification
+result, even when WhatsApp renders only some album tiles on screen.
 
 ## Troubleshooting
 
@@ -251,6 +285,14 @@ LaunchAgent receives the updated payload.
 Increase **Messages per conversation** and run another export. Also confirm the
 chat is included by your recency, group, and label-rule settings.
 
+### An attachment was not downloaded
+
+Inspect `skippedReason` and `note` in that attachment's JSON entry. Downloads
+may be disabled, a 50 MB file / 150 MB thread / configured total limit may have
+been reached, or WhatsApp Web may not have made verified bytes available after
+the automatic retry. The message remains in the export as an attachment
+placeholder rather than being silently discarded.
+
 ### Older app cleanup
 
 If an older pre-native `WhatsApp Collector.app` or legacy export folder is found,
@@ -264,7 +306,9 @@ Allowed operations:
 - read page metadata
 - read visible labels and chat-list text
 - read WhatsApp Web IndexedDB stores from the page context
+- read decrypted received-media bytes from WhatsApp Web's local media cache
 - open chats only for read-only message recovery in DevTools mode
+- request an inbound media download and use the exact message's Download action
 - move or place the dedicated Chrome window
 
 Forbidden operations:
@@ -272,7 +316,8 @@ Forbidden operations:
 - typing into the message composer
 - sending messages
 - creating outbound chats
-- interacting with attachments, calls, or voice recording
+- uploading, forwarding, deleting, or sending attachments
+- interacting with calls or voice recording
 - fabricating message IDs from DOM position or visible text
 
 The collector prefers to export fewer trustworthy records rather than publish

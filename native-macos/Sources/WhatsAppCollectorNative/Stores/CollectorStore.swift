@@ -165,6 +165,8 @@ final class CollectorStore: ObservableObject {
         defaults.set(configuration.allowLabels, forKey: DefaultsKey.allowLabels.rawValue)
         defaults.set(configuration.excludeLabels, forKey: DefaultsKey.excludeLabels.rawValue)
         defaults.set(configuration.includeGroups.rawValue, forKey: DefaultsKey.includeGroups.rawValue)
+        defaults.set(configuration.downloadAttachments, forKey: DefaultsKey.downloadAttachments.rawValue)
+        defaults.set(configuration.attachmentStorageLimitBytes, forKey: DefaultsKey.attachmentStorageLimitBytes.rawValue)
         defaults.set(configuration.displayName, forKey: DefaultsKey.displayName.rawValue)
         defaults.set(configuration.debugPort, forKey: DefaultsKey.debugPort.rawValue)
         defaults.set(configuration.markerTitle, forKey: DefaultsKey.markerTitle.rawValue)
@@ -270,6 +272,8 @@ final class CollectorStore: ObservableObject {
                 maxAllViewChats: decoded.maxAllViewChats,
                 includeGroups: decoded.includeGroups,
                 attachmentsRoot: decoded.attachmentsRoot,
+                attachmentPolicy: decoded.attachmentPolicy,
+                attachmentSummary: decoded.attachmentSummary,
                 threads: decoded.threads.sortedByRecency(),
                 exportWarnings: decoded.exportWarnings
             )
@@ -555,6 +559,12 @@ final class CollectorStore: ObservableObject {
            let mode = GroupInclusionMode(rawValue: includeGroups) {
             config.includeGroups = mode
         }
+        if defaults.object(forKey: DefaultsKey.downloadAttachments.rawValue) != nil {
+            config.downloadAttachments = defaults.bool(forKey: DefaultsKey.downloadAttachments.rawValue)
+        }
+        if let value = defaults.object(forKey: DefaultsKey.attachmentStorageLimitBytes.rawValue) as? NSNumber {
+            config.attachmentStorageLimitBytes = value.int64Value
+        }
         config.displayName = defaults.string(forKey: DefaultsKey.displayName.rawValue) ?? config.displayName
         if defaults.object(forKey: DefaultsKey.debugPort.rawValue) != nil {
             config.debugPort = defaults.integer(forKey: DefaultsKey.debugPort.rawValue)
@@ -577,6 +587,7 @@ final class CollectorStore: ObservableObject {
         var copy = configuration
         copy.maxMessages = max(1, min(copy.maxMessages, 500))
         copy.maxAllChats = max(1, min(copy.maxAllChats, 500))
+        copy.attachmentStorageLimitBytes = max(100_000_000, min(copy.attachmentStorageLimitBytes, 100_000_000_000))
         copy.accountLabel = copy.accountLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         copy.displayName = copy.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         copy.outputPath = copy.outputPath.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -617,6 +628,8 @@ private enum DefaultsKey: String {
     case allowLabels = "allowLabels"
     case excludeLabels = "excludeLabels"
     case includeGroups = "includeGroups"
+    case downloadAttachments = "downloadAttachments"
+    case attachmentStorageLimitBytes = "attachmentStorageLimitBytes"
     case displayName = "displayName"
     case debugPort = "debugPort"
     case markerTitle = "markerTitle"
