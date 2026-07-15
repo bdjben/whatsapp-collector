@@ -249,12 +249,13 @@ export PYTHONDONTWRITEBYTECODE
 write_run_state running "Scheduled export started." || true
 export_completed=0
 
-ensure_response="$(/usr/bin/mktemp -t whatsapp-collector-native-ensure)"
 tmp_response="$(/usr/bin/mktemp -t whatsapp-collector-native-export)"
 cleanup_payload="$(/usr/bin/mktemp -t whatsapp-collector-native-cleanup)"
 /bin/cp "$PAYLOAD_PATH" "$cleanup_payload"
+WA_COLLECTOR_CHROME_OWNERSHIP_PATH="$cleanup_payload"
+export WA_COLLECTOR_CHROME_OWNERSHIP_PATH
 cleanup() {{
-  /bin/rm -f "$ensure_response" "$tmp_response" "$cleanup_payload"
+  /bin/rm -f "$tmp_response" "$cleanup_payload"
 }}
 close_collector_chrome() {{
   "$PYTHON" "$BRIDGE_PATH" close-window < "$cleanup_payload" >/dev/null 2>&1 || true
@@ -262,8 +263,6 @@ close_collector_chrome() {{
 report_failure_response() {{
   if [ -s "$tmp_response" ]; then
     /bin/cat "$tmp_response" >&2
-  elif [ -s "$ensure_response" ]; then
-    /bin/cat "$ensure_response" >&2
   fi
 }}
 finish() {{
@@ -287,23 +286,6 @@ finish() {{
 }}
 trap finish EXIT
 
-"$PYTHON" "$BRIDGE_PATH" ensure-window < "$PAYLOAD_PATH" > "$ensure_response"
-/usr/bin/python3 - "$PAYLOAD_PATH" "$ensure_response" "$cleanup_payload" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-payload_path = Path(sys.argv[1])
-response_path = Path(sys.argv[2])
-cleanup_path = Path(sys.argv[3])
-payload = json.loads(payload_path.read_text())
-response = json.loads(response_path.read_text())
-window = response.get("window") or {{}}
-process_ids = window.get("chromeProcessIds") or []
-if process_ids:
-    payload["expectedChromeProcessIds"] = [int(pid) for pid in process_ids if int(pid) > 0]
-cleanup_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\\n")
-PY
 "$PYTHON" "$BRIDGE_PATH" run-export < "$PAYLOAD_PATH" > "$tmp_response"
 /bin/cat "$tmp_response"
 

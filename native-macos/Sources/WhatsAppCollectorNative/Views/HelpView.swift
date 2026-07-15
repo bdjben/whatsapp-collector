@@ -38,9 +38,9 @@ struct HelpView: View {
 
                 GroupBox("Typical Workflow") {
                     VStack(alignment: .leading, spacing: 12) {
-                        HelpStep(number: 1, title: "Launch / Login", detail: "Open the dedicated Chrome profile and confirm WhatsApp Web or WhatsApp Business Web is logged in.")
+                        HelpStep(number: 1, title: "Launch / Login", detail: "For first-time setup, open the dedicated Chrome profile and confirm WhatsApp Web or WhatsApp Business Web is logged in.")
                         HelpStep(number: 2, title: "Optional Label Rules", detail: "Label rules are optional. Load labels only if you want some labels to Always Include chats or Never Include chats.")
-                        HelpStep(number: 3, title: "Run Export", detail: "Refresh the same stable JSON file used by local agents and automations.")
+                        HelpStep(number: 3, title: "Run Export", detail: "Automatically open or reuse the dedicated profile and refresh the stable JSON file used by local agents and automations.")
                         HelpStep(number: 4, title: "Preview or Reveal", detail: "Review threads inside the app, copy one thread as JSON, or reveal the full export file in Finder.")
                     }
                     .padding(.vertical, 4)
@@ -58,8 +58,8 @@ struct HelpView: View {
 
                 GroupBox("Browser Requirements") {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("WhatsApp Collector needs Google Chrome installed and uses a dedicated Chrome profile, separate from your normal browsing profile. Click Launch / Login, let that Chrome window open, and keep WhatsApp Web or WhatsApp Business Web logged in there.")
-                        Text("Do not close the dedicated Chrome window while exporting. If Chrome asks for a QR login, scan it first, then return to the app and run the export. After a successful export, the app closes the exact Chrome process for its dedicated profile. A failed scheduled export gets a five-minute grace period before that same process is closed. Other Chrome profiles and windows are not targeted. The app opens Chrome with its own DevTools connection, so you do not need to turn on Chrome developer settings. The app only reads the logged-in browser data needed for the export; it does not send messages or open the old browser-based app UI.")
+                        Text("WhatsApp Collector needs Google Chrome installed and uses a dedicated Chrome profile, separate from your normal browsing profile. Use Launch / Login for first-time setup or reauthentication, and keep WhatsApp Web or WhatsApp Business Web logged in there. Run Export and scheduled exports open or reuse that dedicated profile automatically.")
+                        Text("Do not close the dedicated Chrome window while exporting. If Chrome asks for a QR login, scan it and run the export again. After a successful export, the app closes only the exact Chrome process it opened or reused for the configured profile and DevTools port. A failed scheduled export gets a five-minute grace period before that same process is closed. Other Chrome profiles and windows are not targeted. You do not need to turn on Chrome developer settings. The app only reads the logged-in browser data needed for the export; it does not send messages or open the old browser-based app UI.")
                             .foregroundStyle(.secondary)
                     }
                     .font(.callout)

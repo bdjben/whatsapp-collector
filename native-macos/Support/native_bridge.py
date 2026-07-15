@@ -48,6 +48,7 @@ from whatsapp_collector.launcher import (  # noqa: E402
     DEFAULT_MARKER_URL_SUBSTRING,
     DEFAULT_PROFILE_DIR,
     DEFAULT_TARGET_URL,
+    chrome_profile_process_ids,
     ensure_dedicated_whatsapp_window,
     terminate_profile_processes,
 )
@@ -60,6 +61,8 @@ from whatsapp_collector.web_ui import (  # noqa: E402
     _write_atomic_json,
     default_collect_labels,
 )
+
+CHROME_OWNERSHIP_PATH_ENV = "WA_COLLECTOR_CHROME_OWNERSHIP_PATH"
 
 
 def _now() -> str:
@@ -129,6 +132,30 @@ def _pid_set(value: Any) -> set[int] | None:
         if pid > 0:
             pids.add(pid)
     return pids
+
+
+def _record_chrome_ownership(cfg: dict[str, Any], expected_pids: set[int]) -> None:
+    ownership_path_raw = os.environ.get(CHROME_OWNERSHIP_PATH_ENV)
+    if not ownership_path_raw:
+        return
+    ownership_path = Path(ownership_path_raw).expanduser()
+    try:
+        payload = json.loads(ownership_path.read_text())
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload.update(
+        {
+            "profileDir": str(cfg["profile_dir"]),
+            "debugPort": int(cfg["debug_port"]),
+            "expectedChromeProcessIds": sorted(expected_pids),
+        }
+    )
+    ownership_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = ownership_path.with_name(f".{ownership_path.name}.{os.getpid()}.tmp")
+    temp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+    temp_path.replace(ownership_path)
 
 
 def _group_include(value: Any) -> str:
@@ -217,15 +244,67 @@ def _ensure_window(cfg: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "command": "ensure-window", "checkedAt": _now(), "window": result}
 
 
+def _ensure_export_window(cfg: dict[str, Any]) -> tuple[dict[str, Any], set[int]]:
+    try:
+        response = _ensure_window(cfg)
+    except Exception as exc:
+        existing_pids = set(
+            chrome_profile_process_ids(
+                cfg["profile_dir"],
+                debug_port=cfg["debug_port"],
+            )
+        )
+        if existing_pids:
+            _record_chrome_ownership(cfg, existing_pids)
+        raise RuntimeError(
+            f"Could not open the dedicated Chrome profile at {cfg['profile_dir']} for export: {exc}"
+        ) from exc
+    window = dict(response.get("window") or {})
+    expected_pids = _pid_set(window.get("chromeProcessIds")) or set()
+    if not expected_pids:
+        raise RuntimeError(
+            "The dedicated Chrome profile opened, but WhatsApp Collector could not identify its exact Chrome process. "
+            "The export was stopped so that other Chrome windows cannot be targeted."
+        )
+    _record_chrome_ownership(cfg, expected_pids)
+    return window, expected_pids
+
+
+def _wait_for_export_readiness(
+    cfg: dict[str, Any],
+    window: dict[str, Any],
+    expected_pids: set[int],
+) -> tuple[dict[str, Any], set[int]]:
+    for launch_attempt in range(2):
+        try:
+            ChromeDevToolsBridge(
+                port=int(cfg["debug_port"]),
+                marker_title=cfg["marker_title"],
+                marker_url_substring=cfg["marker_url_substring"],
+                target_url_substring=cfg["target_url"],
+            ).wait_until_whatsapp_ready(attempts=60, delay_seconds=0.5, require_ready=True)
+            return window, expected_pids
+        except RuntimeError as exc:
+            message = str(exc).casefold()
+            user_action_required = "not logged in" in message or "did not finish rendering" in message
+            owned_process_still_running = bool(
+                chrome_profile_process_ids(
+                    cfg["profile_dir"],
+                    debug_port=cfg["debug_port"],
+                    expected_pids=expected_pids,
+                )
+            )
+            if launch_attempt > 0 or (user_action_required and owned_process_still_running):
+                raise
+            window, expected_pids = _ensure_export_window(cfg)
+    raise RuntimeError("Could not prepare the dedicated Chrome profile for export")
+
+
 def _run_export(cfg: dict[str, Any]) -> dict[str, Any]:
     attempts: list[dict[str, Any]] = []
     export: dict[str, Any] | None = None
-    ChromeDevToolsBridge(
-        port=int(cfg["debug_port"]),
-        marker_title=cfg["marker_title"],
-        marker_url_substring=cfg["marker_url_substring"],
-        target_url_substring=cfg["target_url"],
-    ).wait_until_whatsapp_ready(attempts=60, delay_seconds=0.5, require_ready=True)
+    window, expected_pids = _ensure_export_window(cfg)
+    window, expected_pids = _wait_for_export_readiness(cfg, window, expected_pids)
     for attempt in range(1, 4):
         export = _collector(cfg).collect_dashboard_export(
             account_label=cfg["account_label"],
@@ -262,6 +341,7 @@ def _run_export(cfg: dict[str, Any]) -> dict[str, Any]:
     termination = terminate_profile_processes(
         cfg["profile_dir"],
         debug_port=cfg["debug_port"],
+        expected_pids=expected_pids,
         wait_attempts=8,
         delay_seconds=0.2,
     )
@@ -274,6 +354,9 @@ def _run_export(cfg: dict[str, Any]) -> dict[str, Any]:
         "threadCount": thread_count,
         "window": {
             "profileDir": str(cfg["profile_dir"]),
+            "debugPort": cfg["debug_port"],
+            "chromeProcessIds": sorted(expected_pids),
+            "launchedForExport": window.get("launched") is True,
             "closedAfterExport": not remaining_pids,
             "termination": termination,
         },
@@ -282,6 +365,20 @@ def _run_export(cfg: dict[str, Any]) -> dict[str, Any]:
 
 def _close_window(cfg: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     expected_pids = _pid_set(payload.get("expectedChromeProcessIds"))
+    if not expected_pids:
+        return {
+            "ok": True,
+            "command": "close-window",
+            "checkedAt": _now(),
+            "window": {
+                "profileDir": str(cfg["profile_dir"]),
+                "debugPort": cfg["debug_port"],
+                "expectedChromeProcessIds": [],
+                "closed": False,
+                "closeAttempted": False,
+                "reason": "No captured dedicated Chrome process IDs were available; no process was targeted.",
+            },
+        }
     termination = terminate_profile_processes(
         cfg["profile_dir"],
         debug_port=cfg["debug_port"],
@@ -297,8 +394,9 @@ def _close_window(cfg: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any
         "window": {
             "profileDir": str(cfg["profile_dir"]),
             "debugPort": cfg["debug_port"],
-            "expectedChromeProcessIds": sorted(expected_pids) if expected_pids is not None else None,
+            "expectedChromeProcessIds": sorted(expected_pids),
             "closed": not remaining_pids,
+            "closeAttempted": True,
             "termination": termination,
         },
     }

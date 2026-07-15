@@ -285,6 +285,8 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     assert 'if command == "close-window"' in bridge_source
     assert "refreshScheduledRunnerIfNeeded()" in store_source
     assert "scheduleRunnerImplementationVersion" in store_source
+    assert "scheduleRunnerImplementationVersion = 2" in store_source
     assert "guard schedule.isCurrentRunActive == false" in store_source
     assert "schedule.isLegacyWebSchedule || installedVersion" in store_source
+    assert store_source.count("showChromeMissingAlertIfNeeded()") >= 2
     assert '"closedAfterExport": not remaining_pids' in bridge_source

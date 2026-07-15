@@ -35,7 +35,7 @@ struct DashboardView: View {
         HStack(alignment: .top, spacing: 16) {
             SectionHeader(
                 title: "WhatsApp Collector",
-                subtitle: "Launch the dedicated WhatsApp Web profile, run exports, and keep the AI-ready JSON fresh.",
+                subtitle: "Run exports through a dedicated WhatsApp Web profile and keep the AI-ready JSON fresh.",
                 systemImage: "message.badge"
             )
 
@@ -132,8 +132,8 @@ struct DashboardView: View {
     private var browserReadiness: some View {
         GroupBox("Browser Setup") {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Use Launch / Login to open the dedicated Chrome profile, then make sure WhatsApp Web or WhatsApp Business Web is logged in there before running an export.")
-                Text("Keep that Chrome window open while exporting. After a successful export, WhatsApp Collector closes the exact Chrome process for its dedicated profile. If a scheduled export fails, that process closes after a five-minute grace period. Other Chrome profiles and windows are not targeted. The app reads WhatsApp through its dedicated profile’s DevTools connection and does not use the old localhost browser UI.")
+                Text("Use Launch / Login for first-time setup or whenever WhatsApp asks you to sign in again. Run Export automatically opens or reuses that same dedicated Chrome profile.")
+                Text("Keep the dedicated window open while an export is underway. After success, WhatsApp Collector closes only the exact Chrome process it opened or reused for the configured profile and DevTools port. If a scheduled export fails, that process closes after a five-minute grace period. Other Chrome profiles and windows are not targeted. The app does not use the old localhost browser UI.")
                     .foregroundStyle(.secondary)
             }
             .font(.callout)

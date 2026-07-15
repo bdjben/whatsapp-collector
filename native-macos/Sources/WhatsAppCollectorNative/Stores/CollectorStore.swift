@@ -3,7 +3,7 @@ import Foundation
 
 @MainActor
 final class CollectorStore: ObservableObject {
-    private static let scheduleRunnerImplementationVersion = 1
+    private static let scheduleRunnerImplementationVersion = 2
 
     @Published var configuration: CollectorConfiguration = .defaults
     @Published var draftConfiguration: CollectorConfiguration = .defaults
@@ -215,7 +215,10 @@ final class CollectorStore: ObservableObject {
     }
 
     func runExport() async {
-        guard let response = await perform(.runExport, busy: .exporting) else { return }
+        guard let response = await perform(.runExport, busy: .exporting) else {
+            showChromeMissingAlertIfNeeded()
+            return
+        }
         apply(response)
         loadExportPreview()
     }

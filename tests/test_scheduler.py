@@ -83,10 +83,10 @@ def test_native_schedule_script_runs_bridge_without_localhost(tmp_path: Path) ->
     assert "native://bridge" not in script
     assert "127.0.0.1" not in script
     assert "curl" not in script
-    assert '"$PYTHON" "$BRIDGE_PATH" ensure-window' in script
+    assert '"$PYTHON" "$BRIDGE_PATH" ensure-window' not in script
     assert '"$PYTHON" "$BRIDGE_PATH" run-export' in script
     assert '"$PYTHON" "$BRIDGE_PATH" close-window' in script
-    assert "expectedChromeProcessIds" in script
+    assert "WA_COLLECTOR_CHROME_OWNERSHIP_PATH" in script
     assert "FAILED_RUN_CHROME_GRACE_SECONDS=300" in script
     assert "Dedicated Chrome will close within five minutes" in script
     assert "report_failure_response" in script
@@ -109,9 +109,12 @@ from pathlib import Path
 command = sys.argv[1]
 payload = json.load(sys.stdin)
 log_path = Path(os.environ["SCHEDULE_BRIDGE_TEST_LOG"])
-if command == "ensure-window":
-    print(json.dumps({"ok": True, "window": {"chromeProcessIds": [20518]}}))
-elif command == "run-export" and os.environ.get("SCHEDULE_BRIDGE_TEST_FAIL") == "1":
+if command == "run-export":
+    ownership_path = Path(os.environ["WA_COLLECTOR_CHROME_OWNERSHIP_PATH"])
+    ownership = json.loads(ownership_path.read_text())
+    ownership["expectedChromeProcessIds"] = [20518]
+    ownership_path.write_text(json.dumps(ownership))
+if command == "run-export" and os.environ.get("SCHEDULE_BRIDGE_TEST_FAIL") == "1":
     print(json.dumps({"ok": False, "error": "simulated collection failure"}))
     raise SystemExit(1)
 elif command == "run-export":

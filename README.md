@@ -60,6 +60,10 @@ developer settings for the normal native app workflow.
 5. Return to WhatsApp Collector and click **Run Export**.
 6. Open **Export Preview** to inspect what was captured.
 
+After the first login, **Run Export** and scheduled exports automatically open
+or reuse this same dedicated profile. You do not need to press **Launch / Login**
+before every collection.
+
 The default export file is:
 
 ```text
@@ -271,8 +275,12 @@ Open **Diagnostics** and check the latest bridge response. Common causes are:
 
 - Chrome is not installed.
 - WhatsApp Web is not logged in inside the dedicated profile.
-- The dedicated Chrome profile was closed while an export was running.
+- The dedicated Chrome profile was closed while an export was already running.
 - WhatsApp Web changed its internal data shape and the collector needs an update.
+
+Starting an export while Chrome is closed is supported: the app automatically
+opens the configured dedicated profile and verifies its exact process before it
+collects anything.
 
 ### Scheduled exports are not running
 
