@@ -116,6 +116,21 @@ def _bool(value: Any, default: bool) -> bool:
     return default
 
 
+def _pid_set(value: Any) -> set[int] | None:
+    if value is None:
+        return None
+    raw_items = value if isinstance(value, (list, tuple, set)) else [value]
+    pids: set[int] = set()
+    for item in raw_items:
+        try:
+            pid = int(item)
+        except (TypeError, ValueError):
+            continue
+        if pid > 0:
+            pids.add(pid)
+    return pids
+
+
 def _group_include(value: Any) -> str:
     value = str(value or "").strip()
     if value in {"labeledAlways", "labeled-always", "always-labeled", "alwaysIncludeOnly"}:
@@ -244,14 +259,48 @@ def _run_export(cfg: dict[str, Any]) -> dict[str, Any]:
     thread_count = len(export.get("threads", [])) if isinstance(export.get("threads"), list) else 0
     summary["threadCount"] = thread_count
     summary["exportedAt"] = export.get("exportedAt")
-    terminate_profile_processes(cfg["profile_dir"], wait_attempts=8, delay_seconds=0.2)
+    termination = terminate_profile_processes(
+        cfg["profile_dir"],
+        debug_port=cfg["debug_port"],
+        wait_attempts=8,
+        delay_seconds=0.2,
+    )
+    remaining_pids = termination.get("remainingProcessIds", [])
     return {
         "ok": True,
         "command": "run-export",
         "checkedAt": _now(),
         "export": summary,
         "threadCount": thread_count,
-        "window": {"profileDir": str(cfg["profile_dir"]), "closedAfterExport": True},
+        "window": {
+            "profileDir": str(cfg["profile_dir"]),
+            "closedAfterExport": not remaining_pids,
+            "termination": termination,
+        },
+    }
+
+
+def _close_window(cfg: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    expected_pids = _pid_set(payload.get("expectedChromeProcessIds"))
+    termination = terminate_profile_processes(
+        cfg["profile_dir"],
+        debug_port=cfg["debug_port"],
+        expected_pids=expected_pids,
+        wait_attempts=20,
+        delay_seconds=0.25,
+    )
+    remaining_pids = termination.get("remainingProcessIds", [])
+    return {
+        "ok": not remaining_pids,
+        "command": "close-window",
+        "checkedAt": _now(),
+        "window": {
+            "profileDir": str(cfg["profile_dir"]),
+            "debugPort": cfg["debug_port"],
+            "expectedChromeProcessIds": sorted(expected_pids) if expected_pids is not None else None,
+            "closed": not remaining_pids,
+            "termination": termination,
+        },
     }
 
 
@@ -300,6 +349,8 @@ def dispatch(command: str, payload: dict[str, Any]) -> dict[str, Any]:
         return _ensure_window(cfg)
     if command == "run-export":
         return _run_export(cfg)
+    if command == "close-window":
+        return _close_window(cfg, payload)
     if command == "labels":
         return _labels(cfg)
     if command == "schedule-status":

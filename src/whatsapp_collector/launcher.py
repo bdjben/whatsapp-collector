@@ -62,7 +62,34 @@ def _run_applescript(script: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _matching_chrome_process_ids(output: str) -> list[int]:
+def _is_main_chrome_command(command: str) -> bool:
+    executable = command.split(" --", 1)[0].rstrip()
+    return (
+        executable.endswith("/Google Chrome.app/Contents/MacOS/Google Chrome")
+        and " -c " not in executable
+    )
+
+
+def _command_has_exact_argument(command: str, argument: str) -> bool:
+    start = 0
+    while True:
+        index = command.find(argument, start)
+        if index < 0:
+            return False
+        before_ok = index == 0 or command[index - 1].isspace()
+        end = index + len(argument)
+        after_ok = end == len(command) or command[end].isspace()
+        if before_ok and after_ok:
+            return True
+        start = index + 1
+
+
+def _matching_chrome_process_ids(
+    output: str,
+    *,
+    required_arguments: tuple[str, ...] = (),
+    expected_pids: set[int] | None = None,
+) -> list[int]:
     pids: list[int] = []
     current_pid = os.getpid()
     for line in output.splitlines():
@@ -79,70 +106,148 @@ def _matching_chrome_process_ids(output: str) -> list[int]:
         command = parts[1] if len(parts) > 1 else ""
         if pid == current_pid:
             continue
-        if "Google Chrome" not in command:
+        if expected_pids is not None and pid not in expected_pids:
+            continue
+        if not _is_main_chrome_command(command):
+            continue
+        if not all(_command_has_exact_argument(command, argument) for argument in required_arguments):
             continue
         pids.append(pid)
     return pids
 
 
-def _terminate_matching_processes(pattern: str, *, wait_attempts: int = 20, delay_seconds: float = 0.25) -> None:
-    initial = subprocess.run(
-        ["pgrep", "-fal", pattern],
+def _chrome_process_output() -> str:
+    result = subprocess.run(
+        ["ps", "-ww", "-axo", "pid=,command="],
         check=False,
         capture_output=True,
         text=True,
     )
-    for pid in _matching_chrome_process_ids(initial.stdout):
+    return result.stdout
+
+
+def chrome_profile_process_ids(
+    profile_dir: Path,
+    *,
+    debug_port: int | None = None,
+    expected_pids: set[int] | None = None,
+) -> list[int]:
+    arguments = [f"--user-data-dir={profile_dir.expanduser()}"]
+    if debug_port is not None:
+        arguments.append(f"--remote-debugging-port={int(debug_port)}")
+    return _matching_chrome_process_ids(
+        _chrome_process_output(),
+        required_arguments=tuple(arguments),
+        expected_pids=expected_pids,
+    )
+
+
+def _terminate_matching_processes(
+    required_arguments: tuple[str, ...],
+    *,
+    expected_pids: set[int] | None = None,
+    wait_attempts: int = 20,
+    delay_seconds: float = 0.25,
+) -> dict[str, object]:
+    initial_pids = _matching_chrome_process_ids(
+        _chrome_process_output(),
+        required_arguments=required_arguments,
+        expected_pids=expected_pids,
+    )
+    for pid in initial_pids:
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
+    remaining_pids: list[int] = []
     for _ in range(wait_attempts):
-        remaining = subprocess.run(
-            ["pgrep", "-fal", pattern],
-            check=False,
-            capture_output=True,
-            text=True,
+        remaining_pids = _matching_chrome_process_ids(
+            _chrome_process_output(),
+            required_arguments=required_arguments,
+            expected_pids=expected_pids,
         )
-        remaining_pids = _matching_chrome_process_ids(remaining.stdout)
         if not remaining_pids:
-            return
+            return {
+                "matchedProcessIds": initial_pids,
+                "forcedProcessIds": [],
+                "remainingProcessIds": [],
+            }
         time.sleep(delay_seconds)
-    final = subprocess.run(
-        ["pgrep", "-fal", pattern],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    for pid in _matching_chrome_process_ids(final.stdout):
+    forced_pids = list(remaining_pids)
+    for pid in forced_pids:
         try:
             os.kill(pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+    for _ in range(max(1, min(wait_attempts, 4))):
+        remaining_pids = _matching_chrome_process_ids(
+            _chrome_process_output(),
+            required_arguments=required_arguments,
+            expected_pids=expected_pids,
+        )
+        if not remaining_pids:
+            break
+        time.sleep(delay_seconds)
+    return {
+        "matchedProcessIds": initial_pids,
+        "forcedProcessIds": forced_pids,
+        "remainingProcessIds": remaining_pids,
+    }
 
 
-def terminate_profile_processes(profile_dir: Path, *, wait_attempts: int = 20, delay_seconds: float = 0.25) -> None:
-    _terminate_matching_processes(str(profile_dir), wait_attempts=wait_attempts, delay_seconds=delay_seconds)
+def terminate_profile_processes(
+    profile_dir: Path,
+    *,
+    debug_port: int | None = None,
+    expected_pids: set[int] | None = None,
+    wait_attempts: int = 20,
+    delay_seconds: float = 0.25,
+) -> dict[str, object]:
+    arguments = [f"--user-data-dir={profile_dir.expanduser()}"]
+    if debug_port is not None:
+        arguments.append(f"--remote-debugging-port={int(debug_port)}")
+    return _terminate_matching_processes(
+        tuple(arguments),
+        expected_pids=expected_pids,
+        wait_attempts=wait_attempts,
+        delay_seconds=delay_seconds,
+    )
 
 
-def terminate_debug_port_processes(debug_port: int, *, wait_attempts: int = 20, delay_seconds: float = 0.25) -> None:
-    _terminate_matching_processes(f"remote-debugging-port={int(debug_port)}", wait_attempts=wait_attempts, delay_seconds=delay_seconds)
+def terminate_debug_port_processes(
+    debug_port: int,
+    *,
+    wait_attempts: int = 20,
+    delay_seconds: float = 0.25,
+) -> dict[str, object]:
+    return _terminate_matching_processes(
+        (f"--remote-debugging-port={int(debug_port)}",),
+        wait_attempts=wait_attempts,
+        delay_seconds=delay_seconds,
+    )
 
 
 def debug_port_process_lines(debug_port: int) -> list[str]:
-    completed = subprocess.run(
-        ["pgrep", "-fal", f"remote-debugging-port={int(debug_port)}"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    return [line for line in completed.stdout.splitlines() if line.strip()]
+    required_argument = f"--remote-debugging-port={int(debug_port)}"
+    lines: list[str] = []
+    for line in _chrome_process_output().splitlines():
+        stripped = line.strip()
+        parts = stripped.split(maxsplit=1)
+        command = parts[1] if len(parts) > 1 else ""
+        if _is_main_chrome_command(command) and _command_has_exact_argument(command, required_argument):
+            lines.append(stripped)
+    return lines
 
 
 def debug_port_has_profile_conflict(debug_port: int, profile_dir: Path) -> bool:
-    profile = str(profile_dir.expanduser())
+    profile_argument = f"--user-data-dir={profile_dir.expanduser()}"
     lines = debug_port_process_lines(debug_port)
-    return bool(lines) and any(profile not in line for line in lines)
+    for line in lines:
+        parts = line.split(maxsplit=1)
+        command = parts[1] if len(parts) > 1 else ""
+        if not _command_has_exact_argument(command, profile_argument):
+            return True
+    return False
 
 
 def load_display_frames() -> dict[str, DisplayFrame]:
@@ -518,6 +623,7 @@ def ensure_dedicated_whatsapp_window(
     readiness = _wait_whatsapp_readiness(bridge, attempts=wait_attempts, delay_seconds=delay_seconds)
     if settle_seconds > 0:
         time.sleep(settle_seconds)
+    chrome_process_ids = chrome_profile_process_ids(profile_dir, debug_port=debug_port)
     return {
         "windowId": placement["windowId"],
         "targetId": placement.get("targetId"),
@@ -535,4 +641,6 @@ def ensure_dedicated_whatsapp_window(
         "targetUrl": target_url,
         "debugPort": int(debug_port),
         "launched": launched,
+        "chromeProcessIds": chrome_process_ids,
+        "chromeProcessId": chrome_process_ids[0] if chrome_process_ids else None,
     }

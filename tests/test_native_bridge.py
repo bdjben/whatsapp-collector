@@ -149,7 +149,11 @@ def test_native_run_export_retries_then_writes_when_quality_recovers(tmp_path: P
     monkeypatch.setattr(bridge, "ChromeDevToolsBridge", FakeDevToolsBridge)
     monkeypatch.setattr(bridge, "_collector", lambda cfg: FakeCollector())
     monkeypatch.setattr(bridge.time, "sleep", lambda seconds: None)
-    monkeypatch.setattr(bridge, "terminate_profile_processes", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        bridge,
+        "terminate_profile_processes",
+        lambda *args, **kwargs: {"matchedProcessIds": [20518], "forcedProcessIds": [], "remainingProcessIds": []},
+    )
 
     result = bridge.dispatch("run-export", {"outputPath": str(output), "profileDir": str(tmp_path / "profile")})
 
@@ -159,6 +163,34 @@ def test_native_run_export_retries_then_writes_when_quality_recovers(tmp_path: P
     assert captured_kwargs[-1]["download_attachments"] is True
     assert captured_kwargs[-1]["max_total_attachment_bytes"] == 1_500_000_000
     assert json.loads(output.read_text())["threads"][0]["chatTitle"] == "Good Thread"
+    assert result["window"]["closedAfterExport"] is True
+
+
+def test_native_close_window_requires_profile_port_and_captured_pids(tmp_path: Path, monkeypatch) -> None:
+    bridge = _load_native_bridge()
+    captured: dict[str, Any] = {}
+
+    def fake_terminate(profile_dir, **kwargs):
+        captured["profileDir"] = profile_dir
+        captured.update(kwargs)
+        return {"matchedProcessIds": [20518], "forcedProcessIds": [], "remainingProcessIds": []}
+
+    monkeypatch.setattr(bridge, "terminate_profile_processes", fake_terminate)
+
+    result = bridge.dispatch(
+        "close-window",
+        {
+            "profileDir": str(tmp_path / "Chrome Profile"),
+            "debugPort": 19220,
+            "expectedChromeProcessIds": [20518, "20519", "invalid"],
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["window"]["closed"] is True
+    assert captured["profileDir"] == tmp_path / "Chrome Profile"
+    assert captured["debug_port"] == 19220
+    assert captured["expected_pids"] == {20518, 20519}
 
 
 def test_native_run_export_rejects_degraded_export_and_restores_last_good(tmp_path: Path, monkeypatch) -> None:

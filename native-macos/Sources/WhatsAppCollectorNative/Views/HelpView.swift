@@ -59,7 +59,7 @@ struct HelpView: View {
                 GroupBox("Browser Requirements") {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("WhatsApp Collector needs Google Chrome installed and uses a dedicated Chrome profile, separate from your normal browsing profile. Click Launch / Login, let that Chrome window open, and keep WhatsApp Web or WhatsApp Business Web logged in there.")
-                        Text("Do not close the dedicated Chrome window while exporting. If Chrome asks for a QR login, scan it first, then return to the app and run the export. After a successful export, the app closes only its dedicated Chrome profile window/process. The app opens Chrome with its own DevTools connection, so you do not need to turn on Chrome developer settings. The app only reads the logged-in browser data needed for the export; it does not send messages or open the old browser-based app UI.")
+                        Text("Do not close the dedicated Chrome window while exporting. If Chrome asks for a QR login, scan it first, then return to the app and run the export. After a successful export, the app closes the exact Chrome process for its dedicated profile. A failed scheduled export gets a five-minute grace period before that same process is closed. Other Chrome profiles and windows are not targeted. The app opens Chrome with its own DevTools connection, so you do not need to turn on Chrome developer settings. The app only reads the logged-in browser data needed for the export; it does not send messages or open the old browser-based app UI.")
                             .foregroundStyle(.secondary)
                     }
                     .font(.callout)

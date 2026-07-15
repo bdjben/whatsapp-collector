@@ -76,10 +76,17 @@ def test_terminate_profile_processes_kills_only_chrome_processes_and_not_wrapper
     killed: list[tuple[int, int]] = []
     poll_results = [
         (
+            "1141 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n"
             "20518 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/tmp/profile\n"
+            "20519 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/tmp/profile-copy\n"
+            "20520 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper --type=renderer --user-data-dir=/tmp/profile\n"
             "99999 /bin/bash -c whatsapp-collector quit-profile --profile-dir /tmp/profile"
         ),
-        "99999 /bin/bash -c whatsapp-collector quit-profile --profile-dir /tmp/profile",
+        (
+            "1141 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n"
+            "20519 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/tmp/profile-copy\n"
+            "99999 /bin/bash -c whatsapp-collector quit-profile --profile-dir /tmp/profile"
+        ),
     ]
 
     class Completed:
@@ -91,7 +98,7 @@ def test_terminate_profile_processes_kills_only_chrome_processes_and_not_wrapper
         calls.append(command)
         if command[:2] == ["pkill", "-f"]:
             raise AssertionError("terminate_profile_processes must not pkill the raw profile pattern; it can kill its own wrapper shell")
-        if command[:2] == ["pgrep", "-fal"]:
+        if command == ["ps", "-ww", "-axo", "pid=,command="]:
             stdout = poll_results.pop(0) if poll_results else ""
             return Completed(stdout=stdout, returncode=0 if stdout else 1)
         raise AssertionError(f"Unexpected command: {command}")
@@ -102,8 +109,8 @@ def test_terminate_profile_processes_kills_only_chrome_processes_and_not_wrapper
 
     terminate_profile_processes(Path(profile))
 
-    assert calls[0] == ["pgrep", "-fal", profile]
-    assert calls[1] == ["pgrep", "-fal", profile]
+    assert calls[0] == ["ps", "-ww", "-axo", "pid=,command="]
+    assert calls[1] == ["ps", "-ww", "-axo", "pid=,command="]
     assert killed == [(20518, 15)]
 
 
@@ -124,7 +131,7 @@ def test_terminate_debug_port_processes_kills_only_configured_devtools_port(monk
         calls.append(command)
         if command[:2] == ["pkill", "-f"]:
             raise AssertionError("terminate_debug_port_processes must not pkill raw patterns")
-        if command[:2] == ["pgrep", "-fal"]:
+        if command == ["ps", "-ww", "-axo", "pid=,command="]:
             stdout = poll_results.pop(0) if poll_results else ""
             return Completed(stdout=stdout, returncode=0 if stdout else 1)
         raise AssertionError(f"Unexpected command: {command}")
@@ -135,9 +142,45 @@ def test_terminate_debug_port_processes_kills_only_configured_devtools_port(monk
 
     terminate_debug_port_processes(19220)
 
-    assert calls[0] == ["pgrep", "-fal", "remote-debugging-port=19220"]
-    assert calls[1] == ["pgrep", "-fal", "remote-debugging-port=19220"]
+    assert calls[0] == ["ps", "-ww", "-axo", "pid=,command="]
+    assert calls[1] == ["ps", "-ww", "-axo", "pid=,command="]
     assert killed == [(20518, 15)]
+
+
+def test_terminate_profile_processes_honors_captured_pid_when_profile_is_relaunched(monkeypatch) -> None:
+    killed: list[tuple[int, int]] = []
+    poll_results = [
+        (
+            "20518 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome "
+            "--user-data-dir=/tmp/profile --remote-debugging-port=19220\n"
+            "20519 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome "
+            "--user-data-dir=/tmp/profile --remote-debugging-port=19220"
+        ),
+        (
+            "20519 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome "
+            "--user-data-dir=/tmp/profile --remote-debugging-port=19220"
+        ),
+    ]
+
+    class Completed:
+        def __init__(self, stdout: str = ""):
+            self.stdout = stdout
+
+    monkeypatch.setattr(
+        "whatsapp_collector.launcher.subprocess.run",
+        lambda *args, **kwargs: Completed(poll_results.pop(0) if poll_results else ""),
+    )
+    monkeypatch.setattr("whatsapp_collector.launcher.os.kill", lambda pid, sig: killed.append((pid, sig)))
+
+    result = terminate_profile_processes(
+        Path("/tmp/profile"),
+        debug_port=19220,
+        expected_pids={20518},
+    )
+
+    assert killed == [(20518, 15)]
+    assert result["matchedProcessIds"] == [20518]
+    assert result["remainingProcessIds"] == []
 
 
 def test_debug_port_has_profile_conflict_detects_stale_profile_owner(monkeypatch, tmp_path: Path) -> None:
@@ -151,8 +194,8 @@ def test_debug_port_has_profile_conflict_detects_stale_profile_owner(monkeypatch
     monkeypatch.setattr(
         "whatsapp_collector.launcher.subprocess.run",
         lambda *args, **kwargs: Completed(
-            f"101 Google Chrome --remote-debugging-port=19220 --user-data-dir={old}\n"
-            f"202 Google Chrome --remote-debugging-port=19220 --user-data-dir={desired}\n"
+            f"101 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=19220 --user-data-dir={old}\n"
+            f"202 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=19220 --user-data-dir={desired}\n"
         ),
     )
 
@@ -169,12 +212,30 @@ def test_debug_port_has_profile_conflict_accepts_requested_profile_owner(monkeyp
     monkeypatch.setattr(
         "whatsapp_collector.launcher.subprocess.run",
         lambda *args, **kwargs: Completed(
-            f"202 Google Chrome --remote-debugging-port=19220 --user-data-dir={desired}\n"
-            f"203 Google Chrome Helper --remote-debugging-port=19220 --user-data-dir={desired}\n"
+            f"202 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=19220 --user-data-dir={desired}\n"
+            f"203 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper --remote-debugging-port=19220 --user-data-dir={desired}\n"
         ),
     )
 
     assert debug_port_has_profile_conflict(19220, desired) is False
+
+
+def test_debug_port_profile_prefix_does_not_count_as_requested_profile(monkeypatch, tmp_path: Path) -> None:
+    desired = tmp_path / "Chrome Profile"
+
+    class Completed:
+        def __init__(self, stdout: str = ""):
+            self.stdout = stdout
+
+    monkeypatch.setattr(
+        "whatsapp_collector.launcher.subprocess.run",
+        lambda *args, **kwargs: Completed(
+            f"202 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome "
+            f"--remote-debugging-port=19220 --user-data-dir={desired}-old\n"
+        ),
+    )
+
+    assert debug_port_has_profile_conflict(19220, desired) is True
 
 
 def test_choose_display_uses_requested_or_first_available_display() -> None:

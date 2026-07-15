@@ -280,6 +280,12 @@ Open **Automation** and check whether automatic exports are enabled. After
 changing schedule or collection settings, click **Save Changes** so the
 LaunchAgent receives the updated payload.
 
+Each scheduled run records the PID, dedicated profile path, and DevTools port
+of the Chrome process it uses. That exact process is closed immediately after a
+successful run. After a failed run it remains available for five minutes for
+inspection, then closes automatically. Chrome processes that do not match the
+collector profile, port, and captured PID are left alone.
+
 ### The export has fewer messages than expected
 
 Increase **Messages per conversation** and run another export. Also confirm the

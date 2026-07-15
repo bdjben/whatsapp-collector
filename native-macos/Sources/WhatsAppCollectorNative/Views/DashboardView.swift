@@ -133,7 +133,7 @@ struct DashboardView: View {
         GroupBox("Browser Setup") {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Use Launch / Login to open the dedicated Chrome profile, then make sure WhatsApp Web or WhatsApp Business Web is logged in there before running an export.")
-                Text("Keep that Chrome window open while exporting. After a successful export, WhatsApp Collector closes only its dedicated Chrome profile window/process. The app reads WhatsApp through that profile’s DevTools connection and does not use the old localhost browser UI.")
+                Text("Keep that Chrome window open while exporting. After a successful export, WhatsApp Collector closes the exact Chrome process for its dedicated profile. If a scheduled export fails, that process closes after a five-minute grace period. Other Chrome profiles and windows are not targeted. The app reads WhatsApp through its dedicated profile’s DevTools connection and does not use the old localhost browser UI.")
                     .foregroundStyle(.secondary)
             }
             .font(.callout)

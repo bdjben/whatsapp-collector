@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import plistlib
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -82,12 +85,118 @@ def test_native_schedule_script_runs_bridge_without_localhost(tmp_path: Path) ->
     assert "curl" not in script
     assert '"$PYTHON" "$BRIDGE_PATH" ensure-window' in script
     assert '"$PYTHON" "$BRIDGE_PATH" run-export' in script
+    assert '"$PYTHON" "$BRIDGE_PATH" close-window' in script
+    assert "expectedChromeProcessIds" in script
+    assert "FAILED_RUN_CHROME_GRACE_SECONDS=300" in script
+    assert "Dedicated Chrome will close within five minutes" in script
+    assert "report_failure_response" in script
     assert "RUN_STATE_PATH" in script
     assert 'write_run_state running "Scheduled export started."' in script
     assert "WA_COLLECTOR_NATIVE_RESOURCE_DIR" in script
     assert "WA_COLLECTOR_REPO_ROOT" in script
     assert "restoredLastGood" in script
     assert str(payload_path) in script
+
+
+def _write_schedule_bridge_stub(path: Path) -> None:
+    path.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+command = sys.argv[1]
+payload = json.load(sys.stdin)
+log_path = Path(os.environ["SCHEDULE_BRIDGE_TEST_LOG"])
+if command == "ensure-window":
+    print(json.dumps({"ok": True, "window": {"chromeProcessIds": [20518]}}))
+elif command == "run-export" and os.environ.get("SCHEDULE_BRIDGE_TEST_FAIL") == "1":
+    print(json.dumps({"ok": False, "error": "simulated collection failure"}))
+    raise SystemExit(1)
+elif command == "run-export":
+    print(json.dumps({"ok": True, "threadCount": 1, "export": {"threadCount": 1}}))
+elif command == "close-window":
+    with log_path.open("a") as handle:
+        handle.write(json.dumps({"command": command, "payload": payload}) + "\\n")
+    print(json.dumps({"ok": True, "window": {"closed": True}}))
+else:
+    raise SystemExit(f"unexpected command: {command}")
+"""
+    )
+
+
+def test_native_schedule_closes_captured_chrome_immediately_after_success(tmp_path: Path) -> None:
+    bridge_path = tmp_path / "native_bridge.py"
+    payload_path = tmp_path / "payload.json"
+    run_state_path = tmp_path / "run-state.json"
+    log_path = tmp_path / "bridge.log"
+    script_path = tmp_path / "scheduled-export.sh"
+    _write_schedule_bridge_stub(bridge_path)
+    payload_path.write_text(json.dumps({"profileDir": "/tmp/collector-profile", "debugPort": 19220}))
+    script_path.write_text(
+        build_native_schedule_script(
+            bridge_path=bridge_path,
+            payload_path=payload_path,
+            python_executable=sys.executable,
+            run_state_path=run_state_path,
+            resource_dir=tmp_path,
+            failed_run_chrome_grace_seconds=0,
+        )
+    )
+
+    result = subprocess.run(
+        ["/bin/sh", str(script_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "SCHEDULE_BRIDGE_TEST_LOG": str(log_path)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    close_event = json.loads(log_path.read_text().strip())
+    assert close_event["payload"]["expectedChromeProcessIds"] == [20518]
+    assert json.loads(run_state_path.read_text())["status"] == "succeeded"
+
+
+def test_native_schedule_logs_failure_then_closes_captured_chrome_after_grace(tmp_path: Path) -> None:
+    bridge_path = tmp_path / "native_bridge.py"
+    payload_path = tmp_path / "payload.json"
+    run_state_path = tmp_path / "run-state.json"
+    log_path = tmp_path / "bridge.log"
+    script_path = tmp_path / "scheduled-export.sh"
+    _write_schedule_bridge_stub(bridge_path)
+    payload_path.write_text(json.dumps({"profileDir": "/tmp/collector-profile", "debugPort": 19220}))
+    script_path.write_text(
+        build_native_schedule_script(
+            bridge_path=bridge_path,
+            payload_path=payload_path,
+            python_executable=sys.executable,
+            run_state_path=run_state_path,
+            resource_dir=tmp_path,
+            failed_run_chrome_grace_seconds=0,
+        )
+    )
+
+    result = subprocess.run(
+        ["/bin/sh", str(script_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "SCHEDULE_BRIDGE_TEST_LOG": str(log_path),
+            "SCHEDULE_BRIDGE_TEST_FAIL": "1",
+        },
+    )
+
+    assert result.returncode == 1
+    assert "simulated collection failure" in result.stderr
+    close_event = json.loads(log_path.read_text().strip())
+    assert close_event["payload"]["expectedChromeProcessIds"] == [20518]
+    run_state = json.loads(run_state_path.read_text())
+    assert run_state["status"] == "failed"
+    assert "close within five minutes" in run_state["message"]
 
 
 def test_schedule_status_payload_is_user_readable(tmp_path: Path) -> None:

@@ -3,6 +3,8 @@ import Foundation
 
 @MainActor
 final class CollectorStore: ObservableObject {
+    private static let scheduleRunnerImplementationVersion = 1
+
     @Published var configuration: CollectorConfiguration = .defaults
     @Published var draftConfiguration: CollectorConfiguration = .defaults
     @Published var exportSummary: ExportSummary = .empty
@@ -25,6 +27,7 @@ final class CollectorStore: ObservableObject {
     private let bridge = CollectorBridge()
     private let defaults = UserDefaults.standard
     private var schedulePollingTask: Task<Void, Never>?
+    private var isRefreshingScheduledRunner = false
 
     var isBusy: Bool { busyState != .idle }
 
@@ -84,6 +87,7 @@ final class CollectorStore: ObservableObject {
     func bootstrap() async {
         startScheduleStatusPolling()
         await refreshStatus(applySchedulePayloadIfNeeded: true)
+        await refreshScheduledRunnerIfNeeded()
         loadExportPreview()
         refreshLegacyAppCandidate()
         refreshLaunchAtLoginStatus()
@@ -107,6 +111,7 @@ final class CollectorStore: ObservableObject {
             return false
         }
         apply(response)
+        markScheduledRunnerCurrent()
         return true
     }
 
@@ -228,6 +233,7 @@ final class CollectorStore: ObservableObject {
         guard await saveDraftChanges(updateConfiguredSchedule: false) else { return }
         guard let response = await perform(.scheduleInstall, busy: .scheduling, intervalMinutes: scheduleIntervalMinutes) else { return }
         apply(response)
+        markScheduledRunnerCurrent()
     }
 
     func removeSchedule() async {
@@ -248,10 +254,29 @@ final class CollectorStore: ObservableObject {
                 if wasRunning && schedule.isCurrentRunActive == false {
                     loadExportPreview()
                 }
+                await refreshScheduledRunnerIfNeeded()
             }
         } catch {
             // Quiet polling should never interrupt the user's current task.
         }
+    }
+
+    private func refreshScheduledRunnerIfNeeded() async {
+        guard isRefreshingScheduledRunner == false else { return }
+        guard let schedule, schedule.enabled == true else { return }
+        guard schedule.isCurrentRunActive == false else { return }
+        let installedVersion = defaults.integer(forKey: DefaultsKey.scheduleRunnerImplementationVersion.rawValue)
+        let needsRefresh = schedule.isLegacyWebSchedule || installedVersion < Self.scheduleRunnerImplementationVersion
+        guard needsRefresh else { return }
+        isRefreshingScheduledRunner = true
+        defer { isRefreshingScheduledRunner = false }
+        guard let response = await perform(.scheduleInstall, busy: .scheduling, intervalMinutes: scheduleIntervalMinutes) else { return }
+        apply(response)
+        markScheduledRunnerCurrent()
+    }
+
+    private func markScheduledRunnerCurrent() {
+        defaults.set(Self.scheduleRunnerImplementationVersion, forKey: DefaultsKey.scheduleRunnerImplementationVersion.rawValue)
     }
 
     func loadExportPreview() {
@@ -637,4 +662,5 @@ private enum DefaultsKey: String {
     case targetUrl = "targetUrl"
     case availableLabels = "availableLabels"
     case scheduleIntervalMinutes = "scheduleIntervalMinutes"
+    case scheduleRunnerImplementationVersion = "scheduleRunnerImplementationVersion"
 }

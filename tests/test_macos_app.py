@@ -223,7 +223,8 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     assert "$store.draftConfiguration.profileDir" in dashboard_source
     assert "$store.draftConfiguration.outputPath" in dashboard_source
     assert "SaveChangesBar()" in dashboard_source
-    assert "After a successful export, WhatsApp Collector closes only its dedicated Chrome profile" in dashboard_source
+    assert "If a scheduled export fails, that process closes after a five-minute grace period" in dashboard_source
+    assert "Other Chrome profiles and windows are not targeted" in dashboard_source
     assert "Label rules are optional" in labels_source
     assert "Optional. Most users can leave labels alone" in labels_source
     assert "store.draftConfiguration.allowLabels" in labels_source
@@ -261,7 +262,7 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     assert "Older App Cleanup" in help_source
     assert "Optional Label Rules" in help_source
     assert "Label rules are optional" in help_source
-    assert "After a successful export, the app closes only its dedicated Chrome profile" in help_source
+    assert "A failed scheduled export gets a five-minute grace period" in help_source
     assert "localhost web UI" not in help_source
     assert "Native schedules call the bundled bridge" not in help_source
     assert "whatsapp-collector.pyz" in migration_source
@@ -279,5 +280,11 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     assert "Discard Changes" in store_source
     assert "Save Changes" in store_source
     bridge_source = (project / "native-macos" / "Support" / "native_bridge.py").read_text()
-    assert "terminate_profile_processes(cfg[\"profile_dir\"]" in bridge_source
-    assert "\"closedAfterExport\": True" in bridge_source
+    assert "terminate_profile_processes(" in bridge_source
+    assert 'debug_port=cfg["debug_port"]' in bridge_source
+    assert 'if command == "close-window"' in bridge_source
+    assert "refreshScheduledRunnerIfNeeded()" in store_source
+    assert "scheduleRunnerImplementationVersion" in store_source
+    assert "guard schedule.isCurrentRunActive == false" in store_source
+    assert "schedule.isLegacyWebSchedule || installedVersion" in store_source
+    assert '"closedAfterExport": not remaining_pids' in bridge_source

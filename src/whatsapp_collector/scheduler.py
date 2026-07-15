@@ -23,6 +23,7 @@ SCHEDULE_PLIST_PATH = LAUNCH_AGENTS_DIR / f"{LAUNCH_AGENT_LABEL}.plist"
 SCHEDULE_STDOUT_PATH = LOG_DIR / "scheduled-export.out.log"
 SCHEDULE_STDERR_PATH = LOG_DIR / "scheduled-export.err.log"
 DEFAULT_INTERVAL_MINUTES = 15
+DEFAULT_FAILED_RUN_CHROME_GRACE_SECONDS = 5 * 60
 
 
 @dataclass(frozen=True)
@@ -223,6 +224,7 @@ def build_native_schedule_script(
     run_state_path: Path = SCHEDULE_RUN_STATE_PATH,
     resource_dir: Path | None = None,
     repo_root: Path | None = None,
+    failed_run_chrome_grace_seconds: int = DEFAULT_FAILED_RUN_CHROME_GRACE_SECONDS,
 ) -> str:
     resource_dir = resource_dir or bridge_path.parent
     repo_root_export = ""
@@ -235,6 +237,7 @@ PYTHON={shlex.quote(str(python_executable))}
 BRIDGE_PATH={shlex.quote(str(bridge_path))}
 PAYLOAD_PATH={shlex.quote(str(payload_path))}
 RUN_STATE_PATH={shlex.quote(str(run_state_path))}
+FAILED_RUN_CHROME_GRACE_SECONDS={max(0, int(failed_run_chrome_grace_seconds))}
 WA_COLLECTOR_NATIVE_RESOURCE_DIR={shlex.quote(str(resource_dir))}
 export WA_COLLECTOR_NATIVE_RESOURCE_DIR
 PYTHONDONTWRITEBYTECODE=1
@@ -248,21 +251,59 @@ export_completed=0
 
 ensure_response="$(/usr/bin/mktemp -t whatsapp-collector-native-ensure)"
 tmp_response="$(/usr/bin/mktemp -t whatsapp-collector-native-export)"
+cleanup_payload="$(/usr/bin/mktemp -t whatsapp-collector-native-cleanup)"
+/bin/cp "$PAYLOAD_PATH" "$cleanup_payload"
 cleanup() {{
-  /bin/rm -f "$ensure_response" "$tmp_response"
+  /bin/rm -f "$ensure_response" "$tmp_response" "$cleanup_payload"
+}}
+close_collector_chrome() {{
+  "$PYTHON" "$BRIDGE_PATH" close-window < "$cleanup_payload" >/dev/null 2>&1 || true
+}}
+report_failure_response() {{
+  if [ -s "$tmp_response" ]; then
+    /bin/cat "$tmp_response" >&2
+  elif [ -s "$ensure_response" ]; then
+    /bin/cat "$ensure_response" >&2
+  fi
 }}
 finish() {{
   exit_code="$?"
+  trap - EXIT
   if [ "$exit_code" -eq 0 ] && [ "$export_completed" -eq 1 ]; then
+    close_collector_chrome
     write_run_state succeeded "Scheduled export completed." || true
   elif [ "$exit_code" -ne 0 ]; then
-    write_run_state failed "Scheduled export failed with exit $exit_code." || true
+    report_failure_response
+    write_run_state failed "Scheduled export failed with exit $exit_code. Dedicated Chrome will close within five minutes." || true
+    if [ "$FAILED_RUN_CHROME_GRACE_SECONDS" -gt 0 ]; then
+      /bin/sleep "$FAILED_RUN_CHROME_GRACE_SECONDS"
+    fi
+    close_collector_chrome
+  else
+    close_collector_chrome
   fi
   cleanup
+  exit "$exit_code"
 }}
 trap finish EXIT
 
 "$PYTHON" "$BRIDGE_PATH" ensure-window < "$PAYLOAD_PATH" > "$ensure_response"
+/usr/bin/python3 - "$PAYLOAD_PATH" "$ensure_response" "$cleanup_payload" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payload_path = Path(sys.argv[1])
+response_path = Path(sys.argv[2])
+cleanup_path = Path(sys.argv[3])
+payload = json.loads(payload_path.read_text())
+response = json.loads(response_path.read_text())
+window = response.get("window") or {{}}
+process_ids = window.get("chromeProcessIds") or []
+if process_ids:
+    payload["expectedChromeProcessIds"] = [int(pid) for pid in process_ids if int(pid) > 0]
+cleanup_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\\n")
+PY
 "$PYTHON" "$BRIDGE_PATH" run-export < "$PAYLOAD_PATH" > "$tmp_response"
 /bin/cat "$tmp_response"
 
