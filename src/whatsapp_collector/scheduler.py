@@ -174,43 +174,20 @@ post_json "$WINDOW_ENSURE_URL" "$ensure_response"
 post_json "$EXPORT_URL" "$tmp_response"
 /bin/cat "$tmp_response"
 
-/usr/bin/python3 - "$tmp_response" "$PAYLOAD_PATH" <<'PY'
+/usr/bin/python3 - "$tmp_response" <<'PY'
 import json
-import shutil
 import sys
 from pathlib import Path
 
 response_path = Path(sys.argv[1])
-payload_path = Path(sys.argv[2])
 response = json.loads(response_path.read_text())
-payload = json.loads(payload_path.read_text())
+if response.get("ok") is not True:
+    raise SystemExit("WhatsApp export endpoint did not report success")
 
 export_summary = response.get("export") or {{}}
 count = int(response.get("threadCount") or export_summary.get("threadCount") or 0)
-if count > 0:
-    raise SystemExit(0)
-
-export_path_raw = export_summary.get("path") or payload.get("outputPath")
-if not export_path_raw:
-    raise SystemExit("WhatsApp export returned zero threads and no output path was available for last-good restore")
-
-export_path = Path(str(export_path_raw)).expanduser()
-backup_dir = export_path.parent / "backup"
-latest_good = None
-for candidate in sorted(backup_dir.glob(f"{{export_path.stem}}.*{{export_path.suffix}}"), reverse=True):
-    try:
-        data = json.loads(candidate.read_text())
-    except Exception:
-        continue
-    threads = data.get("threads")
-    if isinstance(threads, list) and len(threads) > 0:
-        latest_good = candidate
-        break
-
-if latest_good:
-    shutil.copy2(latest_good, export_path)
-    print(f"\\nrestoredLastGood={{latest_good}}", file=sys.stderr)
-raise SystemExit("WhatsApp export returned zero threads; restored last good export when available and refusing to report success")
+if count <= 0:
+    raise SystemExit("WhatsApp export endpoint reported success with zero threads")
 PY
 export_completed=1
 """
@@ -289,43 +266,20 @@ trap finish EXIT
 "$PYTHON" "$BRIDGE_PATH" run-export < "$PAYLOAD_PATH" > "$tmp_response"
 /bin/cat "$tmp_response"
 
-/usr/bin/python3 - "$tmp_response" "$PAYLOAD_PATH" <<'PY'
+/usr/bin/python3 - "$tmp_response" <<'PY'
 import json
-import shutil
 import sys
 from pathlib import Path
 
 response_path = Path(sys.argv[1])
-payload_path = Path(sys.argv[2])
 response = json.loads(response_path.read_text())
-payload = json.loads(payload_path.read_text())
+if response.get("ok") is not True:
+    raise SystemExit("WhatsApp native export bridge did not report success")
 
 export_summary = response.get("export") or {{}}
 count = int(response.get("threadCount") or export_summary.get("threadCount") or 0)
-if count > 0:
-    raise SystemExit(0)
-
-export_path_raw = export_summary.get("path") or payload.get("outputPath")
-if not export_path_raw:
-    raise SystemExit("WhatsApp export returned zero threads and no output path was available for last-good restore")
-
-export_path = Path(str(export_path_raw)).expanduser()
-backup_dir = export_path.parent / "backup"
-latest_good = None
-for candidate in sorted(backup_dir.glob(f"{{export_path.stem}}.*{{export_path.suffix}}"), reverse=True):
-    try:
-        data = json.loads(candidate.read_text())
-    except Exception:
-        continue
-    threads = data.get("threads")
-    if isinstance(threads, list) and len(threads) > 0:
-        latest_good = candidate
-        break
-
-if latest_good:
-    shutil.copy2(latest_good, export_path)
-    print(f"\\nrestoredLastGood={{latest_good}}", file=sys.stderr)
-raise SystemExit("WhatsApp export returned zero threads; restored last good export when available and refusing to report success")
+if count <= 0:
+    raise SystemExit("WhatsApp native export bridge reported success with zero threads")
 PY
 export_completed=1
 """

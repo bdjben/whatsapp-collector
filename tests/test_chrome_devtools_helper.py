@@ -87,6 +87,15 @@ def test_scheduled_export_retries_dedicated_profile_before_active_fallback() -> 
     assert script_source.index("run_dedicated_attempt") < script_source.index("active-session-fallback")
 
 
+def test_scheduled_export_uses_cli_atomic_commit_for_stable_output() -> None:
+    script_source = SCHEDULED_SCRIPT.read_text()
+
+    assert 'WA_COLLECTOR_OUTPUT' in script_source
+    assert '--output "$OUTPUT_PATH"' in script_source
+    assert "backup_and_replace_output" not in script_source
+    assert "DEDICATED_CANDIDATE" not in script_source
+
+
 def test_scheduled_export_preserves_current_without_degraded_alert_mode() -> None:
     script_source = SCHEDULED_SCRIPT.read_text()
     hourly_source = HOURLY_SCRIPT.read_text()

@@ -17,6 +17,7 @@ from whatsapp_collector.collector import (
     WhatsAppCollector,
 )
 from whatsapp_collector.export_quality import ExportQualityError, validate_export_quality
+from whatsapp_collector.export_safety import protected_export, write_atomic_json
 from whatsapp_collector.launcher import (
     DEFAULT_DEBUG_PORT,
     DEFAULT_DISPLAY_NAME,
@@ -66,21 +67,7 @@ def _write_snapshot(payload: dict, storage_dir: Path, *, folder: str = "snapshot
 
 
 def _write_atomic_json(payload: dict, output_path: Path) -> Path:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    if output_path.exists():
-        backup_dir = output_path.parent / "backup"
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        backup_timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        backup_path = backup_dir / f"{output_path.stem}.{backup_timestamp}{output_path.suffix}"
-        suffix = 1
-        while backup_path.exists():
-            backup_path = backup_dir / f"{output_path.stem}.{backup_timestamp}-{suffix}{output_path.suffix}"
-            suffix += 1
-        backup_path.write_text(output_path.read_text())
-    temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
-    temp_path.replace(output_path)
-    return output_path
+    return write_atomic_json(payload, output_path)
 
 
 def _read_export_summary(output_path: Path) -> dict:
@@ -295,21 +282,24 @@ def main(argv: Sequence[str] | None = None, *, collector: WhatsAppCollector | No
             payload["written_to"] = str(_write_snapshot(payload, storage_dir, folder="events"))
     elif args.command == "dashboard-export":
         output_path = Path(args.output).expanduser()
-        payload = collector.collect_dashboard_export(
-            account_label=args.account_label,
-            allow_labels=args.allow_label,
-            exclude_labels=excluded_labels,
-            max_messages=max_messages,
-            max_all_chats=max_all_chats,
-            include_groups=args.include_groups,
-            attachments_dir=output_path.parent / "Attachments",
-        )
         try:
-            validate_export_quality(payload)
+            with protected_export(output_path) as current_export:
+                payload = collector.collect_dashboard_export(
+                    account_label=args.account_label,
+                    allow_labels=args.allow_label,
+                    exclude_labels=excluded_labels,
+                    max_messages=max_messages,
+                    max_all_chats=max_all_chats,
+                    include_groups=args.include_groups,
+                    attachments_dir=output_path.parent / "Attachments",
+                )
+                validate_export_quality(payload)
+                payload["written_to"] = str(
+                    write_atomic_json(payload, output_path, known_current=current_export)
+                )
         except ExportQualityError as exc:
             print(json.dumps({"ok": False, "error": str(exc), "exportQuality": exc.report}, indent=2, ensure_ascii=False))
             return 1
-        payload["written_to"] = str(_write_atomic_json(payload, output_path))
     elif args.command == "ensure-window":
         payload = ensure_dedicated_whatsapp_window(
             display_name=args.display_name,

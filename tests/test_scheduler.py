@@ -39,7 +39,8 @@ def test_schedule_script_opens_menu_bar_app_and_posts_export_payload(tmp_path: P
     assert 'write_run_state running "Scheduled export started."' in script
     assert 'write_run_state succeeded "Scheduled export completed."' in script
     assert 'write_run_state failed "Scheduled export failed with exit $exit_code."' in script
-    assert "restoredLastGood" in script
+    assert "restoredLastGood" not in script
+    assert "export endpoint reported success with zero threads" in script
     assert str(payload_path) in script
     assert "/Users/assistant/Documents/WhatsApp Collector/Exports/whatsapp-dashboard-export.json" not in script
     assert "crontab" not in script
@@ -94,7 +95,8 @@ def test_native_schedule_script_runs_bridge_without_localhost(tmp_path: Path) ->
     assert 'write_run_state running "Scheduled export started."' in script
     assert "WA_COLLECTOR_NATIVE_RESOURCE_DIR" in script
     assert "WA_COLLECTOR_REPO_ROOT" in script
-    assert "restoredLastGood" in script
+    assert "restoredLastGood" not in script
+    assert "native export bridge reported success with zero threads" in script
     assert str(payload_path) in script
 
 

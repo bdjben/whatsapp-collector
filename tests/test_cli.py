@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from whatsapp_collector.cli import main
@@ -268,7 +269,9 @@ def test_cli_dashboard_export_writes_atomic_contract_file(tmp_path: Path) -> Non
 
 def test_cli_dashboard_export_backs_up_existing_output_before_replacing_it(tmp_path: Path) -> None:
     output = tmp_path / "whatsapp-dashboard-export.json"
-    output.write_text('{"source":"whatsapp","threads":[{"threadKey":"old-thread"}]}\n')
+    previous_export = StubCollector().collect_dashboard_export()
+    previous_export["threads"][0]["threadKey"] = "old-thread"
+    output.write_text(json.dumps(previous_export) + "\n")
 
     exit_code = main(
         [

@@ -406,3 +406,137 @@ def test_native_run_export_rejects_degraded_export_and_restores_last_good(tmp_pa
     assert calls["count"] == 3
     assert exc_info.value.report["restoredLastGood"] == str(last_good)
     assert json.loads(output.read_text())["threads"][0]["chatTitle"] == "Good Thread"
+
+
+def test_native_quality_failure_does_not_roll_valid_current_back_to_older_backup(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bridge = _load_native_bridge()
+    output = tmp_path / "export.json"
+    current = _good_export()
+    current["threads"][0]["chatTitle"] = "Current Newest"
+    output.write_text(json.dumps(current))
+    original_bytes = output.read_bytes()
+    original_mtime = output.stat().st_mtime_ns
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    older = _good_export()
+    older["threads"][0]["chatTitle"] = "Older Backup"
+    (backup / "export.20260624-200000.json").write_text(json.dumps(older))
+
+    class FakeCollector:
+        def collect_dashboard_export(self, **kwargs):
+            return _degraded_export()
+
+    class FakeDevToolsBridge:
+        def __init__(self, **kwargs):
+            pass
+
+        def wait_until_whatsapp_ready(self, **kwargs):
+            return {"ready": True}
+
+    monkeypatch.setattr(bridge, "ChromeDevToolsBridge", FakeDevToolsBridge)
+    monkeypatch.setattr(bridge, "_collector", lambda cfg: FakeCollector())
+    monkeypatch.setattr(
+        bridge,
+        "_ensure_window",
+        lambda cfg: {
+            "ok": True,
+            "window": {
+                "profileDir": str(cfg["profile_dir"]),
+                "debugPort": cfg["debug_port"],
+                "chromeProcessIds": [20518],
+                "launched": False,
+            },
+        },
+    )
+    monkeypatch.setattr(bridge.time, "sleep", lambda seconds: None)
+
+    with pytest.raises(bridge.ExportQualityError) as exc_info:
+        bridge.dispatch("run-export", {"outputPath": str(output), "profileDir": str(tmp_path / "profile")})
+
+    assert output.read_bytes() == original_bytes
+    assert output.stat().st_mtime_ns == original_mtime
+    assert exc_info.value.report["exportRecovery"]["status"] == "retained-current"
+    assert "restoredLastGood" not in exc_info.value.report
+    assert json.loads(output.read_text())["threads"][0]["chatTitle"] == "Current Newest"
+
+
+def test_native_readiness_failure_retains_valid_current_export(tmp_path: Path, monkeypatch) -> None:
+    bridge = _load_native_bridge()
+    output = tmp_path / "export.json"
+    output.write_text(json.dumps(_good_export()))
+    original_bytes = output.read_bytes()
+
+    class FakeDevToolsBridge:
+        def __init__(self, **kwargs):
+            pass
+
+        def wait_until_whatsapp_ready(self, **kwargs):
+            raise RuntimeError("simulated readiness timeout")
+
+    monkeypatch.setattr(bridge, "ChromeDevToolsBridge", FakeDevToolsBridge)
+    monkeypatch.setattr(bridge, "chrome_profile_process_ids", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        bridge,
+        "_ensure_window",
+        lambda cfg: {
+            "ok": True,
+            "window": {
+                "profileDir": str(cfg["profile_dir"]),
+                "debugPort": cfg["debug_port"],
+                "chromeProcessIds": [20518],
+                "launched": True,
+            },
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="simulated readiness timeout") as exc_info:
+        bridge.dispatch("run-export", {"outputPath": str(output), "profileDir": str(tmp_path / "profile")})
+
+    assert output.read_bytes() == original_bytes
+    assert exc_info.value.export_recovery["status"] == "retained-current"
+    assert not (tmp_path / "backup").exists()
+
+
+def test_native_collection_failure_restores_backup_when_current_is_missing(tmp_path: Path, monkeypatch) -> None:
+    bridge = _load_native_bridge()
+    output = tmp_path / "export.json"
+    last_good = tmp_path / "backup" / "export.20260624-200000.json"
+    last_good.parent.mkdir()
+    last_good.write_text(json.dumps(_good_export()))
+
+    class FakeCollector:
+        def collect_dashboard_export(self, **kwargs):
+            raise RuntimeError("simulated collection failure")
+
+    class FakeDevToolsBridge:
+        def __init__(self, **kwargs):
+            pass
+
+        def wait_until_whatsapp_ready(self, **kwargs):
+            return {"ready": True}
+
+    monkeypatch.setattr(bridge, "ChromeDevToolsBridge", FakeDevToolsBridge)
+    monkeypatch.setattr(bridge, "_collector", lambda cfg: FakeCollector())
+    monkeypatch.setattr(
+        bridge,
+        "_ensure_window",
+        lambda cfg: {
+            "ok": True,
+            "window": {
+                "profileDir": str(cfg["profile_dir"]),
+                "debugPort": cfg["debug_port"],
+                "chromeProcessIds": [20518],
+                "launched": True,
+            },
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="simulated collection failure") as exc_info:
+        bridge.dispatch("run-export", {"outputPath": str(output), "profileDir": str(tmp_path / "profile")})
+
+    assert exc_info.value.export_recovery["status"] == "restored-backup"
+    assert exc_info.value.export_recovery["sourcePath"] == str(last_good)
+    assert json.loads(output.read_text())["threads"][0]["chatTitle"] == "Good Thread"

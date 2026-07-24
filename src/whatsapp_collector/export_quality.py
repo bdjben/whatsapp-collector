@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 import math
-import shutil
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -172,17 +170,11 @@ def quality_error_message(report: dict[str, Any]) -> str:
 
 
 def restore_latest_acceptable_backup(output_path: Path) -> Path | None:
-    backup_dir = output_path.parent / "backup"
-    if not backup_dir.exists():
-        return None
-    for candidate in sorted(backup_dir.glob(f"{output_path.stem}.*{output_path.suffix}"), reverse=True):
-        try:
-            payload = json.loads(candidate.read_text())
-        except Exception:
-            continue
-        if assess_export_quality(payload)["ok"]:
-            shutil.copy2(candidate, output_path)
-            return candidate
+    from whatsapp_collector.export_safety import ensure_last_good_export
+
+    recovery = ensure_last_good_export(output_path)
+    if recovery.status == "restored-backup":
+        return recovery.source_path
     return None
 
 

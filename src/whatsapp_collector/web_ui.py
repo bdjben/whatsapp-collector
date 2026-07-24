@@ -17,6 +17,7 @@ from whatsapp_collector.collector import (
     WhatsAppCollector,
 )
 from whatsapp_collector.export_quality import ExportQualityError, validate_export_quality
+from whatsapp_collector.export_safety import ExportFileAssessment, protected_export, write_atomic_json
 from whatsapp_collector.launcher import (
     DEFAULT_DEBUG_PORT,
     DEFAULT_MARKER_TITLE,
@@ -430,26 +431,27 @@ def create_app_handler(
                     self._send_json({"ok": True, "window": result})
                     return
                 if self.path == "/api/export/run":
-                    export = collect_export(
-                        account_label=effective.account_label,
-                        max_messages=effective.max_messages,
-                        max_all_chats=effective.max_all_chats,
-                        allow_labels=effective.allow_labels,
-                        exclude_labels=effective.exclude_labels,
-                        include_groups=effective.include_groups,
-                        output_path=effective.output_path,
-                        debug_port=effective.debug_port,
-                        marker_title=effective.marker_title,
-                        marker_url_substring=effective.marker_url_substring,
-                        target_url=effective.target_url,
-                    )
-                    validate_export_quality(export)
-                    _write_atomic_json(export, effective.output_path)
-                    thread_count = len(export.get("threads", [])) if isinstance(export.get("threads"), list) else 0
-                    summary = _read_export_summary(effective.output_path, parse_json=False)
-                    summary["threadCount"] = thread_count
-                    summary["exportedAt"] = export.get("exportedAt")
-                    self._send_json({"ok": True, "export": summary, "threadCount": thread_count})
+                    with protected_export(effective.output_path) as current_export:
+                        export = collect_export(
+                            account_label=effective.account_label,
+                            max_messages=effective.max_messages,
+                            max_all_chats=effective.max_all_chats,
+                            allow_labels=effective.allow_labels,
+                            exclude_labels=effective.exclude_labels,
+                            include_groups=effective.include_groups,
+                            output_path=effective.output_path,
+                            debug_port=effective.debug_port,
+                            marker_title=effective.marker_title,
+                            marker_url_substring=effective.marker_url_substring,
+                            target_url=effective.target_url,
+                        )
+                        validate_export_quality(export)
+                        _write_atomic_json(export, effective.output_path, known_current=current_export)
+                        thread_count = len(export.get("threads", [])) if isinstance(export.get("threads"), list) else 0
+                        summary = _read_export_summary(effective.output_path, parse_json=False)
+                        summary["threadCount"] = thread_count
+                        summary["exportedAt"] = export.get("exportedAt")
+                        self._send_json({"ok": True, "export": summary, "threadCount": thread_count})
                     return
                 if self.path == "/api/labels/prepopulate":
                     labels = _normalize_label_list(
@@ -482,12 +484,25 @@ def create_app_handler(
                     return
                 self._send_json({"ok": False, "error": "not-found"}, status=404)
             except ExportQualityError as exc:
+                response = {
+                    "ok": False,
+                    "error": str(exc),
+                    "errorType": type(exc).__name__,
+                    "exportQuality": exc.report,
+                }
+                export_recovery = getattr(exc, "export_recovery", None)
+                if isinstance(export_recovery, dict):
+                    response["exportRecovery"] = export_recovery
                 self._send_json(
-                    {"ok": False, "error": str(exc), "errorType": type(exc).__name__, "exportQuality": exc.report},
+                    response,
                     status=409,
                 )
             except Exception as exc:  # pragma: no cover - defensive API boundary
-                self._send_json({"ok": False, "error": str(exc)}, status=500)
+                response = {"ok": False, "error": str(exc)}
+                export_recovery = getattr(exc, "export_recovery", None)
+                if isinstance(export_recovery, dict):
+                    response["exportRecovery"] = export_recovery
+                self._send_json(response, status=500)
 
         def log_message(self, fmt: str, *args: Any) -> None:
             return
@@ -630,22 +645,13 @@ def _read_export_summary(output_path: Path, *, parse_json: bool = True) -> dict[
     return summary
 
 
-def _write_atomic_json(payload: dict[str, Any], output_path: Path) -> Path:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    if output_path.exists():
-        backup_dir = output_path.parent / "backup"
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        backup_timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        backup_path = backup_dir / f"{output_path.stem}.{backup_timestamp}{output_path.suffix}"
-        suffix = 1
-        while backup_path.exists():
-            backup_path = backup_dir / f"{output_path.stem}.{backup_timestamp}-{suffix}{output_path.suffix}"
-            suffix += 1
-        backup_path.write_text(output_path.read_text())
-    temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
-    temp_path.replace(output_path)
-    return output_path
+def _write_atomic_json(
+    payload: dict[str, Any],
+    output_path: Path,
+    *,
+    known_current: ExportFileAssessment | None = None,
+) -> Path:
+    return write_atomic_json(payload, output_path, known_current=known_current)
 
 
 def _now() -> str:

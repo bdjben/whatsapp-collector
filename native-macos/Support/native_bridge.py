@@ -39,9 +39,9 @@ from whatsapp_collector.attachment_store import DEFAULT_MAX_ATTACHMENT_TOTAL_BYT
 from whatsapp_collector.devtools_bridge import ChromeDevToolsBridge  # noqa: E402
 from whatsapp_collector.export_quality import (  # noqa: E402
     ExportQualityError,
-    restore_latest_acceptable_backup,
     validate_export_quality,
 )
+from whatsapp_collector.export_safety import protected_export, write_atomic_json  # noqa: E402
 from whatsapp_collector.launcher import (  # noqa: E402
     DEFAULT_DEBUG_PORT,
     DEFAULT_MARKER_TITLE,
@@ -58,7 +58,6 @@ from whatsapp_collector.web_ui import (  # noqa: E402
     _ai_harness_prompt,
     _read_export_summary,
     _sorted_unique_labels,
-    _write_atomic_json,
     default_collect_labels,
 )
 
@@ -301,66 +300,64 @@ def _wait_for_export_readiness(
 
 
 def _run_export(cfg: dict[str, Any]) -> dict[str, Any]:
-    attempts: list[dict[str, Any]] = []
-    export: dict[str, Any] | None = None
-    window, expected_pids = _ensure_export_window(cfg)
-    window, expected_pids = _wait_for_export_readiness(cfg, window, expected_pids)
-    for attempt in range(1, 4):
-        export = _collector(cfg).collect_dashboard_export(
-            account_label=cfg["account_label"],
-            max_messages=cfg["max_messages"],
-            max_all_chats=cfg["max_all_chats"],
-            allow_labels=cfg["allow_labels"],
-            exclude_labels=cfg["exclude_labels"],
-            include_groups=cfg["include_groups"],
-            attachments_dir=cfg["output_path"].parent / "Attachments",
-            download_attachments=cfg["download_attachments"],
-            max_total_attachment_bytes=cfg["attachment_storage_limit_bytes"],
+    with protected_export(cfg["output_path"]) as current_export:
+        attempts: list[dict[str, Any]] = []
+        export: dict[str, Any] | None = None
+        window, expected_pids = _ensure_export_window(cfg)
+        window, expected_pids = _wait_for_export_readiness(cfg, window, expected_pids)
+        for attempt in range(1, 4):
+            export = _collector(cfg).collect_dashboard_export(
+                account_label=cfg["account_label"],
+                max_messages=cfg["max_messages"],
+                max_all_chats=cfg["max_all_chats"],
+                allow_labels=cfg["allow_labels"],
+                exclude_labels=cfg["exclude_labels"],
+                include_groups=cfg["include_groups"],
+                attachments_dir=cfg["output_path"].parent / "Attachments",
+                download_attachments=cfg["download_attachments"],
+                max_total_attachment_bytes=cfg["attachment_storage_limit_bytes"],
+            )
+            try:
+                validate_export_quality(export)
+                break
+            except ExportQualityError as exc:
+                attempts.append(exc.report)
+                if attempt < 3:
+                    time.sleep(4 * attempt)
+                    continue
+                report = dict(exc.report)
+                report["attempts"] = attempts
+                raise ExportQualityError(report) from exc
+        if export is None:
+            raise RuntimeError("Collector did not return an export payload")
+        write_atomic_json(export, cfg["output_path"], known_current=current_export)
+        summary = _read_export_summary(cfg["output_path"], parse_json=False)
+        thread_count = len(export.get("threads", [])) if isinstance(export.get("threads"), list) else 0
+        summary["threadCount"] = thread_count
+        summary["exportedAt"] = export.get("exportedAt")
+        termination = terminate_profile_processes(
+            cfg["profile_dir"],
+            debug_port=cfg["debug_port"],
+            expected_pids=expected_pids,
+            wait_attempts=8,
+            delay_seconds=0.2,
         )
-        try:
-            validate_export_quality(export)
-            break
-        except ExportQualityError as exc:
-            attempts.append(exc.report)
-            if attempt < 3:
-                time.sleep(4 * attempt)
-                continue
-            restored = restore_latest_acceptable_backup(cfg["output_path"])
-            report = dict(exc.report)
-            report["attempts"] = attempts
-            if restored:
-                report["restoredLastGood"] = str(restored)
-            raise ExportQualityError(report) from exc
-    if export is None:
-        raise RuntimeError("Collector did not return an export payload")
-    _write_atomic_json(export, cfg["output_path"])
-    summary = _read_export_summary(cfg["output_path"], parse_json=True)
-    thread_count = len(export.get("threads", [])) if isinstance(export.get("threads"), list) else 0
-    summary["threadCount"] = thread_count
-    summary["exportedAt"] = export.get("exportedAt")
-    termination = terminate_profile_processes(
-        cfg["profile_dir"],
-        debug_port=cfg["debug_port"],
-        expected_pids=expected_pids,
-        wait_attempts=8,
-        delay_seconds=0.2,
-    )
-    remaining_pids = termination.get("remainingProcessIds", [])
-    return {
-        "ok": True,
-        "command": "run-export",
-        "checkedAt": _now(),
-        "export": summary,
-        "threadCount": thread_count,
-        "window": {
-            "profileDir": str(cfg["profile_dir"]),
-            "debugPort": cfg["debug_port"],
-            "chromeProcessIds": sorted(expected_pids),
-            "launchedForExport": window.get("launched") is True,
-            "closedAfterExport": not remaining_pids,
-            "termination": termination,
-        },
-    }
+        remaining_pids = termination.get("remainingProcessIds", [])
+        return {
+            "ok": True,
+            "command": "run-export",
+            "checkedAt": _now(),
+            "export": summary,
+            "threadCount": thread_count,
+            "window": {
+                "profileDir": str(cfg["profile_dir"]),
+                "debugPort": cfg["debug_port"],
+                "chromeProcessIds": sorted(expected_pids),
+                "launchedForExport": window.get("launched") is True,
+                "closedAfterExport": not remaining_pids,
+                "termination": termination,
+            },
+        }
 
 
 def _close_window(cfg: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -476,6 +473,9 @@ def main(argv: list[str]) -> int:
         }
         if isinstance(exc, ExportQualityError):
             error_payload["exportQuality"] = exc.report
+        export_recovery = getattr(exc, "export_recovery", None)
+        if isinstance(export_recovery, dict):
+            error_payload["exportRecovery"] = export_recovery
         print(json.dumps(error_payload, indent=2, ensure_ascii=False))
         return 1
     print(json.dumps(result, indent=2, ensure_ascii=False))
