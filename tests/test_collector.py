@@ -43,13 +43,13 @@ class StubSession:
                     "message",
                 ]
             }
-        if "allRecords.push({ key: cursor.key, value: cursor.value })" in script and '"label"' in script:
+        if '"label"' in script:
             return [
                 {"key": "1", "value": {"id": "1", "name": "Important", "colorIndex": 1}},
                 {"key": "2", "value": {"id": "2", "name": "Follow Up", "colorIndex": 2}},
                 {"key": "3", "value": {"id": "3", "name": "Excluded Label", "colorIndex": 3}},
             ]
-        if "allRecords.push({ key: cursor.key, value: cursor.value })" in script and '"label-association"' in script:
+        if '"label-association"' in script:
             return [
                 {
                     "key": ["1", "141394635137028@lid", "jid"],
@@ -68,7 +68,7 @@ class StubSession:
                     "value": {"labelId": "3", "associationId": "999999@lid", "type": "jid"},
                 },
             ]
-        if "allRecords.push({ key: cursor.key, value: cursor.value })" in script and '"contact"' in script:
+        if '"contact"' in script:
             return [
                 {
                     "key": "141394635137028@lid",
@@ -103,9 +103,9 @@ class StubSession:
                     },
                 },
             ]
-        if "allRecords.push({ key: cursor.key, value: cursor.value })" in script and '"group-metadata"' in script:
+        if '"group-metadata"' in script:
             return []
-        if "allRecords.push({ key: cursor.key, value: cursor.value })" in script and '"chat"' in script:
+        if '"chat"' in script:
             return [
                 {
                     "key": "141394635137028@lid",
@@ -144,7 +144,7 @@ class StubSession:
                     },
                 },
             ]
-        if "allRecords.push({ key: cursor.key, value: cursor.value })" in script and '"message"' in script:
+        if '"message"' in script:
             return [
                 {
                     "key": "false_141394635137028@lid_msg3",
@@ -184,6 +184,8 @@ class StubSession:
 
 def test_navigation_js_targets_all_and_collapsed_labels_filter() -> None:
     assert 'getElementById("labels-filter")' in LABELS_BODY_JS
+    assert 'biz-tools-labels' in LABELS_BODY_JS
+    assert "'Labels','Lists'" in LABELS_BODY_JS
     assert 'CHAT_LIST_RESET' in CHAT_LIST_RESET_JS
     assert "aria-label')||'')==='Chats'" in CHAT_LIST_RESET_JS
     assert "['Close','Back']" in CHAT_LIST_RESET_JS
@@ -449,6 +451,56 @@ def test_collect_labeled_threads_enforces_allowlist_and_lookback_cap() -> None:
 
     assert [thread.jid for thread in threads] == ["141394635137028@lid"]
     assert len(threads[0].recent_messages) == 1
+
+
+def test_collect_labeled_threads_uses_keyed_metadata_and_bounded_message_queries() -> None:
+    class RecordingSession(StubSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.async_scripts: list[str] = []
+
+        def run_async_json(self, script: str, result_var: str = "__hermes_async_result"):
+            self.async_scripts.append(script)
+            return super().run_async_json(script, result_var=result_var)
+
+    session = RecordingSession()
+
+    threads = WhatsAppCollector(session=session).collect_labeled_threads()
+
+    assert len(threads) == 2
+    contact_script = next(script for script in session.async_scripts if 'const keys =' in script and '"contact"' in script)
+    message_script = next(script for script in session.async_scripts if 'messageRangeIndex' in script)
+    assert '.get(key)' in contact_script
+    assert '141394635137028@lid' in contact_script
+    assert '245530529685647@lid' in contact_script
+    assert '999999@lid' not in contact_script
+    assert 'IDBKeyRange.bound(lower, upper)' in message_script
+    assert 'source.openCursor' in message_script
+    assert 'perDirectionLimit' in message_script
+    assert 'cursorReq=os.openCursor()' not in contact_script
+    assert 'cursorReq=os.openCursor()' not in message_script
+
+
+def test_labeled_message_query_retries_a_transient_timeout(monkeypatch) -> None:
+    class FlakyMessageSession(StubSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.message_attempts = 0
+
+        def run_async_json(self, script: str, result_var: str = "__hermes_async_result"):
+            if 'messageRangeIndex' in script:
+                self.message_attempts += 1
+                if self.message_attempts == 1:
+                    raise TimeoutError("simulated cold IndexedDB timeout")
+            return super().run_async_json(script, result_var=result_var)
+
+    monkeypatch.setattr('whatsapp_collector.collector.time.sleep', lambda _seconds: None)
+    session = FlakyMessageSession()
+
+    threads = WhatsAppCollector(session=session).collect_labeled_threads()
+
+    assert len(threads) == 2
+    assert session.message_attempts == 2
 
 
 def test_recent_message_attachments_are_stable_and_saved_by_message_id(tmp_path: Path) -> None:
@@ -832,7 +884,7 @@ def test_dashboard_export_uses_opened_chat_fallback_for_labeled_visible_threads_
     class NoPlaintextMessageSession(StubSession):
         def run_async_json(self, script: str, result_var: str = "__hermes_async_result"):
             payload = super().run_async_json(script, result_var=result_var)
-            if "allRecords.push({ key: cursor.key, value: cursor.value })" in script and '"message"' in script:
+            if '"message"' in script:
                 for row in payload:
                     row["value"].pop("body", None)
                     row["value"].pop("caption", None)
@@ -2092,6 +2144,72 @@ def test_extract_message_text_ignores_inline_media_payloads() -> None:
 
     assert WhatsAppCollector._extract_message_text({"type": "image", "body": jpeg_payload}) is None
     assert WhatsAppCollector._extract_message_text({"type": "image", "body": jpeg_payload, "caption": "Real caption"}) == "Real caption"
+
+
+def test_opened_chat_falls_back_to_exact_sidebar_search_when_row_is_not_visible() -> None:
+    class SearchFallbackSession:
+        def __init__(self) -> None:
+            self.cleared = 0
+            self.searched: list[str] = []
+
+        def run_json(self, js: str):
+            if "CHAT_LIST_RESET" in js:
+                return {"ok": True}
+            if "OPENED_CHAT_RECENT_MESSAGES" in js:
+                return {
+                    "openedChatTitle": "Example Offscreen Contact",
+                    "messages": [
+                        {
+                            "id": "false_example_offscreen_latest",
+                            "t": 1783255110,
+                            "type": "chat",
+                            "from": "offscreen-contact@lid",
+                            "body": "Recent visible message",
+                        }
+                    ],
+                }
+            raise AssertionError(f"Unexpected script: {js[:100]}")
+
+        def clear_sidebar_search(self):
+            self.cleared += 1
+            return {"ok": True}
+
+        def click_point(self, expression: str):
+            raise RuntimeError("chat row is outside the current All-view list")
+
+        def open_chat_via_search(self, chat_name: str):
+            self.searched.append(chat_name)
+            return {"ok": True, "chatName": chat_name}
+
+    session = SearchFallbackSession()
+    collector = WhatsAppCollector(session=session)
+
+    messages = collector._opened_chat_recent_messages_for_chat("Example Offscreen Contact", max_messages=15)
+
+    assert session.cleared == 1
+    assert session.searched == ["Example Offscreen Contact"]
+    assert messages[0]["messageId"] == "false_example_offscreen_latest"
+    assert messages[0]["text"] == "Recent visible message"
+
+
+def test_chat_list_reset_clears_sidebar_search_even_when_reset_script_fails() -> None:
+    class ResetFailureSession:
+        def __init__(self) -> None:
+            self.cleared = 0
+
+        def run_json(self, js: str):
+            raise RuntimeError("WhatsApp changed while resetting the chat list")
+
+        def clear_sidebar_search(self):
+            self.cleared += 1
+            return {"ok": True}
+
+    session = ResetFailureSession()
+    collector = WhatsAppCollector(session=session)
+
+    collector._reset_chat_list_to_top()
+
+    assert session.cleared == 1
 
 
 def test_opened_chat_recent_messages_js_scrolls_to_load_enough_visible_history() -> None:

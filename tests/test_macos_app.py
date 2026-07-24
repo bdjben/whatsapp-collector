@@ -76,10 +76,11 @@ def test_macos_app_builder_signs_bundle_by_default(tmp_path: Path, monkeypatch: 
 
     assert app_path.name == "WhatsApp Collector.app"
     assert any(
-        call[:6] == ["codesign", "--force", "--deep", "--sign", "-", "--timestamp=none"]
+        call[:5] == ["codesign", "--force", "--sign", "-", "--timestamp=none"]
         and call[-1] == str(app_path)
         for call in calls
     )
+    assert ["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app_path)] in calls
 
 
 def test_macos_app_builder_can_use_developer_id_identity_with_hardened_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -100,7 +101,6 @@ def test_macos_app_builder_can_use_developer_id_identity_with_hardened_runtime(t
     assert [
         "codesign",
         "--force",
-        "--deep",
         "--options",
         "runtime",
         "--sign",
@@ -108,6 +108,37 @@ def test_macos_app_builder_can_use_developer_id_identity_with_hardened_runtime(t
         "--timestamp",
         str(app_path),
     ] in calls
+
+
+def test_macos_app_builder_signs_sparkle_components_inside_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    builder = _load_builder()
+    app_path = tmp_path / "WhatsApp Collector.app"
+    version_root = app_path / "Contents" / "Frameworks" / "Sparkle.framework" / "Versions" / "B"
+    (version_root / "XPCServices" / "Downloader.xpc").mkdir(parents=True)
+    (version_root / "XPCServices" / "Installer.xpc").mkdir()
+    (version_root / "Updater.app").mkdir()
+    (version_root / "Autoupdate").write_bytes(b"helper")
+    (version_root.parent / "Current").symlink_to("B")
+    identity = "Developer ID Application: Example LLC (ABCDE12345)"
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append([str(part) for part in command])
+        return object()
+
+    monkeypatch.setattr(builder.subprocess, "run", fake_run)
+
+    builder._sign_app(app_path, identity=identity)
+
+    signed_paths = [Path(call[-1]) for call in calls if call[:2] == ["codesign", "--force"]]
+    assert signed_paths == [
+        version_root / "XPCServices" / "Downloader.xpc",
+        version_root / "XPCServices" / "Installer.xpc",
+        version_root / "Updater.app",
+        version_root / "Autoupdate",
+        app_path / "Contents" / "Frameworks" / "Sparkle.framework",
+        app_path,
+    ]
 
 
 def test_macos_dmg_builder_can_sign_notarize_and_staple_final_dmg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

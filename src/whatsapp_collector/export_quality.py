@@ -28,6 +28,12 @@ def assess_export_quality(payload: dict[str, Any]) -> dict[str, Any]:
     text_unavailable_count = 0
     content_available_count = 0
     content_unavailable_count = 0
+    raw_export_warnings = payload.get("exportWarnings")
+    export_warnings = [
+        str(warning)
+        for warning in (raw_export_warnings if isinstance(raw_export_warnings, list) else [])
+        if isinstance(warning, str) and warning.strip()
+    ]
 
     for thread in thread_items:
         if not isinstance(thread, dict):
@@ -126,13 +132,55 @@ def assess_export_quality(payload: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
+    label_collection_warnings = [
+        warning for warning in export_warnings if warning.startswith("labeled-thread-export-skipped:")
+    ]
+    exclusion_filter_warnings = [
+        warning for warning in export_warnings if warning.startswith("excluded-label-filter-skipped:")
+    ]
+    labeled_message_warnings = [
+        warning for warning in export_warnings if warning.startswith("labeled-message-capture-failed:")
+    ]
+    if payload.get("allowLabels") and label_collection_warnings:
+        issues.append(
+            {
+                "code": "configured-label-collection-incomplete",
+                "severity": "error",
+                "detail": (
+                    "The export did not complete its configured Always Include label collection, so labeled chats may be missing."
+                ),
+                "warnings": label_collection_warnings[:5],
+            }
+        )
+    if payload.get("excludeLabels") and exclusion_filter_warnings:
+        issues.append(
+            {
+                "code": "configured-label-exclusion-incomplete",
+                "severity": "error",
+                "detail": (
+                    "The export did not complete its configured Never Include label filter, so excluded chats may be present."
+                ),
+                "warnings": exclusion_filter_warnings[:5],
+            }
+        )
+    if payload.get("allowLabels") and labeled_message_warnings:
+        issues.append(
+            {
+                "code": "configured-labeled-chat-message-capture-incomplete",
+                "severity": "error",
+                "detail": "At least one non-locked Always Include chat could not be opened to capture its recent messages.",
+                "warnings": labeled_message_warnings[:5],
+            }
+        )
+
     return {
         "ok": not any(issue.get("severity") == "error" for issue in issues),
-        "rulesVersion": 2,
+        "rulesVersion": 3,
         "thresholds": {
             "latestContentUnavailableThreadLimit": LATEST_CONTENT_UNAVAILABLE_THREAD_LIMIT,
             "perThreadContentUnavailableFraction": "1/3 rounded up",
             "textAvailableFalseWithCapturedAttachment": "allowed",
+            "configuredLabelRulePhaseFailures": "not allowed",
         },
         "metrics": {
             "threadCount": thread_count,
@@ -143,6 +191,9 @@ def assess_export_quality(payload: dict[str, Any]) -> dict[str, Any]:
             "contentUnavailableCount": content_unavailable_count,
             "latestContentUnavailableThreadCount": len(latest_content_unavailable_threads),
             "sourceViewCounts": dict(source_view_counts),
+            "selectionContractWarningCount": len(
+                label_collection_warnings + exclusion_filter_warnings + labeled_message_warnings
+            ),
         },
         "issues": issues,
     }

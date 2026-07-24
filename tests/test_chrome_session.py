@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import os
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -145,6 +146,35 @@ def test_run_async_json_uses_single_devtools_evaluation(monkeypatch: pytest.Monk
     assert "indexedDB.open('model-storage')" in expression
     assert 'window["__hermes_probe"]' in expression
     assert 'setTimeout(resolve, 200)' in expression
+
+
+def test_run_async_json_isolates_default_result_variables_between_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expressions: list[str] = []
+
+    class FakeBridge:
+        def __init__(self, **kwargs):
+            pass
+
+        def evaluate(self, expression: str) -> str:
+            expressions.append(expression)
+            return '{"ok":true}'
+
+    monkeypatch.setattr('whatsapp_collector.chrome_session.ChromeDevToolsBridge', FakeBridge)
+    session = ChromeWhatsAppSession(debug_port=19220)
+    starter = 'window.__hermes_async_result = null; window.__hermes_async_result = JSON.stringify({ok:true})'
+
+    assert session.run_async_json(starter) == {'ok': True}
+    assert session.run_async_json(starter) == {'ok': True}
+
+    first_name = f'__hermes_async_result_{os.getpid()}_1'
+    second_name = f'__hermes_async_result_{os.getpid()}_2'
+    assert first_name in expressions[0]
+    assert second_name not in expressions[0]
+    assert second_name in expressions[1]
+    assert first_name not in expressions[1]
+    assert 'delete window[' in expressions[0]
 
 
 def test_download_wait_matches_collision_name_and_whatsapp_hash(tmp_path: Path) -> None:

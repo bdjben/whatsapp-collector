@@ -73,6 +73,7 @@ class ChromeWhatsAppSession:
         debug_port = debug_port or (int(os.environ.get(DEFAULT_DEBUG_PORT_ENV)) if os.environ.get(DEFAULT_DEBUG_PORT_ENV) else None)
         self._devtools: ChromeDevToolsBridge | None = None
         self._profile_dir = Path(profile_dir).expanduser() if profile_dir else None
+        self._async_operation_id = 0
         if debug_port:
             self._devtools = ChromeDevToolsBridge(
                 port=int(debug_port),
@@ -97,6 +98,16 @@ class ChromeWhatsAppSession:
         if self._devtools is None:
             raise RuntimeError("Click-point requires DevTools-backed Chrome session")
         return self._devtools.click_point(expression)
+
+    def open_chat_via_search(self, chat_name: str) -> dict[str, Any]:
+        if self._devtools is None:
+            raise RuntimeError("Sidebar chat search requires a DevTools-backed Chrome session")
+        return self._devtools.open_chat_via_search(chat_name)
+
+    def clear_sidebar_search(self) -> dict[str, Any]:
+        if self._devtools is None:
+            raise RuntimeError("Clearing sidebar search requires a DevTools-backed Chrome session")
+        return self._devtools.clear_sidebar_search()
 
     def read_cached_media(self, file_hash: str, *, max_bytes: int) -> dict[str, Any]:
         if self._devtools is None:
@@ -166,36 +177,63 @@ class ChromeWhatsAppSession:
         starter_js: str,
         *,
         result_var: str = "__hermes_async_result",
-        attempts: int = 40,
+        attempts: int = 150,
         delay_seconds: float = 0.1,
     ) -> Any:
+        logical_result_var = result_var
+        actual_result_var = result_var
+        prepared_starter_js = starter_js
+        if result_var == "__hermes_async_result":
+            self._async_operation_id += 1
+            actual_result_var = f"{result_var}_{os.getpid()}_{self._async_operation_id}"
+            actual_reference = f"window[{json.dumps(actual_result_var)}]"
+            prepared_starter_js = prepared_starter_js.replace(
+                f"window.{result_var}",
+                actual_reference,
+            )
+            prepared_starter_js = prepared_starter_js.replace(
+                f'window["{result_var}"]',
+                actual_reference,
+            )
+            prepared_starter_js = prepared_starter_js.replace(
+                f"window['{result_var}']",
+                actual_reference,
+            )
         if self._devtools is not None:
             polling_expression = f'''(async () => {{
-                {starter_js};
+                {prepared_starter_js};
                 for (let i = 0; i < {attempts}; i += 1) {{
-                    const value = window[{json.dumps(result_var)}] || "";
+                    const value = window[{json.dumps(actual_result_var)}] || "";
                     if (value) {{
+                        delete window[{json.dumps(actual_result_var)}];
                         return value;
                     }}
                     await new Promise(resolve => setTimeout(resolve, {int(delay_seconds * 1000)}));
                 }}
-                throw new Error("Timed out waiting for Chrome async result variable {result_var}");
+                setTimeout(() => delete window[{json.dumps(actual_result_var)}], 120000);
+                throw new Error("Timed out waiting for Chrome async result variable {logical_result_var}");
             }})()'''
             raw = self.run_js(polling_expression)
             try:
                 return json.loads(raw)
             except json.JSONDecodeError as exc:
                 raise ValueError(f"Invalid JSON returned from Chrome async session: {raw}") from exc
-        self.run_js(starter_js)
+        self.run_js(prepared_starter_js)
         for _ in range(attempts):
-            raw = self.run_js(f'{result_var} || ""')
+            raw = self.run_js(
+                f'''(() => {{
+                    const value = window[{json.dumps(actual_result_var)}] || "";
+                    if (value) delete window[{json.dumps(actual_result_var)}];
+                    return value;
+                }})()'''
+            )
             if raw:
                 try:
                     return json.loads(raw)
                 except json.JSONDecodeError as exc:
                     raise ValueError(f"Invalid JSON returned from Chrome async session: {raw}") from exc
             time.sleep(delay_seconds)
-        raise TimeoutError(f"Timed out waiting for Chrome async result variable {result_var}")
+        raise TimeoutError(f"Timed out waiting for Chrome async result variable {logical_result_var}")
 
     def _build_applescript(self, js: str) -> str:
         target_url = self._target.target_url_substring

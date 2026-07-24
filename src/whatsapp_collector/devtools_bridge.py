@@ -630,6 +630,125 @@ class ChromeDevToolsBridge:
 
         return dict(self._run_action("click-point", run))
 
+    def open_chat_via_search(
+        self,
+        chat_name: str,
+        *,
+        attempts: int = 20,
+        delay_seconds: float = 0.25,
+    ) -> dict[str, Any]:
+        """Open an exact chat using only WhatsApp's sidebar search input."""
+        target_name = str(chat_name or "").strip()
+        if not target_name:
+            raise ValueError("A non-empty chat name is required for sidebar search")
+
+        def run() -> dict[str, Any]:
+            target = self._choose_target(require_target_url=True, prefer_marker_window=True)
+            input_expression = '''(() => {
+                /* WA_COLLECTOR_SEARCH_INPUT_POINT */
+                const input = document.querySelector('#side input[role="textbox"][aria-label="Search or start a new chat"]')
+                    || document.querySelector('#side input[role="textbox"][placeholder="Search or start a new chat"]')
+                    || document.querySelector('#side input[role="textbox"][data-tab="3"]');
+                if (!input || input.offsetParent === null) return null;
+                input.scrollIntoView({block:'center'});
+                const rect = input.getBoundingClientRect();
+                return {x:rect.left + rect.width / 2,y:rect.top + rect.height / 2};
+            })()'''
+            input_point = self._evaluate_point(target, input_expression)
+            self._dispatch_mouse_click(target, input_point, button="left")
+
+            active_expression = '''(() => {
+                /* WA_COLLECTOR_SEARCH_ACTIVE_POINT */
+                const input = document.querySelector('#side input[role="textbox"][aria-label="Search or start a new chat"]')
+                    || document.querySelector('#side input[role="textbox"][placeholder="Search or start a new chat"]')
+                    || document.querySelector('#side input[role="textbox"][data-tab="3"]');
+                if (!input || document.activeElement !== input) return null;
+                input.select();
+                const rect = input.getBoundingClientRect();
+                return {x:rect.left + rect.width / 2,y:rect.top + rect.height / 2};
+            })()'''
+            self._evaluate_point(target, active_expression)
+            self._send(target, "Input.insertText", {"text": target_name})
+
+            name_json = json.dumps(target_name)
+            result_expression = rf'''(() => {{
+                /* WA_COLLECTOR_SEARCH_RESULT_POINT */
+                const targetName = {name_json};
+                const normalize = value => String(value || '').normalize('NFKC').replace(/[\u200e\u200f]/g, '').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
+                const wanted = normalize(targetName);
+                const rows = [...document.querySelectorAll('#pane-side [role="row"], #pane-side [data-testid^="list-item-"]')]
+                    .filter(element => element.offsetParent !== null);
+                const row = rows.find(element => {{
+                    const titles = [...element.querySelectorAll('[title]')].map(item => item.getAttribute('title'));
+                    if (titles.some(title => normalize(title) === wanted)) return true;
+                    const firstLine = String(element.innerText || '').split('\n').map(normalize).find(Boolean);
+                    return firstLine === wanted;
+                }});
+                if (!row) return null;
+                row.scrollIntoView({{block:'center'}});
+                const rect = row.getBoundingClientRect();
+                return {{x:rect.left + rect.width / 2,y:rect.top + rect.height / 2}};
+            }})()'''
+            result_point: dict[str, float] | None = None
+            last_error: Exception | None = None
+            for _ in range(max(1, int(attempts))):
+                try:
+                    result_point = self._evaluate_point(target, result_expression)
+                    break
+                except RuntimeError as exc:
+                    last_error = exc
+                    time.sleep(max(0.0, float(delay_seconds)))
+            if result_point is None:
+                raise RuntimeError(
+                    f"No exact WhatsApp sidebar search result appeared for {target_name!r}: {last_error}"
+                ) from last_error
+            self._dispatch_mouse_click(target, result_point, button="left")
+            time.sleep(0.6)
+            self._clear_sidebar_search_for_target(target)
+            return {
+                "ok": True,
+                "chatName": target_name,
+                "searchInputPoint": input_point,
+                "resultPoint": result_point,
+            }
+
+        return dict(self._run_action("open-chat-via-search", run))
+
+    def clear_sidebar_search(self) -> dict[str, Any]:
+        def run() -> dict[str, Any]:
+            target = self._choose_target(require_target_url=True, prefer_marker_window=True)
+            return self._clear_sidebar_search_for_target(target)
+
+        return dict(self._run_action("clear-sidebar-search", run))
+
+    def _clear_sidebar_search_for_target(self, target: dict[str, Any]) -> dict[str, Any]:
+        expression = '''(() => {
+            /* WA_COLLECTOR_CLEAR_SEARCH_POINT */
+            const input = document.querySelector('#side input[role="textbox"][aria-label="Search or start a new chat"]')
+                || document.querySelector('#side input[role="textbox"][placeholder="Search or start a new chat"]')
+                || document.querySelector('#side input[role="textbox"][data-tab="3"]');
+            if (!input || input.offsetParent === null) return null;
+            input.focus();
+            input.select();
+            const rect = input.getBoundingClientRect();
+            return {x:rect.left + rect.width / 2,y:rect.top + rect.height / 2};
+        })()'''
+        point = self._evaluate_point(target, expression)
+        for event_type in ("keyDown", "keyUp"):
+            self._send(
+                target,
+                "Input.dispatchKeyEvent",
+                {
+                    "type": event_type,
+                    "key": "Backspace",
+                    "code": "Backspace",
+                    "windowsVirtualKeyCode": 8,
+                    "nativeVirtualKeyCode": 51,
+                },
+            )
+        time.sleep(0.15)
+        return {"ok": True, "searchInputPoint": point}
+
     def _release_cached_media(self, file_hash: str) -> None:
         expression = f'''(() => {{
             const reads = window.__waCollectorMediaReads;

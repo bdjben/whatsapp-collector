@@ -122,6 +122,14 @@ class _FakeDevToolsHandler(BaseHTTPRequestHandler):
                 return {"id": request_id, "result": {"result": {"type": "string", "value": "WhatsApp"}}}
             if expression == "({x: 12, y: 34})":
                 return {"id": request_id, "result": {"result": {"type": "object", "value": {"x": 12, "y": 34}}}}
+            if isinstance(expression, str) and "WA_COLLECTOR_SEARCH_INPUT_POINT" in expression:
+                return {"id": request_id, "result": {"result": {"type": "object", "value": {"x": 20, "y": 30}}}}
+            if isinstance(expression, str) and "WA_COLLECTOR_SEARCH_ACTIVE_POINT" in expression:
+                return {"id": request_id, "result": {"result": {"type": "object", "value": {"x": 20, "y": 30}}}}
+            if isinstance(expression, str) and "WA_COLLECTOR_SEARCH_RESULT_POINT" in expression:
+                return {"id": request_id, "result": {"result": {"type": "object", "value": {"x": 40, "y": 50}}}}
+            if isinstance(expression, str) and "WA_COLLECTOR_CLEAR_SEARCH_POINT" in expression:
+                return {"id": request_id, "result": {"result": {"type": "object", "value": {"x": 20, "y": 30}}}}
             if isinstance(expression, str) and "download-completed-without-cache-entry" in expression:
                 return {
                     "id": request_id,
@@ -134,6 +142,8 @@ class _FakeDevToolsHandler(BaseHTTPRequestHandler):
                 }
             return {"id": request_id, "result": {"result": {"type": "undefined"}}}
         if method == "Input.dispatchMouseEvent":
+            return {"id": request_id, "result": {}}
+        if method in {"Input.insertText", "Input.dispatchKeyEvent"}:
             return {"id": request_id, "result": {}}
         return {"id": request_id, "error": {"message": f"Unsupported fake method: {method}"}}
 
@@ -253,6 +263,26 @@ def test_devtools_bridge_evaluates_and_clicks_via_native_websocket_without_node(
     assert "Runtime.evaluate" in methods
     assert methods.count("Input.dispatchMouseEvent") == 3
     assert "Page.bringToFront" not in methods
+
+
+def test_devtools_bridge_opens_exact_chat_through_sidebar_search_without_enter(
+    fake_devtools_server,
+    monkeypatch,
+) -> None:
+    port, state = fake_devtools_server
+    monkeypatch.setenv("PATH", os.devnull)
+    monkeypatch.setattr(devtools_bridge.time, "sleep", lambda _seconds: None)
+    bridge = ChromeDevToolsBridge(port=port, target_url_substring="https://web.whatsapp.com/")
+
+    result = bridge.open_chat_via_search("Example Offscreen Contact")
+
+    assert result["ok"] is True
+    insert_requests = [request for request in state.requests if request["method"] == "Input.insertText"]
+    assert [request["params"] for request in insert_requests] == [{"text": "Example Offscreen Contact"}]
+    key_requests = [request for request in state.requests if request["method"] == "Input.dispatchKeyEvent"]
+    assert [request["params"]["key"] for request in key_requests] == ["Backspace", "Backspace"]
+    assert not any(request["params"].get("key") == "Enter" for request in key_requests)
+    assert [request["method"] for request in state.requests].count("Input.dispatchMouseEvent") == 6
 
 
 def test_devtools_bridge_activates_and_waits_for_whatsapp_readiness(fake_devtools_server, monkeypatch) -> None:

@@ -145,6 +145,73 @@ def test_export_quality_rejects_indexeddb_fallback_without_all_view_capture() ->
     assert "indexeddb-fallback-without-all-view-capture" in [issue["code"] for issue in report["issues"]]
 
 
+def test_export_quality_rejects_configured_label_phase_timeout() -> None:
+    payload = {
+        "allowLabels": ["Clients"],
+        "maxAllViewChats": 15,
+        "threads": [_thread("Example Contact", [_message("a1")])],
+        "exportWarnings": [
+            "labeled-thread-export-skipped:RuntimeError:Timed out waiting for Chrome async result"
+        ],
+    }
+
+    report = assess_export_quality(payload)
+
+    assert report["ok"] is False
+    assert "configured-label-collection-incomplete" in [issue["code"] for issue in report["issues"]]
+    assert report["metrics"]["selectionContractWarningCount"] == 1
+
+
+def test_export_quality_rejects_configured_exclusion_phase_timeout() -> None:
+    payload = {
+        "excludeLabels": ["Low Priority"],
+        "maxAllViewChats": 15,
+        "threads": [_thread("Example Contact", [_message("a1")])],
+        "exportWarnings": [
+            "excluded-label-filter-skipped:RuntimeError:Timed out waiting for Chrome async result"
+        ],
+    }
+
+    report = assess_export_quality(payload)
+
+    assert report["ok"] is False
+    assert "configured-label-exclusion-incomplete" in [issue["code"] for issue in report["issues"]]
+
+
+def test_export_quality_allows_locked_and_empty_labeled_chat_omissions() -> None:
+    payload = {
+        "allowLabels": ["Clients"],
+        "maxAllViewChats": 15,
+        "threads": [_thread("Example Contact", [_message("a1")])],
+        "exportWarnings": [
+            "message-capture-skipped:2",
+            "labeled-chat-unavailable-while-locked:1",
+            "labeled-chat-without-exportable-messages:1",
+        ],
+    }
+
+    report = assess_export_quality(payload)
+
+    assert report["ok"] is True
+    assert report["metrics"]["selectionContractWarningCount"] == 0
+
+
+def test_export_quality_rejects_non_locked_labeled_chat_capture_failure() -> None:
+    payload = {
+        "allowLabels": ["Clients"],
+        "maxAllViewChats": 15,
+        "threads": [_thread("Example Contact", [_message("a1")])],
+        "exportWarnings": ["labeled-message-capture-failed:1"],
+    }
+
+    report = assess_export_quality(payload)
+
+    assert report["ok"] is False
+    assert "configured-labeled-chat-message-capture-incomplete" in [
+        issue["code"] for issue in report["issues"]
+    ]
+
+
 def test_restore_latest_acceptable_backup_skips_degraded_backups(tmp_path: Path) -> None:
     output = tmp_path / "whatsapp-dashboard-export.json"
     backup = tmp_path / "backup"

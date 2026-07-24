@@ -126,6 +126,15 @@ def _degraded_export() -> dict[str, Any]:
     }
 
 
+def _incomplete_labeled_export() -> dict[str, Any]:
+    payload = _good_export()
+    payload["allowLabels"] = ["Clients"]
+    payload["exportWarnings"] = [
+        "labeled-thread-export-skipped:RuntimeError:Timed out waiting for Chrome async result"
+    ]
+    return payload
+
+
 def test_native_run_export_retries_then_writes_when_quality_recovers(tmp_path: Path, monkeypatch) -> None:
     bridge = _load_native_bridge()
     output = tmp_path / "export.json"
@@ -461,6 +470,56 @@ def test_native_quality_failure_does_not_roll_valid_current_back_to_older_backup
     assert exc_info.value.report["exportRecovery"]["status"] == "retained-current"
     assert "restoredLastGood" not in exc_info.value.report
     assert json.loads(output.read_text())["threads"][0]["chatTitle"] == "Current Newest"
+
+
+def test_native_labeled_phase_timeout_retries_and_retains_current_export(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bridge = _load_native_bridge()
+    output = tmp_path / "export.json"
+    output.write_text(json.dumps(_good_export()))
+    original_bytes = output.read_bytes()
+    calls = {"count": 0}
+
+    class FakeCollector:
+        def collect_dashboard_export(self, **kwargs):
+            calls["count"] += 1
+            return _incomplete_labeled_export()
+
+    class FakeDevToolsBridge:
+        def __init__(self, **kwargs):
+            pass
+
+        def wait_until_whatsapp_ready(self, **kwargs):
+            return {"ready": True}
+
+    monkeypatch.setattr(bridge, "ChromeDevToolsBridge", FakeDevToolsBridge)
+    monkeypatch.setattr(bridge, "_collector", lambda cfg: FakeCollector())
+    monkeypatch.setattr(
+        bridge,
+        "_ensure_window",
+        lambda cfg: {
+            "ok": True,
+            "window": {
+                "profileDir": str(cfg["profile_dir"]),
+                "debugPort": cfg["debug_port"],
+                "chromeProcessIds": [20518],
+                "launched": False,
+            },
+        },
+    )
+    monkeypatch.setattr(bridge.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(bridge.ExportQualityError) as exc_info:
+        bridge.dispatch("run-export", {"outputPath": str(output), "profileDir": str(tmp_path / "profile")})
+
+    assert calls["count"] == 3
+    assert output.read_bytes() == original_bytes
+    assert exc_info.value.report["exportRecovery"]["status"] == "retained-current"
+    assert "configured-label-collection-incomplete" in [
+        issue["code"] for issue in exc_info.value.report["issues"]
+    ]
 
 
 def test_native_readiness_failure_retains_valid_current_export(tmp_path: Path, monkeypatch) -> None:

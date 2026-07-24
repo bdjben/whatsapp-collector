@@ -11,7 +11,7 @@ APP_NAME = "WhatsApp Collector"
 PRODUCT_NAME = "WhatsAppCollectorNative"
 BUNDLE_NAME = f"{APP_NAME}.app"
 BUNDLE_IDENTIFIER = "studio.bdjben.whatsapp-collector"
-BUNDLE_VERSION = "0.4.18"
+BUNDLE_VERSION = "0.4.19"
 SPARKLE_FEED_URL = "https://github.com/bdjben/whatsapp-collector/releases/latest/download/appcast.xml"
 SPARKLE_PUBLIC_ED_KEY = "5rau7VI4KCvnHSD4dI1xXTSek9PijJJgOFgsRjcIb58="
 DMG_NAME = "WhatsApp-Collector-macOS.dmg"
@@ -153,21 +153,44 @@ def _build_native_icon(project_root: Path, resources: Path) -> None:
 
 
 def _sign_app(app_path: Path, *, identity: str | None = None) -> None:
-    if identity:
-        command = [
-            "codesign",
-            "--force",
-            "--deep",
-            "--options",
-            "runtime",
-            "--sign",
-            identity,
-            "--timestamp",
-            str(app_path),
-        ]
-    else:
-        command = ["codesign", "--force", "--deep", "--sign", "-", "--timestamp=none", str(app_path)]
-    subprocess.run(command, check=True)
+    targets: list[Path] = []
+    sparkle = app_path / "Contents" / "Frameworks" / "Sparkle.framework"
+    current_version = sparkle / "Versions" / "Current"
+    if current_version.exists():
+        version_root = current_version.resolve()
+        targets.extend(
+            path
+            for path in (
+                version_root / "XPCServices" / "Downloader.xpc",
+                version_root / "XPCServices" / "Installer.xpc",
+                version_root / "Updater.app",
+                version_root / "Autoupdate",
+                sparkle,
+            )
+            if path.exists()
+        )
+    targets.append(app_path)
+
+    for target in targets:
+        if identity:
+            command = [
+                "codesign",
+                "--force",
+                "--options",
+                "runtime",
+                "--sign",
+                identity,
+                "--timestamp",
+                str(target),
+            ]
+        else:
+            command = ["codesign", "--force", "--sign", "-", "--timestamp=none", str(target)]
+        subprocess.run(command, check=True)
+
+    subprocess.run(
+        ["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app_path)],
+        check=True,
+    )
 
 
 def _sign_dmg(dmg_path: Path, *, identity: str) -> None:
