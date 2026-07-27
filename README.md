@@ -60,7 +60,7 @@ developer settings for the normal native app workflow.
 5. Return to WhatsApp Collector and click **Run Export**.
 6. Open **Export Preview** to inspect what was captured.
 
-After the first login, **Run Export** and scheduled exports automatically open
+After the first login, **Run Export** and automatic exports open
 or reuse this same dedicated profile. You do not need to press **Launch / Login**
 before every collection.
 
@@ -82,7 +82,7 @@ dashboards that should read your WhatsApp context.
 | JSON export | Writes a stable local file that other tools can read. |
 | Verified attachments | Optionally saves received media beside the JSON, with hashes, paths, extraction method, and clear failure reasons. |
 | Label rules | Optionally include or exclude chats based on WhatsApp labels. |
-| Scheduled exports | Refreshes the same JSON file on a recurring macOS LaunchAgent schedule. |
+| Automatic exports | Refreshes the same JSON file while the menu-bar app is running, with one catch-up run after sleep when needed. |
 | Sparkle updates | Checks GitHub releases and shows when a newer app version is available. |
 
 ## What It Does Not Do
@@ -141,11 +141,22 @@ manually. It is useful for checking:
 
 ### Automation
 
-Use **Automation** to run exports on a schedule. The app installs a user
-LaunchAgent under `~/Library/LaunchAgents/` and calls the bundled native bridge
-directly. The app window and old localhost web UI do not need to stay open.
+Use **Automation** to run recurring exports. Scheduling is owned by the
+menu-bar app: the dashboard window may be closed, but choosing **Quit** stops
+future automatic exports. If the Mac sleeps through a due time, the app runs
+one catch-up export after wake rather than replaying every missed interval.
+After an explicit Quit, reopening the app starts a fresh interval instead of
+replaying work missed while it was not running.
 
-Changing schedule settings takes effect after you click **Save Changes**.
+Changing collection or schedule settings takes effect after you click **Save
+Changes**. Saving does not start an export. Use **Run Export** when you want one
+immediately.
+
+**Open WhatsApp Collector when you log in** starts the menu-bar app and schedules
+one export five minutes after each login, even if recurring exports are off.
+The optional hidden-dashboard setting keeps login launches out of the way while
+leaving the menu-bar item available. A manual app launch still shows the
+dashboard.
 
 ### Diagnostics And Help
 
@@ -163,7 +174,7 @@ cleanup.
 | Label rules | Optional rules that can force specific labeled chats in or keep labeled chats out. |
 | Chrome window display | Optional. Use this only if you want the dedicated Chrome window placed on a particular monitor. Enter the display name as it appears in macOS System Settings > Displays. Leave blank to use the main display. |
 | Chrome profile folder | The isolated Chrome profile used by the collector. Most users should leave this alone. |
-| Export data file | The JSON file written by **Run Export** and scheduled exports. |
+| Export data file | The JSON file written by **Run Export** and automatic exports. |
 | Download attachments automatically | Optional. Saves media attached to exported messages after validating WhatsApp's metadata and file hash. |
 | Total attachment storage limit | Maximum retained attachment storage. Each file is also limited to 50 MB and each thread to 150 MB. Existing files count toward the limit. |
 
@@ -282,17 +293,20 @@ Starting an export while Chrome is closed is supported: the app automatically
 opens the configured dedicated profile and verifies its exact process before it
 collects anything.
 
-### Scheduled exports are not running
+### Automatic exports are not running
 
-Open **Automation** and check whether automatic exports are enabled. After
-changing schedule or collection settings, click **Save Changes** so the
-LaunchAgent receives the updated payload.
+Open **Automation** and check whether automatic exports are enabled, then make
+sure WhatsApp Collector is still present in the menu bar. Closing the dashboard
+window is fine; choosing **Quit** stops scheduling. After changing schedule or
+collection settings, click **Save Changes**.
 
-Each scheduled run records the PID, dedicated profile path, and DevTools port
+Each automatic run records the PID, dedicated profile path, and DevTools port
 of the Chrome process it uses. That exact process is closed immediately after a
 successful run. After a failed run it remains available for five minutes for
-inspection, then closes automatically. Chrome processes that do not match the
-collector profile, port, and captured PID are left alone.
+inspection, then closes automatically while the app remains open. If the app is
+interrupted first, it retries that exact-PID cleanup on the next launch. Chrome
+processes that do not match the collector profile, port, and captured PID are
+left alone.
 
 ### The export has fewer messages than expected
 

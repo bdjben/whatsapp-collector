@@ -6,14 +6,51 @@ private extension NSUserInterfaceItemIdentifier {
     static let whatsappCollectorMainWindow = NSUserInterfaceItemIdentifier("studio.bdjben.whatsapp-collector.main-window")
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private static var suppressInitialDashboard = false
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        let defaults = UserDefaults.standard
+        let session = ConsoleLoginSession.current()
+        Self.suppressInitialDashboard = LoginLaunchBehavior.shouldHideDashboard(
+            launchAtLoginEnabled: LoginItemManager.isEnabled,
+            launchMinimized: defaults.bool(forKey: AppPreferences.launchMinimized),
+            session: session,
+            previouslySeenSessionID: defaults.string(forKey: AppPreferences.lastWindowLaunchSessionID),
+            now: Date()
+        )
+        if let session {
+            defaults.set(session.id, forKey: AppPreferences.lastWindowLaunchSessionID)
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = false
         NSApp.setActivationPolicy(.regular)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            Self.placeMainWindow()
-            NSApp.activate(ignoringOtherApps: true)
+        if Self.suppressInitialDashboard {
+            Self.hideMainWindow()
         }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if Self.suppressInitialDashboard {
+                Self.hideMainWindow()
+                Self.suppressInitialDashboard = false
+            } else {
+                Self.placeMainWindow()
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if flag == false {
+            _ = Self.showMainWindow()
+        }
+        return true
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        UserDefaults.standard.set(Date(), forKey: AppPreferences.cleanShutdownAt)
     }
 
     @MainActor
@@ -22,6 +59,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.identifier = .whatsappCollectorMainWindow
         window.tabbingMode = .disallowed
         window.isReleasedWhenClosed = false
+        if suppressInitialDashboard {
+            window.orderOut(nil)
+        }
     }
 
     @MainActor
@@ -46,14 +86,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     static func showMainWindow() -> Bool {
+        suppressInitialDashboard = false
         closeDuplicateMainWindows()
-        guard let window = mainWindows().first(where: { $0.isVisible }) else {
+        guard let window = mainWindows().first(where: { $0.isVisible }) ?? mainWindows().first else {
             return false
         }
         window.tabbingMode = .disallowed
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         return true
+    }
+
+    @MainActor
+    private static func hideMainWindow() {
+        for window in mainWindows() {
+            window.orderOut(nil)
+        }
     }
 
     @MainActor

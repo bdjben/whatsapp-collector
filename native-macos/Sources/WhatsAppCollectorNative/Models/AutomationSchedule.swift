@@ -1,0 +1,187 @@
+import Foundation
+
+enum AutomaticExportTrigger: String, Codable, Hashable, Sendable {
+    case login
+    case recurring
+}
+
+struct AutomationScheduleRecord: Codable, Equatable, Sendable {
+    static let loginDelay: TimeInterval = 5 * 60
+
+    var enabled: Bool
+    var intervalMinutes: Int
+    var nextRecurringRunAt: Date?
+    var loginSessionID: String?
+    var loginRunAt: Date?
+    var loginAttemptedSessionID: String?
+    var currentRunStartedAt: Date?
+    var currentRunTriggers: Set<AutomaticExportTrigger>
+    var lastRunAt: Date?
+    var lastSuccessAt: Date?
+    var lastFailureAt: Date?
+    var lastFailureMessage: String?
+    var lastThreadCount: Int?
+    var lastExportedAt: String?
+    var lastOutputPath: String?
+
+    init(intervalMinutes: Int = 15) {
+        enabled = false
+        self.intervalMinutes = Self.boundedInterval(intervalMinutes)
+        nextRecurringRunAt = nil
+        loginSessionID = nil
+        loginRunAt = nil
+        loginAttemptedSessionID = nil
+        currentRunStartedAt = nil
+        currentRunTriggers = []
+        lastRunAt = nil
+        lastSuccessAt = nil
+        lastFailureAt = nil
+        lastFailureMessage = nil
+        lastThreadCount = nil
+        lastExportedAt = nil
+        lastOutputPath = nil
+    }
+
+    var isRunning: Bool {
+        currentRunStartedAt != nil
+    }
+
+    mutating func setEnabled(_ newValue: Bool, now: Date) {
+        guard enabled != newValue else {
+            repairNextRecurringRunIfNeeded(now: now)
+            return
+        }
+        enabled = newValue
+        nextRecurringRunAt = newValue ? Self.nextRun(after: now, intervalMinutes: intervalMinutes) : nil
+    }
+
+    mutating func setIntervalMinutes(_ newValue: Int, now: Date) {
+        let bounded = Self.boundedInterval(newValue)
+        guard intervalMinutes != bounded else {
+            repairNextRecurringRunIfNeeded(now: now)
+            return
+        }
+        intervalMinutes = bounded
+        if enabled {
+            nextRecurringRunAt = Self.nextRun(after: now, intervalMinutes: bounded)
+        }
+    }
+
+    mutating func scheduleLoginExport(for session: ConsoleLoginSession) {
+        guard loginSessionID != session.id else { return }
+        loginSessionID = session.id
+        loginAttemptedSessionID = nil
+        let dueAt = session.startedAt.addingTimeInterval(Self.loginDelay)
+        loginRunAt = dueAt
+        if enabled, let nextRecurringRunAt, nextRecurringRunAt <= dueAt {
+            self.nextRecurringRunAt = dueAt
+        }
+    }
+
+    mutating func markLoginSessionHandled(_ session: ConsoleLoginSession?) {
+        loginSessionID = session?.id
+        loginAttemptedSessionID = session?.id
+        loginRunAt = nil
+    }
+
+    mutating func cancelPendingLoginExport() {
+        loginRunAt = nil
+        loginAttemptedSessionID = loginSessionID
+    }
+
+    mutating func deferOverdueRecurringRun(from now: Date) {
+        guard enabled, let nextRecurringRunAt, nextRecurringRunAt <= now else { return }
+        self.nextRecurringRunAt = Self.nextRun(after: now, intervalMinutes: intervalMinutes)
+    }
+
+    func dueTriggers(at now: Date) -> Set<AutomaticExportTrigger> {
+        var triggers = Set<AutomaticExportTrigger>()
+        if enabled, let nextRecurringRunAt, nextRecurringRunAt <= now {
+            triggers.insert(.recurring)
+        }
+        if let loginRunAt,
+           loginRunAt <= now,
+           let loginSessionID,
+           loginAttemptedSessionID != loginSessionID {
+            triggers.insert(.login)
+        }
+        return triggers
+    }
+
+    mutating func beginRun(triggers: Set<AutomaticExportTrigger>, at date: Date) {
+        guard triggers.isEmpty == false else { return }
+        absorbDueTriggers(triggers)
+        currentRunStartedAt = date
+    }
+
+    mutating func absorbDueTriggers(_ triggers: Set<AutomaticExportTrigger>) {
+        guard triggers.isEmpty == false else { return }
+        if triggers.contains(.recurring) {
+            nextRecurringRunAt = nil
+        }
+        if triggers.contains(.login) {
+            loginRunAt = nil
+            loginAttemptedSessionID = loginSessionID
+        }
+        currentRunTriggers.formUnion(triggers)
+    }
+
+    mutating func completeRun(
+        at date: Date,
+        succeeded: Bool,
+        failureMessage: String?,
+        threadCount: Int?,
+        exportedAt: String?,
+        outputPath: String?
+    ) {
+        let completedTriggers = currentRunTriggers
+        lastRunAt = date
+        if succeeded {
+            lastSuccessAt = date
+            lastFailureMessage = nil
+            lastThreadCount = threadCount
+            lastExportedAt = exportedAt
+            lastOutputPath = outputPath
+        } else {
+            lastFailureAt = date
+            lastFailureMessage = failureMessage
+        }
+        if completedTriggers.contains(.recurring), enabled {
+            nextRecurringRunAt = Self.nextRun(after: date, intervalMinutes: intervalMinutes)
+        }
+        currentRunStartedAt = nil
+        currentRunTriggers = []
+        repairNextRecurringRunIfNeeded(now: date)
+    }
+
+    mutating func recoverInterruptedRun(at date: Date) {
+        guard isRunning else {
+            repairNextRecurringRunIfNeeded(now: date)
+            return
+        }
+        lastRunAt = date
+        lastFailureAt = date
+        lastFailureMessage = "The previous automatic export was interrupted when WhatsApp Collector stopped."
+        currentRunStartedAt = nil
+        currentRunTriggers = []
+        if enabled {
+            nextRecurringRunAt = Self.nextRun(after: date, intervalMinutes: intervalMinutes)
+        }
+    }
+
+    mutating func repairNextRecurringRunIfNeeded(now: Date) {
+        if enabled, nextRecurringRunAt == nil, isRunning == false {
+            nextRecurringRunAt = Self.nextRun(after: now, intervalMinutes: intervalMinutes)
+        } else if enabled == false {
+            nextRecurringRunAt = nil
+        }
+    }
+
+    static func boundedInterval(_ value: Int) -> Int {
+        max(1, min(value, 24 * 60))
+    }
+
+    private static func nextRun(after date: Date, intervalMinutes: Int) -> Date {
+        date.addingTimeInterval(TimeInterval(boundedInterval(intervalMinutes) * 60))
+    }
+}

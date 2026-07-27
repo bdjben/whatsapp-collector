@@ -20,6 +20,11 @@ let package = Package(
                 .product(name: "Sparkle", package: "Sparkle")
             ],
             path: "Sources/WhatsAppCollectorNative"
+        ),
+        .testTarget(
+            name: "WhatsAppCollectorNativeTests",
+            dependencies: ["WhatsAppCollectorNative"],
+            path: "Tests/WhatsAppCollectorNativeTests"
         )
     ]
 )

@@ -70,6 +70,61 @@ struct ScheduleState: Decodable, Equatable, Sendable {
     var currentRunActive: Bool?
     var runStatePath: String?
 
+    init(
+        inAppEnabled enabled: Bool,
+        intervalMinutes: Int,
+        nextStep: String,
+        lastRunAt: String? = nil,
+        lastSuccessAt: String? = nil,
+        lastFailureAt: String? = nil,
+        lastFailureMessage: String? = nil,
+        lastThreadCount: Int? = nil,
+        lastExportedAt: String? = nil,
+        lastOutputPath: String? = nil,
+        nextRunAfter: String? = nil,
+        currentRunStatus: String? = nil,
+        currentRunStartedAt: String? = nil,
+        currentRunMessage: String? = nil,
+        currentRunActive: Bool = false
+    ) {
+        self.enabled = enabled
+        loaded = enabled
+        label = nil
+        mode = "in-app"
+        self.intervalMinutes = intervalMinutes
+        uiUrl = nil
+        payload = nil
+        bridgePath = nil
+        pythonExecutable = nil
+        resourceDir = nil
+        repoRoot = nil
+        plistPath = nil
+        scriptPath = nil
+        payloadPath = nil
+        stdoutPath = nil
+        stderrPath = nil
+        launchctlState = nil
+        launchctlActiveCount = nil
+        self.nextStep = nextStep
+        stdoutUpdatedAt = nil
+        stderrUpdatedAt = nil
+        self.lastRunAt = lastRunAt
+        self.lastSuccessAt = lastSuccessAt
+        self.lastFailureAt = lastFailureAt
+        self.lastFailureMessage = lastFailureMessage
+        self.lastThreadCount = lastThreadCount
+        self.lastExportedAt = lastExportedAt
+        self.lastOutputPath = lastOutputPath
+        self.nextRunAfter = nextRunAfter
+        self.currentRunStatus = currentRunStatus
+        self.currentRunStartedAt = currentRunStartedAt
+        currentRunUpdatedAt = currentRunStartedAt
+        currentRunCompletedAt = nil
+        self.currentRunMessage = currentRunMessage
+        self.currentRunActive = currentRunActive
+        runStatePath = nil
+    }
+
     var displayState: String {
         let suffix = mode == "web" ? " (web)" : ""
         if isCurrentRunActive { return "Running\(suffix)" }
@@ -118,6 +173,7 @@ struct WindowSummary: Decodable, Equatable, Sendable {
     var targetUrl: String?
     var debugPort: Int?
     var launched: Bool?
+    var closedAfterExport: Bool?
 }
 
 struct WhatsAppExport: Decodable, Sendable {

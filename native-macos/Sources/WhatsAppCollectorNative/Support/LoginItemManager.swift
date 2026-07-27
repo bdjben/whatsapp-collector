@@ -6,6 +6,17 @@ enum LoginItemManager {
         SMAppService.mainApp.status == .enabled
     }
 
+    static var isConfigured: Bool {
+        switch SMAppService.mainApp.status {
+        case .enabled, .requiresApproval:
+            true
+        case .notRegistered, .notFound:
+            false
+        @unknown default:
+            false
+        }
+    }
+
     static var statusDescription: String {
         switch SMAppService.mainApp.status {
         case .enabled:
@@ -22,9 +33,9 @@ enum LoginItemManager {
     }
 
     static func setEnabled(_ enabled: Bool) throws {
-        if enabled {
+        if enabled, isConfigured == false {
             try SMAppService.mainApp.register()
-        } else {
+        } else if enabled == false, isConfigured {
             try SMAppService.mainApp.unregister()
         }
     }

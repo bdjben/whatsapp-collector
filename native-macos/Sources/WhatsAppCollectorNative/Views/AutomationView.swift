@@ -8,7 +8,7 @@ struct AutomationView: View {
             VStack(alignment: .leading, spacing: 18) {
                 SectionHeader(
                     title: "Automatic Exports",
-                    subtitle: "Use the existing macOS LaunchAgent refresh path without copying shell commands.",
+                    subtitle: "Recurring exports run while WhatsApp Collector remains open in the menu bar.",
                     systemImage: "clock.arrow.circlepath"
                 )
 
@@ -20,31 +20,37 @@ struct AutomationView: View {
                 )
 
                 GroupBox("Launch at Login") {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 12) {
                         Toggle(isOn: Binding(
-                            get: { store.launchAtLoginEnabled },
-                            set: { store.setLaunchAtLogin($0) }
+                            get: { store.draftLaunchAtLoginEnabled },
+                            set: { store.setDraftLaunchAtLogin($0) }
                         )) {
                             Label("Open WhatsApp Collector when you log in", systemImage: "power")
                         }
                         .toggleStyle(.switch)
-                        Text(store.launchAtLoginStatus)
+                        Text("When enabled, WhatsApp Collector runs one export five minutes after each login, even when recurring exports are off.")
                             .font(.callout)
                             .foregroundStyle(.secondary)
+
+                        Toggle(isOn: $store.draftLaunchMinimizedEnabled) {
+                            Label("Open at login with the dashboard hidden", systemImage: "menubar.rectangle")
+                        }
+                        .toggleStyle(.switch)
+                        .disabled(store.draftLaunchAtLoginEnabled == false)
+                        Text("The menu-bar item remains available. Opening the app manually still shows the dashboard.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+
+                        Text(store.launchAtLoginDisplayStatus)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        if let pendingLoginExportAt = store.pendingLoginExportAt {
+                            Text("Next login export: \(DisplayFormatters.date(pendingLoginExportAt))")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .padding(.vertical, 4)
-                }
-
-                if store.schedule?.isLegacyWebSchedule == true {
-                    Label(
-                        "This schedule was installed by the older localhost web runner. Start automatic exports here to replace it with the native bridge runner.",
-                        systemImage: "exclamationmark.triangle"
-                    )
-                    .font(.callout)
-                    .foregroundStyle(.orange)
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
 
                 GroupBox {
@@ -74,23 +80,28 @@ struct AutomationView: View {
                         }
                         scheduleRunHistory
                         HStack {
-                            Button {
-                                Task { await store.installSchedule() }
-                            } label: {
-                                Label("Start Automatic Exports", systemImage: "play.circle")
+                            if store.schedule?.enabled != true {
+                                Button {
+                                    Task { await store.installSchedule() }
+                                } label: {
+                                    Label("Start Automatic Exports", systemImage: "play.circle")
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(store.isBusy)
                             }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(store.isBusy)
 
                             Button {
                                 Task { await store.removeSchedule() }
                             } label: {
                                 Label("Stop", systemImage: "stop.circle")
                             }
-                            .disabled(store.isBusy)
+                            .disabled(store.isBusy || store.schedule?.enabled != true)
 
                             Button {
-                                Task { await store.refreshStatus() }
+                                Task {
+                                    await store.refreshStatus()
+                                    await store.refreshScheduleStatusQuietly()
+                                }
                             } label: {
                                 Label("Refresh", systemImage: "arrow.clockwise")
                             }
@@ -100,54 +111,6 @@ struct AutomationView: View {
                     .padding(.vertical, 4)
                 } label: {
                     Text("Schedule")
-                }
-
-                GroupBox {
-                    Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 10) {
-                        GridRow {
-                            Text("Mode")
-                                .foregroundStyle(.secondary)
-                            Text(store.schedule?.mode ?? "Not configured")
-                                .font(.system(.body, design: .monospaced))
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-                        GridRow {
-                            Text("LaunchAgent")
-                                .foregroundStyle(.secondary)
-                            Text(store.schedule?.plistPath ?? "Not configured")
-                                .font(.system(.body, design: .monospaced))
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-                        GridRow {
-                            Text("Payload")
-                                .foregroundStyle(.secondary)
-                            Text(store.schedule?.payloadPath ?? "Not configured")
-                                .font(.system(.body, design: .monospaced))
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-                        GridRow {
-                            Text("Bridge")
-                                .foregroundStyle(.secondary)
-                            Text(store.schedule?.bridgePath ?? "Not configured")
-                                .font(.system(.body, design: .monospaced))
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-                        GridRow {
-                            Text("Logs")
-                                .foregroundStyle(.secondary)
-                            Text(store.schedule?.stderrPath ?? "Not configured")
-                                .font(.system(.body, design: .monospaced))
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-                    }
-                    .padding(.vertical, 4)
-                } label: {
-                    Text("Readback")
                 }
             }
             .padding(22)
@@ -163,11 +126,11 @@ struct AutomationView: View {
             Divider()
             Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
                 ScheduleReadoutRow(
-                    title: "Current scheduler state",
+                    title: "Current state",
                     value: currentRunText(schedule)
                 )
                 ScheduleReadoutRow(
-                    title: "Last scheduled run",
+                    title: "Last automatic run",
                     value: timestampText(schedule.lastSuccessAt ?? schedule.lastRunAt)
                 )
                 ScheduleReadoutRow(
@@ -175,12 +138,12 @@ struct AutomationView: View {
                     value: schedule.lastThreadCount.map { "\($0)" } ?? "Not recorded"
                 )
                 ScheduleReadoutRow(
-                    title: "Next estimated run",
+                    title: "Next recurring run",
                     value: timestampText(schedule.nextRunAfter)
                 )
                 if shouldShowFailure(schedule) {
                     ScheduleReadoutRow(
-                        title: "Last scheduler error",
+                        title: "Last automatic-export error",
                         value: failureText(schedule)
                     )
                 }

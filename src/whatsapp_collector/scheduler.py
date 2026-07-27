@@ -289,7 +289,6 @@ def build_launch_agent_plist(*, interval_minutes: int, script_path: Path, stdout
     payload = {
         "Label": LAUNCH_AGENT_LABEL,
         "ProgramArguments": ["/bin/sh", str(script_path)],
-        "RunAtLoad": True,
         "StartInterval": _bounded_interval_minutes(interval_minutes) * 60,
         "StandardOutPath": str(stdout_path),
         "StandardErrorPath": str(stderr_path),
@@ -301,9 +300,9 @@ def install_schedule(*, ui_url: str, payload: dict[str, Any], interval_minutes: 
     config = default_schedule_config(ui_url=ui_url, payload=payload, interval_minutes=interval_minutes)
     _write_schedule_files(config)
     _run(["plutil", "-lint", str(config.plist_path)])
+    _launchctl(["bootout", f"{_launchctl_domain()}/{LAUNCH_AGENT_LABEL}"], check=False)
     _launchctl(["bootout", _launchctl_domain(), str(config.plist_path)], check=False)
     _launchctl(["bootstrap", _launchctl_domain(), str(config.plist_path)], check=True)
-    _launchctl(["kickstart", "-k", f"{_launchctl_domain()}/{LAUNCH_AGENT_LABEL}"], check=False)
     return schedule_status_payload(config, loaded=is_schedule_loaded())
 
 
@@ -328,21 +327,22 @@ def install_native_schedule(
     )
     _write_schedule_files(config)
     _run(["plutil", "-lint", str(config.plist_path)])
+    _launchctl(["bootout", f"{_launchctl_domain()}/{LAUNCH_AGENT_LABEL}"], check=False)
     _launchctl(["bootout", _launchctl_domain(), str(config.plist_path)], check=False)
     _launchctl(["bootstrap", _launchctl_domain(), str(config.plist_path)], check=True)
-    _launchctl(["kickstart", "-k", f"{_launchctl_domain()}/{LAUNCH_AGENT_LABEL}"], check=False)
     return schedule_status_payload(config, loaded=is_schedule_loaded())
 
 
 def remove_schedule() -> dict[str, Any]:
     config = load_schedule_config()
+    _launchctl(["bootout", f"{_launchctl_domain()}/{LAUNCH_AGENT_LABEL}"], check=False)
     _launchctl(["bootout", _launchctl_domain(), str(config.plist_path)], check=False)
     for path in (config.plist_path, config.script_path, config.payload_path, config.run_state_path, SCHEDULE_STATE_PATH):
         try:
             path.unlink()
         except FileNotFoundError:
             pass
-    return schedule_status_payload(config, loaded=False)
+    return schedule_status_payload(config, loaded=is_schedule_loaded())
 
 
 def schedule_status() -> dict[str, Any]:

@@ -4,6 +4,7 @@ enum BridgeCommand: String, Sendable {
     case status
     case ensureWindow = "ensure-window"
     case runExport = "run-export"
+    case closeWindow = "close-window"
     case labels
     case scheduleStatus = "schedule-status"
     case scheduleInstall = "schedule-install"
@@ -11,16 +12,44 @@ enum BridgeCommand: String, Sendable {
 }
 
 struct CollectorBridge: Sendable {
-    func run(_ command: BridgeCommand, configuration: CollectorConfiguration, intervalMinutes: Int? = nil) throws -> (BridgeResponse, String) {
-        let script = try bridgeScriptURL()
-        let python = try pythonURL()
+    func run(
+        _ command: BridgeCommand,
+        configuration: CollectorConfiguration,
+        intervalMinutes: Int? = nil,
+        chromeOwnershipURL: URL? = nil
+    ) throws -> (BridgeResponse, String) {
         let request = BridgeRequest(configuration: configuration, intervalMinutes: intervalMinutes)
         let input = try JSONEncoder().encode(request)
+        if let chromeOwnershipURL {
+            try FileManager.default.createDirectory(
+                at: chromeOwnershipURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try input.write(to: chromeOwnershipURL, options: .atomic)
+        }
+        return try run(command, input: input, chromeOwnershipURL: chromeOwnershipURL)
+    }
+
+    func closeOwnedChrome(at chromeOwnershipURL: URL) throws -> (BridgeResponse, String) {
+        let input = try Data(contentsOf: chromeOwnershipURL)
+        return try run(.closeWindow, input: input, chromeOwnershipURL: nil)
+    }
+
+    private func run(
+        _ command: BridgeCommand,
+        input: Data,
+        chromeOwnershipURL: URL?
+    ) throws -> (BridgeResponse, String) {
+        let script = try bridgeScriptURL()
+        let python = try pythonURL()
 
         let process = Process()
         process.executableURL = python
         process.arguments = [script.path, command.rawValue]
-        process.environment = bridgeEnvironment(resourceDirectory: script.deletingLastPathComponent())
+        process.environment = bridgeEnvironment(
+            resourceDirectory: script.deletingLastPathComponent(),
+            chromeOwnershipURL: chromeOwnershipURL
+        )
 
         let stdin = Pipe()
         let stdout = Pipe()
@@ -89,12 +118,15 @@ struct CollectorBridge: Sendable {
         throw BridgeError("Could not find a usable Python 3 interpreter.", details: candidates.joined(separator: "\n"))
     }
 
-    private func bridgeEnvironment(resourceDirectory: URL) -> [String: String] {
+    private func bridgeEnvironment(resourceDirectory: URL, chromeOwnershipURL: URL?) -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
         environment["WA_COLLECTOR_NATIVE_RESOURCE_DIR"] = resourceDirectory.path
         environment["WA_COLLECTOR_REPO_ROOT"] = inferredRepoRoot().path
         environment["PYTHONUNBUFFERED"] = "1"
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        if let chromeOwnershipURL {
+            environment["WA_COLLECTOR_CHROME_OWNERSHIP_PATH"] = chromeOwnershipURL.path
+        }
         return environment
     }
 

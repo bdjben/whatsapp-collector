@@ -133,7 +133,7 @@ struct DashboardView: View {
         GroupBox("Browser Setup") {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Use Launch / Login for first-time setup or whenever WhatsApp asks you to sign in again. Run Export automatically opens or reuses that same dedicated Chrome profile.")
-                Text("Keep the dedicated window open while an export is underway. After success, WhatsApp Collector closes only the exact Chrome process it opened or reused for the configured profile and DevTools port. If a scheduled export fails, that process closes after a five-minute grace period. Other Chrome profiles and windows are not targeted. The app does not use the old localhost browser UI.")
+                Text("Keep the dedicated window open while an export is underway. After success, WhatsApp Collector closes only the exact Chrome process it opened or reused for the configured profile and DevTools port. If an export fails, that process closes after a five-minute grace period while the app remains open; an interrupted cleanup is retried on the next launch. Other Chrome profiles and windows are not targeted. The app does not use the old localhost browser UI.")
                     .foregroundStyle(.secondary)
             }
             .font(.callout)

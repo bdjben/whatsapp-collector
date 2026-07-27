@@ -58,8 +58,8 @@ struct HelpView: View {
 
                 GroupBox("Browser Requirements") {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("WhatsApp Collector needs Google Chrome installed and uses a dedicated Chrome profile, separate from your normal browsing profile. Use Launch / Login for first-time setup or reauthentication, and keep WhatsApp Web or WhatsApp Business Web logged in there. Run Export and scheduled exports open or reuse that dedicated profile automatically.")
-                        Text("Do not close the dedicated Chrome window while exporting. If Chrome asks for a QR login, scan it and run the export again. After a successful export, the app closes only the exact Chrome process it opened or reused for the configured profile and DevTools port. A failed scheduled export gets a five-minute grace period before that same process is closed. Other Chrome profiles and windows are not targeted. You do not need to turn on Chrome developer settings. The app only reads the logged-in browser data needed for the export; it does not send messages or open the old browser-based app UI.")
+                        Text("WhatsApp Collector needs Google Chrome installed and uses a dedicated Chrome profile, separate from your normal browsing profile. Use Launch / Login for first-time setup or reauthentication, and keep WhatsApp Web or WhatsApp Business Web logged in there. Run Export and automatic exports open or reuse that dedicated profile automatically.")
+                        Text("Do not close the dedicated Chrome window while exporting. If Chrome asks for a QR login, scan it and run the export again. After a successful export, the app closes only the exact Chrome process it opened or reused for the configured profile and DevTools port. A failed export gets a five-minute grace period before that same process is closed while the app remains open; interrupted cleanup is retried on the next launch. Other Chrome profiles and windows are not targeted. You do not need to turn on Chrome developer settings. The app only reads the logged-in browser data needed for the export; it does not send messages or open the old browser-based app UI.")
                             .foregroundStyle(.secondary)
                     }
                     .font(.callout)
@@ -80,16 +80,16 @@ struct HelpView: View {
 
                 GroupBox("Automation") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Use the Automation tab to start or stop recurring exports. When automatic exports are on, macOS runs WhatsApp Collector on the interval you choose while you are logged in, refreshes the same JSON file, and records the last successful run in the app.")
+                        Text("Use the Automation tab to start or stop recurring exports. Recurring exports run while WhatsApp Collector remains open in the menu bar. You may close the dashboard window; choosing Quit stops future automatic exports. If the Mac sleeps through a due time, the app performs one catch-up export after wake. Reopening after an explicit Quit starts a fresh interval instead of replaying missed runs.")
                             .foregroundStyle(.secondary)
-                        Text("Turn on Launch at Login there if you want the app itself to open automatically after you sign in. You can turn either option off from the same Automation tab.")
+                        Text("Turn on Open at Login to start the menu-bar app automatically and run one export five minutes after each login, even when recurrence is off. The dashboard can stay hidden during login launches. Saving changed settings updates the next run without starting an export; use Run Export when you want one immediately.")
                             .foregroundStyle(.secondary)
                         Button {
                             Task { await store.installSchedule() }
                         } label: {
                             Label("Start Automatic Exports", systemImage: "play.circle")
                         }
-                        .disabled(store.isBusy)
+                        .disabled(store.isBusy || store.schedule?.enabled == true)
                     }
                     .padding(.vertical, 4)
                 }

@@ -16,6 +16,7 @@ from whatsapp_collector.scheduler import (
     build_schedule_script,
     schedule_status_payload,
 )
+from whatsapp_collector import scheduler
 
 
 def test_schedule_script_opens_menu_bar_app_and_posts_export_payload(tmp_path: Path) -> None:
@@ -62,9 +63,47 @@ def test_launch_agent_plist_runs_scheduler_script_every_interval(tmp_path: Path)
     assert info["Label"] == LAUNCH_AGENT_LABEL
     assert info["ProgramArguments"] == ["/bin/sh", str(script_path)]
     assert info["StartInterval"] == 15 * 60
-    assert info["RunAtLoad"] is True
+    assert "RunAtLoad" not in info
     assert info["StandardOutPath"] == str(stdout_path)
     assert info["StandardErrorPath"] == str(stderr_path)
+
+
+def test_remove_schedule_boots_out_exact_service_label_and_verifies_unloaded(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = ScheduleConfig(
+        interval_minutes=15,
+        ui_url="native://bridge",
+        payload={},
+        plist_path=tmp_path / "agent.plist",
+        script_path=tmp_path / "scheduled-export.sh",
+        payload_path=tmp_path / "payload.json",
+        run_state_path=tmp_path / "run-state.json",
+        stdout_path=tmp_path / "out.log",
+        stderr_path=tmp_path / "err.log",
+    )
+    state_path = tmp_path / "schedule-state.json"
+    for path in (config.plist_path, config.script_path, config.payload_path, config.run_state_path, state_path):
+        path.write_text("test")
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(scheduler, "load_schedule_config", lambda: config)
+    monkeypatch.setattr(scheduler, "SCHEDULE_STATE_PATH", state_path)
+    monkeypatch.setattr(
+        scheduler,
+        "_launchctl",
+        lambda args, check: calls.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    monkeypatch.setattr(scheduler, "is_schedule_loaded", lambda: False)
+
+    status = scheduler.remove_schedule()
+
+    assert ["bootout", f"gui/{os.getuid()}/{LAUNCH_AGENT_LABEL}"] in calls
+    assert ["bootout", f"gui/{os.getuid()}", str(config.plist_path)] in calls
+    assert status["loaded"] is False
+    assert status["enabled"] is False
+    assert not any(path.exists() for path in (config.plist_path, config.script_path, config.payload_path, config.run_state_path, state_path))
 
 
 def test_native_schedule_script_runs_bridge_without_localhost(tmp_path: Path) -> None:

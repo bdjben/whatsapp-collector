@@ -3,7 +3,10 @@ import Foundation
 
 @MainActor
 final class CollectorStore: ObservableObject {
-    private static let scheduleRunnerImplementationVersion = 2
+    private static let automationMigrationVersion = 1
+    private static let automationPollNanoseconds: UInt64 = 15_000_000_000
+    private static let legacyMigrationPollNanoseconds: UInt64 = 10_000_000_000
+    private static let failedExportChromeGraceSeconds: TimeInterval = 5 * 60
 
     @Published var configuration: CollectorConfiguration = .defaults
     @Published var draftConfiguration: CollectorConfiguration = .defaults
@@ -22,18 +25,31 @@ final class CollectorStore: ObservableObject {
     @Published var legacyCleanupSummary: String?
     @Published var selectedSection: AppSection = .dashboard
     @Published var launchAtLoginEnabled: Bool = false
+    @Published var draftLaunchAtLoginEnabled: Bool = false
     @Published var launchAtLoginStatus: String = "Not configured"
+    @Published var launchMinimizedEnabled: Bool = false
+    @Published var draftLaunchMinimizedEnabled: Bool = false
 
     private let bridge = CollectorBridge()
     private let defaults = UserDefaults.standard
-    private var schedulePollingTask: Task<Void, Never>?
-    private var isRefreshingScheduledRunner = false
+    private var automationRecord = AutomationScheduleRecord()
+    private var automationTask: Task<Void, Never>?
+    private var legacyMigrationTask: Task<Void, Never>?
+    private var chromeCleanupTask: Task<Void, Never>?
+    private var wakeObserver: NSObjectProtocol?
+    private var exportInProgress = false
+    private var legacyMigrationPending = false
+    private var legacyScheduleState: ScheduleState?
+    private var lastLoginSessionCheckAt: Date?
+    private var didBootstrap = false
 
     var isBusy: Bool { busyState != .idle }
 
     var hasUnsavedChanges: Bool {
         draftConfiguration != configuration
             || draftScheduleIntervalMinutes != scheduleIntervalMinutes
+            || draftLaunchAtLoginEnabled != launchAtLoginEnabled
+            || draftLaunchMinimizedEnabled != launchMinimizedEnabled
     }
 
     var scheduledExportIsRunning: Bool { schedule?.isCurrentRunActive == true }
@@ -43,11 +59,11 @@ final class CollectorStore: ObservableObject {
     }
 
     var exportActivityTitle: String {
+        if scheduledExportIsRunning {
+            return "Automatic Export Running"
+        }
         if busyState.isExportActivity {
             return busyState.title
-        }
-        if scheduledExportIsRunning {
-            return "Scheduled Export Running"
         }
         return "Ready"
     }
@@ -57,9 +73,20 @@ final class CollectorStore: ObservableObject {
             return "Automatic exports are idle."
         }
         if let startedAt = schedule.currentRunStartedAt {
-            return "Scheduled export running since \(DisplayFormatters.relativeDate(startedAt))."
+            return "Automatic export running since \(DisplayFormatters.relativeDate(startedAt))."
         }
-        return "Scheduled export running."
+        return "Automatic export running."
+    }
+
+    var launchAtLoginDisplayStatus: String {
+        if draftLaunchAtLoginEnabled != launchAtLoginEnabled {
+            return "Unsaved change. Click Save Changes to update Launch at Login."
+        }
+        return launchAtLoginStatus
+    }
+
+    var pendingLoginExportAt: String? {
+        automationRecord.loginRunAt.map(Self.isoFormatter.string)
     }
 
     var selectedThread: ExportThread? {
@@ -69,55 +96,111 @@ final class CollectorStore: ObservableObject {
 
     init() {
         let loadedConfiguration = Self.loadConfiguration(from: UserDefaults.standard)
-        let loadedInterval: Int
+        let legacyInterval: Int
         if UserDefaults.standard.object(forKey: DefaultsKey.scheduleIntervalMinutes.rawValue) == nil {
-            loadedInterval = 15
+            legacyInterval = 15
         } else {
-            loadedInterval = max(1, UserDefaults.standard.integer(forKey: DefaultsKey.scheduleIntervalMinutes.rawValue))
+            legacyInterval = max(1, UserDefaults.standard.integer(forKey: DefaultsKey.scheduleIntervalMinutes.rawValue))
         }
+        let loadedAutomation = Self.loadAutomationRecord(
+            from: UserDefaults.standard,
+            fallbackIntervalMinutes: legacyInterval
+        )
         configuration = loadedConfiguration
         draftConfiguration = loadedConfiguration
-        scheduleIntervalMinutes = loadedInterval
-        draftScheduleIntervalMinutes = loadedInterval
+        automationRecord = loadedAutomation
+        scheduleIntervalMinutes = loadedAutomation.intervalMinutes
+        draftScheduleIntervalMinutes = loadedAutomation.intervalMinutes
         aiPrompt = DisplayFormatters.aiPrompt(path: loadedConfiguration.outputPath)
         availableLabels = Self.loadStringArray(for: .availableLabels, from: UserDefaults.standard)
         refreshLaunchAtLoginStatus()
+        draftLaunchAtLoginEnabled = launchAtLoginEnabled
+        launchMinimizedEnabled = UserDefaults.standard.bool(forKey: AppPreferences.launchMinimized)
+        draftLaunchMinimizedEnabled = launchMinimizedEnabled
+        rebuildScheduleState()
     }
 
     func bootstrap() async {
-        startScheduleStatusPolling()
+        guard didBootstrap == false else { return }
+        didBootstrap = true
+#if DEBUG
+        if ProcessInfo.processInfo.environment["WHATSAPP_COLLECTOR_QA_MODE"] == "1" {
+            initializeLoginScheduling()
+            startAutomationLoop()
+            return
+        }
+#endif
         await refreshStatus(applySchedulePayloadIfNeeded: true)
-        await refreshScheduledRunnerIfNeeded()
+        automationRecord.recoverInterruptedRun(at: Date())
+        resumeAfterCleanShutdown()
+        persistAutomationRecord()
+        await migrateLegacySchedule()
+        initializeLoginScheduling()
+        startAutomationLoop()
+        schedulePendingChromeCleanupIfNeeded()
         loadExportPreview()
         refreshLegacyAppCandidate()
         refreshLaunchAtLoginStatus()
+        draftLaunchAtLoginEnabled = launchAtLoginEnabled
+        rebuildScheduleState()
     }
 
     deinit {
-        schedulePollingTask?.cancel()
+        automationTask?.cancel()
+        legacyMigrationTask?.cancel()
+        chromeCleanupTask?.cancel()
     }
 
-    func saveDraftChanges(updateConfiguredSchedule: Bool = true) async -> Bool {
-        configuration = normalized(configuration: draftConfiguration)
-        draftConfiguration = configuration
-        scheduleIntervalMinutes = boundedScheduleInterval(draftScheduleIntervalMinutes)
-        draftScheduleIntervalMinutes = scheduleIntervalMinutes
+    func saveDraftChanges() async -> Bool {
+        let newConfiguration = normalized(configuration: draftConfiguration)
+        let newInterval = boundedScheduleInterval(draftScheduleIntervalMinutes)
+        let newLaunchAtLogin = draftLaunchAtLoginEnabled
+        let newLaunchMinimized = draftLaunchMinimizedEnabled
+        let launchAtLoginChanged = newLaunchAtLogin != launchAtLoginEnabled
+
+        if launchAtLoginChanged {
+            do {
+                try LoginItemManager.setEnabled(newLaunchAtLogin)
+            } catch {
+                refreshLaunchAtLoginStatus()
+                draftLaunchAtLoginEnabled = launchAtLoginEnabled
+                lastError = "Could not update Launch at Login: \(error.localizedDescription)"
+                diagnostics = error.localizedDescription
+                return false
+            }
+        }
+
+        configuration = newConfiguration
+        draftConfiguration = newConfiguration
+        scheduleIntervalMinutes = newInterval
+        draftScheduleIntervalMinutes = newInterval
+        launchAtLoginEnabled = LoginItemManager.isConfigured
+        draftLaunchAtLoginEnabled = launchAtLoginEnabled
+        launchMinimizedEnabled = newLaunchMinimized
+        draftLaunchMinimizedEnabled = newLaunchMinimized
         persistConfiguration()
         persistScheduleInterval()
-        guard updateConfiguredSchedule, schedule?.enabled == true else {
-            return true
+        defaults.set(launchMinimizedEnabled, forKey: AppPreferences.launchMinimized)
+
+        automationRecord.setIntervalMinutes(newInterval, now: Date())
+        if launchAtLoginChanged {
+            if launchAtLoginEnabled {
+                markCurrentLoginSessionHandled()
+            } else {
+                automationRecord.cancelPendingLoginExport()
+            }
         }
-        guard let response = await perform(.scheduleInstall, busy: .scheduling, intervalMinutes: scheduleIntervalMinutes) else {
-            return false
-        }
-        apply(response)
-        markScheduledRunnerCurrent()
+        persistAutomationRecord()
+        refreshLaunchAtLoginStatus()
+        rebuildScheduleState()
         return true
     }
 
     func discardDraftChanges() {
         draftConfiguration = configuration
         draftScheduleIntervalMinutes = scheduleIntervalMinutes
+        draftLaunchAtLoginEnabled = launchAtLoginEnabled
+        draftLaunchMinimizedEnabled = launchMinimizedEnabled
     }
 
     func requestSectionChange(_ section: AppSection) {
@@ -184,6 +267,9 @@ final class CollectorStore: ObservableObject {
         scheduleIntervalMinutes = boundedScheduleInterval(scheduleIntervalMinutes)
         draftScheduleIntervalMinutes = scheduleIntervalMinutes
         persistScheduleInterval()
+        automationRecord.setIntervalMinutes(scheduleIntervalMinutes, now: Date())
+        persistAutomationRecord()
+        rebuildScheduleState()
     }
 
     private func persistScheduleInterval() {
@@ -196,12 +282,15 @@ final class CollectorStore: ObservableObject {
         if applySchedulePayloadIfNeeded, defaults.bool(forKey: DefaultsKey.hasSavedConfiguration.rawValue) == false {
             configuration = configuration.withSchedulePayload(response.schedule?.payload)
             if let interval = response.schedule?.intervalMinutes {
-                scheduleIntervalMinutes = interval
+                scheduleIntervalMinutes = boundedScheduleInterval(interval)
             }
             draftConfiguration = configuration
             draftScheduleIntervalMinutes = scheduleIntervalMinutes
+            automationRecord.setIntervalMinutes(scheduleIntervalMinutes, now: Date())
             persistConfiguration()
             persistScheduleInterval()
+            persistAutomationRecord()
+            rebuildScheduleState()
         }
     }
 
@@ -215,12 +304,7 @@ final class CollectorStore: ObservableObject {
     }
 
     func runExport() async {
-        guard let response = await perform(.runExport, busy: .exporting) else {
-            showChromeMissingAlertIfNeeded()
-            return
-        }
-        apply(response)
-        loadExportPreview()
+        await executeExport(requestedTriggers: [])
     }
 
     func loadLabels() async {
@@ -233,53 +317,24 @@ final class CollectorStore: ObservableObject {
     }
 
     func installSchedule() async {
-        guard await saveDraftChanges(updateConfiguredSchedule: false) else { return }
-        guard let response = await perform(.scheduleInstall, busy: .scheduling, intervalMinutes: scheduleIntervalMinutes) else { return }
-        apply(response)
-        markScheduledRunnerCurrent()
+        guard await saveDraftChanges() else { return }
+        automationRecord.setEnabled(true, now: Date())
+        persistAutomationRecord()
+        rebuildScheduleState()
     }
 
     func removeSchedule() async {
-        guard let response = await perform(.scheduleRemove, busy: .scheduling) else { return }
-        apply(response)
+        automationRecord.setEnabled(false, now: Date())
+        persistAutomationRecord()
+        rebuildScheduleState()
     }
 
     func refreshScheduleStatusQuietly() async {
-        let bridge = self.bridge
-        let config = configuration
-        let wasRunning = scheduledExportIsRunning
-        do {
-            let (response, _) = try await Task.detached(priority: .utility) {
-                try bridge.run(.scheduleStatus, configuration: config)
-            }.value
-            if let schedule = response.schedule {
-                apply(schedule)
-                if wasRunning && schedule.isCurrentRunActive == false {
-                    loadExportPreview()
-                }
-                await refreshScheduledRunnerIfNeeded()
-            }
-        } catch {
-            // Quiet polling should never interrupt the user's current task.
+        if legacyMigrationPending {
+            await migrateLegacySchedule()
         }
-    }
-
-    private func refreshScheduledRunnerIfNeeded() async {
-        guard isRefreshingScheduledRunner == false else { return }
-        guard let schedule, schedule.enabled == true else { return }
-        guard schedule.isCurrentRunActive == false else { return }
-        let installedVersion = defaults.integer(forKey: DefaultsKey.scheduleRunnerImplementationVersion.rawValue)
-        let needsRefresh = schedule.isLegacyWebSchedule || installedVersion < Self.scheduleRunnerImplementationVersion
-        guard needsRefresh else { return }
-        isRefreshingScheduledRunner = true
-        defer { isRefreshingScheduledRunner = false }
-        guard let response = await perform(.scheduleInstall, busy: .scheduling, intervalMinutes: scheduleIntervalMinutes) else { return }
-        apply(response)
-        markScheduledRunnerCurrent()
-    }
-
-    private func markScheduledRunnerCurrent() {
-        defaults.set(Self.scheduleRunnerImplementationVersion, forKey: DefaultsKey.scheduleRunnerImplementationVersion.rawValue)
+        syncLoginScheduling()
+        rebuildScheduleState()
     }
 
     func loadExportPreview() {
@@ -374,19 +429,12 @@ final class CollectorStore: ObservableObject {
         DisplayFormatters.aiPrompt(path: configuration.outputPath)
     }
 
-    func setLaunchAtLogin(_ enabled: Bool) {
-        do {
-            try LoginItemManager.setEnabled(enabled)
-            refreshLaunchAtLoginStatus()
-        } catch {
-            refreshLaunchAtLoginStatus()
-            lastError = "Could not update Launch at Login: \(error.localizedDescription)"
-            diagnostics = error.localizedDescription
-        }
+    func setDraftLaunchAtLogin(_ enabled: Bool) {
+        draftLaunchAtLoginEnabled = enabled
     }
 
     func refreshLaunchAtLoginStatus() {
-        launchAtLoginEnabled = LoginItemManager.isEnabled
+        launchAtLoginEnabled = LoginItemManager.isConfigured
         launchAtLoginStatus = LoginItemManager.statusDescription
     }
 
@@ -460,14 +508,86 @@ final class CollectorStore: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
-    private func perform(_ command: BridgeCommand, busy: BusyState, intervalMinutes: Int? = nil) async -> BridgeResponse? {
+    private func executeExport(requestedTriggers: Set<AutomaticExportTrigger>) async {
+        guard exportInProgress == false, busyState == .idle else { return }
+        exportInProgress = true
+        let startedAt = Date()
+        var automaticTriggers = requestedTriggers
+        automaticTriggers.formUnion(automationRecord.dueTriggers(at: startedAt))
+        if automaticTriggers.isEmpty == false {
+            automationRecord.beginRun(triggers: automaticTriggers, at: startedAt)
+            persistAutomationRecord()
+            rebuildScheduleState()
+        }
+
+        await closePendingOwnedChromeNow()
+        let ownershipURL = pendingChromeOwnershipURL
+        defaults.set(ownershipURL.path, forKey: AppPreferences.pendingChromeOwnershipPath)
+        let response = await perform(
+            .runExport,
+            busy: .exporting,
+            chromeOwnershipURL: ownershipURL
+        )
+        let completedAt = Date()
+        let additionalTriggers = automationRecord.dueTriggers(at: completedAt)
+        if additionalTriggers.isEmpty == false {
+            if automationRecord.isRunning {
+                automationRecord.absorbDueTriggers(additionalTriggers)
+            } else {
+                automationRecord.beginRun(triggers: additionalTriggers, at: startedAt)
+            }
+        }
+
+        let succeeded = response != nil
+        if let response {
+            apply(response)
+            if response.window?.closedAfterExport == false {
+                await closePendingOwnedChromeNow()
+                schedulePendingChromeCleanupIfNeeded()
+            } else {
+                try? FileManager.default.removeItem(at: ownershipURL)
+                defaults.removeObject(forKey: AppPreferences.pendingChromeOwnershipPath)
+            }
+            loadExportPreview()
+        } else {
+            try? FileManager.default.setAttributes([.modificationDate: completedAt], ofItemAtPath: ownershipURL.path)
+            schedulePendingChromeCleanupIfNeeded()
+            showChromeMissingAlertIfNeeded()
+        }
+
+        if automationRecord.isRunning {
+            automationRecord.completeRun(
+                at: completedAt,
+                succeeded: succeeded,
+                failureMessage: succeeded ? nil : lastError,
+                threadCount: response?.threadCount ?? response?.export?.threadCount,
+                exportedAt: response?.export?.exportedAt,
+                outputPath: response?.export?.path
+            )
+            persistAutomationRecord()
+            rebuildScheduleState()
+        }
+        exportInProgress = false
+    }
+
+    private func perform(
+        _ command: BridgeCommand,
+        busy: BusyState,
+        intervalMinutes: Int? = nil,
+        chromeOwnershipURL: URL? = nil
+    ) async -> BridgeResponse? {
         busyState = busy
         lastError = nil
         let bridge = self.bridge
         let config = configuration
         do {
             let (response, raw) = try await Task.detached(priority: .userInitiated) {
-                try bridge.run(command, configuration: config, intervalMinutes: intervalMinutes)
+                try bridge.run(
+                    command,
+                    configuration: config,
+                    intervalMinutes: intervalMinutes,
+                    chromeOwnershipURL: chromeOwnershipURL
+                )
             }.value
             diagnostics = raw
             busyState = .idle
@@ -489,9 +609,6 @@ final class CollectorStore: ObservableObject {
         if let export = response.export {
             exportSummary = export
         }
-        if let schedule = response.schedule {
-            apply(schedule)
-        }
         if let prompt = response.aiPrompt {
             aiPrompt = prompt
         } else {
@@ -499,24 +616,242 @@ final class CollectorStore: ObservableObject {
         }
     }
 
-    private func apply(_ schedule: ScheduleState) {
-        let hadUnsavedChanges = hasUnsavedChanges
-        self.schedule = schedule
-        if let interval = schedule.intervalMinutes {
-            scheduleIntervalMinutes = interval
-            if hadUnsavedChanges == false {
-                draftScheduleIntervalMinutes = interval
+    private func startAutomationLoop() {
+        guard automationTask == nil else { return }
+        if wakeObserver == nil {
+            wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didWakeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    await self?.evaluateAutomaticExports()
+                }
+            }
+        }
+        automationTask = Task { [weak self] in
+            while Task.isCancelled == false {
+                await self?.evaluateAutomaticExports()
+                try? await Task.sleep(nanoseconds: Self.automationPollNanoseconds)
             }
         }
     }
 
-    private func startScheduleStatusPolling() {
-        guard schedulePollingTask == nil else { return }
-        schedulePollingTask = Task { [weak self] in
-            while Task.isCancelled == false {
-                try? await Task.sleep(nanoseconds: 10_000_000_000)
-                await self?.refreshScheduleStatusQuietly()
+    private func evaluateAutomaticExports() async {
+        syncLoginScheduling()
+        guard legacyMigrationPending == false else { return }
+        guard exportInProgress == false, busyState == .idle else { return }
+        let triggers = automationRecord.dueTriggers(at: Date())
+        guard triggers.isEmpty == false else { return }
+        await executeExport(requestedTriggers: triggers)
+    }
+
+    private func initializeLoginScheduling() {
+        let initialized = defaults.bool(forKey: AppPreferences.loginSchedulingInitialized)
+        if initialized == false {
+            let now = Date()
+            let session = ConsoleLoginSession.current()
+            let nearLogin = session.map {
+                let elapsed = now.timeIntervalSince($0.startedAt)
+                return elapsed >= 0 && elapsed <= LoginLaunchBehavior.automaticLaunchWindow
+            } ?? false
+            if launchAtLoginEnabled, nearLogin, let session {
+                automationRecord.scheduleLoginExport(for: session)
+            } else {
+                automationRecord.markLoginSessionHandled(session)
+                automationRecord.deferOverdueRecurringRun(from: now)
             }
+            defaults.set(true, forKey: AppPreferences.loginSchedulingInitialized)
+            persistAutomationRecord()
+            return
+        }
+        syncLoginScheduling()
+    }
+
+    private func resumeAfterCleanShutdown() {
+        guard defaults.object(forKey: AppPreferences.cleanShutdownAt) != nil else { return }
+        defaults.removeObject(forKey: AppPreferences.cleanShutdownAt)
+        automationRecord.deferOverdueRecurringRun(from: Date())
+    }
+
+    private func syncLoginScheduling() {
+        let now = Date()
+        if let lastLoginSessionCheckAt,
+           now.timeIntervalSince(lastLoginSessionCheckAt) < 60 {
+            return
+        }
+        lastLoginSessionCheckAt = now
+        let hadDraftLoginChange = draftLaunchAtLoginEnabled != launchAtLoginEnabled
+        launchAtLoginEnabled = LoginItemManager.isConfigured
+        launchAtLoginStatus = LoginItemManager.statusDescription
+        if hadDraftLoginChange == false {
+            draftLaunchAtLoginEnabled = launchAtLoginEnabled
+        }
+        let original = automationRecord
+        if launchAtLoginEnabled, let session = ConsoleLoginSession.current() {
+            automationRecord.scheduleLoginExport(for: session)
+        } else {
+            automationRecord.cancelPendingLoginExport()
+        }
+        if automationRecord != original {
+            persistAutomationRecord()
+            rebuildScheduleState()
+        }
+    }
+
+    private func markCurrentLoginSessionHandled() {
+        automationRecord.markLoginSessionHandled(ConsoleLoginSession.current())
+        defaults.set(true, forKey: AppPreferences.loginSchedulingInitialized)
+    }
+
+    private func migrateLegacySchedule() async {
+        let bridge = self.bridge
+        let config = configuration
+        do {
+            let (response, _) = try await Task.detached(priority: .utility) {
+                try bridge.run(.scheduleStatus, configuration: config)
+            }.value
+            guard let legacy = response.schedule else {
+                finishLegacyMigration()
+                return
+            }
+
+            let legacyExists = legacy.enabled == true || legacy.loaded == true
+            guard legacyExists else {
+                finishLegacyMigration()
+                return
+            }
+
+            adoptLegacySchedule(legacy)
+            if legacy.isCurrentRunActive {
+                if launchAtLoginEnabled {
+                    automationRecord.markLoginSessionHandled(ConsoleLoginSession.current())
+                    persistAutomationRecord()
+                }
+                legacyMigrationPending = true
+                legacyScheduleState = legacy
+                rebuildScheduleState()
+                startLegacyMigrationPolling()
+                return
+            }
+
+            let (removed, _) = try await Task.detached(priority: .utility) {
+                try bridge.run(.scheduleRemove, configuration: config)
+            }.value
+            guard removed.ok else {
+                throw BridgeError(removed.error ?? "Could not remove the older automatic-export LaunchAgent.")
+            }
+            if removed.schedule?.loaded == true {
+                throw BridgeError("The older automatic-export LaunchAgent is still loaded; migration will retry.")
+            }
+            finishLegacyMigration()
+        } catch {
+            legacyMigrationPending = true
+            legacyScheduleState = nil
+            lastError = "Could not finish upgrading automatic exports: \(error.localizedDescription)"
+            diagnostics = error.localizedDescription
+            rebuildScheduleState()
+            startLegacyMigrationPolling()
+        }
+    }
+
+    private func adoptLegacySchedule(_ legacy: ScheduleState) {
+        guard legacy.enabled == true else { return }
+        let now = Date()
+        if let interval = legacy.intervalMinutes {
+            scheduleIntervalMinutes = boundedScheduleInterval(interval)
+            draftScheduleIntervalMinutes = scheduleIntervalMinutes
+            automationRecord.setIntervalMinutes(scheduleIntervalMinutes, now: now)
+        }
+        automationRecord.setEnabled(true, now: now)
+        if let nextRun = DisplayFormatters.parseDate(legacy.nextRunAfter) {
+            automationRecord.nextRecurringRunAt = nextRun
+        }
+        automationRecord.lastRunAt = DisplayFormatters.parseDate(legacy.lastRunAt)
+        automationRecord.lastSuccessAt = DisplayFormatters.parseDate(legacy.lastSuccessAt)
+        automationRecord.lastFailureAt = DisplayFormatters.parseDate(legacy.lastFailureAt)
+        automationRecord.lastFailureMessage = legacy.lastFailureMessage
+        automationRecord.lastThreadCount = legacy.lastThreadCount
+        automationRecord.lastExportedAt = legacy.lastExportedAt
+        automationRecord.lastOutputPath = legacy.lastOutputPath
+        if launchAtLoginEnabled,
+           let session = ConsoleLoginSession.current(),
+           let lastSuccessAt = automationRecord.lastSuccessAt,
+           lastSuccessAt >= session.startedAt {
+            automationRecord.markLoginSessionHandled(session)
+        }
+        persistScheduleInterval()
+        persistAutomationRecord()
+    }
+
+    private func startLegacyMigrationPolling() {
+        guard legacyMigrationTask == nil else { return }
+        legacyMigrationTask = Task { [weak self] in
+            while Task.isCancelled == false {
+                try? await Task.sleep(nanoseconds: Self.legacyMigrationPollNanoseconds)
+                guard let self else { return }
+                await self.migrateLegacySchedule()
+                if self.legacyMigrationPending == false {
+                    break
+                }
+            }
+            self?.legacyMigrationTask = nil
+        }
+    }
+
+    private func finishLegacyMigration() {
+        legacyMigrationPending = false
+        legacyScheduleState = nil
+        defaults.set(Self.automationMigrationVersion, forKey: AppPreferences.automationMigrationVersion)
+        persistAutomationRecord()
+        rebuildScheduleState()
+    }
+
+    private var pendingChromeOwnershipURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/WhatsApp Collector")
+            .appendingPathComponent("pending-chrome-ownership.json")
+    }
+
+    private func schedulePendingChromeCleanupIfNeeded() {
+        let path = defaults.string(forKey: AppPreferences.pendingChromeOwnershipPath)
+            ?? pendingChromeOwnershipURL.path
+        let url = URL(fileURLWithPath: path)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            defaults.removeObject(forKey: AppPreferences.pendingChromeOwnershipPath)
+            return
+        }
+        defaults.set(url.path, forKey: AppPreferences.pendingChromeOwnershipPath)
+        let modifiedAt = (try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date
+        let elapsed = modifiedAt.map { Date().timeIntervalSince($0) } ?? 0
+        let delaySeconds = max(0, Self.failedExportChromeGraceSeconds - elapsed)
+        chromeCleanupTask?.cancel()
+        chromeCleanupTask = Task { [weak self] in
+            if delaySeconds > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
+            }
+            await self?.closePendingOwnedChromeNow()
+        }
+    }
+
+    private func closePendingOwnedChromeNow() async {
+        let path = defaults.string(forKey: AppPreferences.pendingChromeOwnershipPath)
+            ?? pendingChromeOwnershipURL.path
+        let url = URL(fileURLWithPath: path)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            defaults.removeObject(forKey: AppPreferences.pendingChromeOwnershipPath)
+            return
+        }
+        let bridge = self.bridge
+        do {
+            _ = try await Task.detached(priority: .utility) {
+                try bridge.closeOwnedChrome(at: url)
+            }.value
+            try? FileManager.default.removeItem(at: url)
+            defaults.removeObject(forKey: AppPreferences.pendingChromeOwnershipPath)
+        } catch {
+            // Keep the exact-PID ownership record so the next launch can retry safely.
         }
     }
 
@@ -568,6 +903,80 @@ final class CollectorStore: ObservableObject {
             lines.append("With your permission, WhatsApp Collector will copy those existing exports to a timestamped backup. No app will be removed.")
         }
         return lines.joined(separator: "\n\n")
+    }
+
+    private func rebuildScheduleState() {
+        let nextStep: String
+        if legacyMigrationPending {
+            nextStep = legacyScheduleState?.isCurrentRunActive == true
+                ? "An export from the older scheduler is finishing. The app will switch to in-app automation as soon as it is safely idle."
+                : "WhatsApp Collector is retrying migration from the older automatic-export scheduler."
+        } else if automationRecord.enabled {
+            nextStep = "Automatic exports run while WhatsApp Collector remains open in the menu bar. Closing the dashboard is fine; choosing Quit stops automation."
+        } else {
+            nextStep = "Recurring automatic exports are off."
+        }
+
+        let currentRunActive = automationRecord.isRunning || legacyScheduleState?.isCurrentRunActive == true
+        let currentRunStartedAt = automationRecord.currentRunStartedAt.map(Self.isoFormatter.string)
+            ?? legacyScheduleState?.currentRunStartedAt
+        let triggerDescription = automationRecord.currentRunTriggers
+            .sorted { $0.rawValue < $1.rawValue }
+            .map { trigger in
+                switch trigger {
+                case .login: "login"
+                case .recurring: "recurring schedule"
+                }
+            }
+            .joined(separator: " and ")
+        let currentRunMessage: String?
+        if triggerDescription.isEmpty {
+            currentRunMessage = legacyScheduleState?.currentRunMessage
+        } else {
+            currentRunMessage = "Automatic export started by \(triggerDescription)."
+        }
+
+        schedule = ScheduleState(
+            inAppEnabled: automationRecord.enabled,
+            intervalMinutes: automationRecord.intervalMinutes,
+            nextStep: nextStep,
+            lastRunAt: automationRecord.lastRunAt.map(Self.isoFormatter.string),
+            lastSuccessAt: automationRecord.lastSuccessAt.map(Self.isoFormatter.string),
+            lastFailureAt: automationRecord.lastFailureAt.map(Self.isoFormatter.string),
+            lastFailureMessage: automationRecord.lastFailureMessage,
+            lastThreadCount: automationRecord.lastThreadCount,
+            lastExportedAt: automationRecord.lastExportedAt,
+            lastOutputPath: automationRecord.lastOutputPath,
+            nextRunAfter: automationRecord.nextRecurringRunAt.map(Self.isoFormatter.string),
+            currentRunStatus: currentRunActive ? "running" : "idle",
+            currentRunStartedAt: currentRunStartedAt,
+            currentRunMessage: currentRunMessage,
+            currentRunActive: currentRunActive
+        )
+    }
+
+    private func persistAutomationRecord() {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        if let data = try? encoder.encode(automationRecord) {
+            defaults.set(data, forKey: AppPreferences.automationScheduleRecord)
+        }
+    }
+
+    private static func loadAutomationRecord(
+        from defaults: UserDefaults,
+        fallbackIntervalMinutes: Int
+    ) -> AutomationScheduleRecord {
+        guard let data = defaults.data(forKey: AppPreferences.automationScheduleRecord) else {
+            return AutomationScheduleRecord(intervalMinutes: fallbackIntervalMinutes)
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard var record = try? decoder.decode(AutomationScheduleRecord.self, from: data) else {
+            return AutomationScheduleRecord(intervalMinutes: fallbackIntervalMinutes)
+        }
+        record.intervalMinutes = AutomationScheduleRecord.boundedInterval(record.intervalMinutes)
+        return record
     }
 
     private static func loadConfiguration(from defaults: UserDefaults) -> CollectorConfiguration {
@@ -665,5 +1074,4 @@ private enum DefaultsKey: String {
     case targetUrl = "targetUrl"
     case availableLabels = "availableLabels"
     case scheduleIntervalMinutes = "scheduleIntervalMinutes"
-    case scheduleRunnerImplementationVersion = "scheduleRunnerImplementationVersion"
 }
