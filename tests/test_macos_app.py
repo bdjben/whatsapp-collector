@@ -216,6 +216,7 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     store_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Stores" / "CollectorStore.swift").read_text()
     models_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Models" / "CollectorModels.swift").read_text()
     login_item_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Support" / "LoginItemManager.swift").read_text()
+    app_preferences_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Support" / "AppPreferences.swift").read_text()
 
     assert 'MenuBarExtra("W↗")' in app_source
     assert "@StateObject private var updateMonitor = UpdateMonitor()" in app_source
@@ -279,6 +280,12 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     assert "Current state" in automation_source
     assert "$store.draftScheduleIntervalMinutes" in automation_source
     assert "$store.draftLaunchMinimizedEnabled" in automation_source
+    assert "$store.draftRunExportAfterLoginEnabled" in automation_source
+    assert "This setting alone does not run an export" in automation_source
+    assert "Run an export after login" in automation_source
+    assert "including after using another or Guest account" in automation_source
+    assert "five minutes after the Mac wakes from sleep" in automation_source
+    assert 'static let runExportAfterLogin = "runExportAfterLogin"' in app_preferences_source
     assert "Closing the dashboard is fine; choosing Quit stops automation" in store_source
     assert "SaveChangesBar()" in automation_source
     assert "SaveChangesBar" in components_source
@@ -290,7 +297,7 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     assert "Temporary Prompt Editing" in prompt_source
     assert "Close Without Saving" in prompt_source
     assert "SMAppService.mainApp" in login_item_source
-    assert "Launch at Login" in automation_source
+    assert 'GroupBox("Login & Wake")' in automation_source
     assert "case help" in section_source
     assert "Older App Cleanup" in help_source
     assert "Optional Label Rules" in help_source

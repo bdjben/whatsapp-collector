@@ -396,7 +396,7 @@ struct MenuBarContent: View {
             appActions.openRepository()
         }
         Divider()
-        Text(store.schedule?.displayState ?? "Schedule unknown")
+        Text(store.automationStatusText)
         Text(AppMetadata.displayVersion)
         Button("Quit") {
             NSApplication.shared.terminate(nil)

@@ -29,6 +29,8 @@ final class CollectorStore: ObservableObject {
     @Published var launchAtLoginStatus: String = "Not configured"
     @Published var launchMinimizedEnabled: Bool = false
     @Published var draftLaunchMinimizedEnabled: Bool = false
+    @Published var runExportAfterLoginEnabled: Bool = false
+    @Published var draftRunExportAfterLoginEnabled: Bool = false
 
     private let bridge = CollectorBridge()
     private let defaults = UserDefaults.standard
@@ -50,6 +52,7 @@ final class CollectorStore: ObservableObject {
             || draftScheduleIntervalMinutes != scheduleIntervalMinutes
             || draftLaunchAtLoginEnabled != launchAtLoginEnabled
             || draftLaunchMinimizedEnabled != launchMinimizedEnabled
+            || draftRunExportAfterLoginEnabled != runExportAfterLoginEnabled
     }
 
     var scheduledExportIsRunning: Bool { schedule?.isCurrentRunActive == true }
@@ -66,6 +69,22 @@ final class CollectorStore: ObservableObject {
             return busyState.title
         }
         return "Ready"
+    }
+
+    var automationStatusText: String {
+        if scheduledExportIsRunning {
+            return "Running"
+        }
+        switch (automationRecord.enabled, runExportAfterLoginEnabled) {
+        case (true, true):
+            return "Recurring + Login/Wake"
+        case (true, false):
+            return "Recurring On"
+        case (false, true):
+            return "Login/Wake On"
+        case (false, false):
+            return "Off"
+        }
     }
 
     var scheduledExportStatusText: String {
@@ -87,6 +106,10 @@ final class CollectorStore: ObservableObject {
 
     var pendingLoginExportAt: String? {
         automationRecord.loginRunAt.map(Self.isoFormatter.string)
+    }
+
+    var pendingWakeExportAt: String? {
+        automationRecord.wakeRunAt.map(Self.isoFormatter.string)
     }
 
     var selectedThread: ExportThread? {
@@ -117,6 +140,12 @@ final class CollectorStore: ObservableObject {
         draftLaunchAtLoginEnabled = launchAtLoginEnabled
         launchMinimizedEnabled = UserDefaults.standard.bool(forKey: AppPreferences.launchMinimized)
         draftLaunchMinimizedEnabled = launchMinimizedEnabled
+        runExportAfterLoginEnabled = UserDefaults.standard.bool(forKey: AppPreferences.runExportAfterLogin)
+            && launchAtLoginEnabled
+        draftRunExportAfterLoginEnabled = runExportAfterLoginEnabled
+        if runExportAfterLoginEnabled == false {
+            automationRecord.cancelPendingEventExports()
+        }
         rebuildScheduleState()
     }
 
@@ -156,7 +185,9 @@ final class CollectorStore: ObservableObject {
         let newInterval = boundedScheduleInterval(draftScheduleIntervalMinutes)
         let newLaunchAtLogin = draftLaunchAtLoginEnabled
         let newLaunchMinimized = draftLaunchMinimizedEnabled
+        let newRunExportAfterLogin = newLaunchAtLogin && draftRunExportAfterLoginEnabled
         let launchAtLoginChanged = newLaunchAtLogin != launchAtLoginEnabled
+        let runExportAfterLoginChanged = newRunExportAfterLogin != runExportAfterLoginEnabled
 
         if launchAtLoginChanged {
             do {
@@ -178,16 +209,19 @@ final class CollectorStore: ObservableObject {
         draftLaunchAtLoginEnabled = launchAtLoginEnabled
         launchMinimizedEnabled = newLaunchMinimized
         draftLaunchMinimizedEnabled = newLaunchMinimized
+        runExportAfterLoginEnabled = newRunExportAfterLogin
+        draftRunExportAfterLoginEnabled = newRunExportAfterLogin
         persistConfiguration()
         persistScheduleInterval()
         defaults.set(launchMinimizedEnabled, forKey: AppPreferences.launchMinimized)
+        defaults.set(runExportAfterLoginEnabled, forKey: AppPreferences.runExportAfterLogin)
 
         automationRecord.setIntervalMinutes(newInterval, now: Date())
-        if launchAtLoginChanged {
-            if launchAtLoginEnabled {
+        if launchAtLoginChanged || runExportAfterLoginChanged {
+            if launchAtLoginEnabled, runExportAfterLoginEnabled {
                 markCurrentLoginSessionHandled()
             } else {
-                automationRecord.cancelPendingLoginExport()
+                automationRecord.cancelPendingEventExports()
             }
         }
         persistAutomationRecord()
@@ -201,6 +235,7 @@ final class CollectorStore: ObservableObject {
         draftScheduleIntervalMinutes = scheduleIntervalMinutes
         draftLaunchAtLoginEnabled = launchAtLoginEnabled
         draftLaunchMinimizedEnabled = launchMinimizedEnabled
+        draftRunExportAfterLoginEnabled = runExportAfterLoginEnabled
     }
 
     func requestSectionChange(_ section: AppSection) {
@@ -431,6 +466,10 @@ final class CollectorStore: ObservableObject {
 
     func setDraftLaunchAtLogin(_ enabled: Bool) {
         draftLaunchAtLoginEnabled = enabled
+        if enabled == false {
+            draftLaunchMinimizedEnabled = false
+            draftRunExportAfterLoginEnabled = false
+        }
     }
 
     func refreshLaunchAtLoginStatus() {
@@ -625,8 +664,7 @@ final class CollectorStore: ObservableObject {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    try? await Task.sleep(nanoseconds: 5_000_000_000)
-                    await self?.evaluateAutomaticExports()
+                    await self?.handleWake()
                 }
             }
         }
@@ -647,6 +685,19 @@ final class CollectorStore: ObservableObject {
         await executeExport(requestedTriggers: triggers)
     }
 
+    private func handleWake() async {
+        if runExportAfterLoginEnabled {
+            let original = automationRecord
+            automationRecord.scheduleWakeExport(at: Date())
+            if automationRecord != original {
+                persistAutomationRecord()
+                rebuildScheduleState()
+            }
+        }
+        try? await Task.sleep(nanoseconds: 5_000_000_000)
+        await evaluateAutomaticExports()
+    }
+
     private func initializeLoginScheduling() {
         let initialized = defaults.bool(forKey: AppPreferences.loginSchedulingInitialized)
         if initialized == false {
@@ -656,7 +707,7 @@ final class CollectorStore: ObservableObject {
                 let elapsed = now.timeIntervalSince($0.startedAt)
                 return elapsed >= 0 && elapsed <= LoginLaunchBehavior.automaticLaunchWindow
             } ?? false
-            if launchAtLoginEnabled, nearLogin, let session {
+            if launchAtLoginEnabled, runExportAfterLoginEnabled, nearLogin, let session {
                 automationRecord.scheduleLoginExport(for: session)
             } else {
                 automationRecord.markLoginSessionHandled(session)
@@ -672,7 +723,7 @@ final class CollectorStore: ObservableObject {
     private func resumeAfterCleanShutdown() {
         guard defaults.object(forKey: AppPreferences.cleanShutdownAt) != nil else { return }
         defaults.removeObject(forKey: AppPreferences.cleanShutdownAt)
-        automationRecord.deferOverdueRecurringRun(from: Date())
+        automationRecord.resumeAfterCleanShutdown(at: Date())
     }
 
     private func syncLoginScheduling() {
@@ -683,16 +734,24 @@ final class CollectorStore: ObservableObject {
         }
         lastLoginSessionCheckAt = now
         let hadDraftLoginChange = draftLaunchAtLoginEnabled != launchAtLoginEnabled
+        let hadDraftEventChange = draftRunExportAfterLoginEnabled != runExportAfterLoginEnabled
         launchAtLoginEnabled = LoginItemManager.isConfigured
         launchAtLoginStatus = LoginItemManager.statusDescription
         if hadDraftLoginChange == false {
             draftLaunchAtLoginEnabled = launchAtLoginEnabled
         }
+        if launchAtLoginEnabled == false, runExportAfterLoginEnabled {
+            runExportAfterLoginEnabled = false
+            defaults.set(false, forKey: AppPreferences.runExportAfterLogin)
+        }
+        if hadDraftEventChange == false {
+            draftRunExportAfterLoginEnabled = runExportAfterLoginEnabled
+        }
         let original = automationRecord
-        if launchAtLoginEnabled, let session = ConsoleLoginSession.current() {
+        if launchAtLoginEnabled, runExportAfterLoginEnabled, let session = ConsoleLoginSession.current() {
             automationRecord.scheduleLoginExport(for: session)
         } else {
-            automationRecord.cancelPendingLoginExport()
+            automationRecord.cancelPendingEventExports()
         }
         if automationRecord != original {
             persistAutomationRecord()
@@ -725,7 +784,7 @@ final class CollectorStore: ObservableObject {
 
             adoptLegacySchedule(legacy)
             if legacy.isCurrentRunActive {
-                if launchAtLoginEnabled {
+                if launchAtLoginEnabled, runExportAfterLoginEnabled {
                     automationRecord.markLoginSessionHandled(ConsoleLoginSession.current())
                     persistAutomationRecord()
                 }
@@ -776,6 +835,7 @@ final class CollectorStore: ObservableObject {
         automationRecord.lastExportedAt = legacy.lastExportedAt
         automationRecord.lastOutputPath = legacy.lastOutputPath
         if launchAtLoginEnabled,
+           runExportAfterLoginEnabled,
            let session = ConsoleLoginSession.current(),
            let lastSuccessAt = automationRecord.lastSuccessAt,
            lastSuccessAt >= session.startedAt {
@@ -913,6 +973,8 @@ final class CollectorStore: ObservableObject {
                 : "WhatsApp Collector is retrying migration from the older automatic-export scheduler."
         } else if automationRecord.enabled {
             nextStep = "Automatic exports run while WhatsApp Collector remains open in the menu bar. Closing the dashboard is fine; choosing Quit stops automation."
+        } else if runExportAfterLoginEnabled {
+            nextStep = "Recurring exports are off. The optional login-and-wake export remains enabled."
         } else {
             nextStep = "Recurring automatic exports are off."
         }
@@ -926,6 +988,7 @@ final class CollectorStore: ObservableObject {
                 switch trigger {
                 case .login: "login"
                 case .recurring: "recurring schedule"
+                case .wake: "wake from sleep"
                 }
             }
             .joined(separator: " and ")

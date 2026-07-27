@@ -95,6 +95,45 @@ func simultaneousLoginAndRecurringTriggersCoalesceIntoOneRun() {
 }
 
 @Test
+func wakeExportRunsFiveMinutesAfterOneWakeEvent() {
+    var record = AutomationScheduleRecord()
+    record.scheduleWakeExport(at: baseDate)
+    let due = baseDate.addingTimeInterval(AutomationScheduleRecord.wakeDelay)
+
+    record.scheduleWakeExport(at: baseDate.addingTimeInterval(10))
+
+    #expect(record.wakeRunAt == due)
+    #expect(record.dueTriggers(at: due.addingTimeInterval(-1)).isEmpty)
+    #expect(record.dueTriggers(at: due) == [.wake])
+}
+
+@Test
+func wakeExportCoalescesWithRecurrenceDueBeforeIt() {
+    var record = AutomationScheduleRecord(intervalMinutes: 2)
+    record.setEnabled(true, now: baseDate)
+
+    record.scheduleWakeExport(at: baseDate)
+    let due = baseDate.addingTimeInterval(AutomationScheduleRecord.wakeDelay)
+
+    #expect(record.nextRecurringRunAt == due)
+    #expect(record.dueTriggers(at: due) == [.recurring, .wake])
+}
+
+@Test
+func disablingEventExportsCancelsLoginAndWakeWork() {
+    let session = ConsoleLoginSession.make(username: "tester", uid: 501, loginSeconds: 1_800_000_000)
+    var record = AutomationScheduleRecord()
+    record.scheduleLoginExport(for: session)
+    record.scheduleWakeExport(at: baseDate)
+
+    record.cancelPendingEventExports()
+
+    #expect(record.loginRunAt == nil)
+    #expect(record.wakeRunAt == nil)
+    #expect(record.dueTriggers(at: baseDate.addingTimeInterval(10 * 60)).isEmpty)
+}
+
+@Test
 func overdueRecurringRunCatchesUpOnceAfterWake() {
     var record = AutomationScheduleRecord(intervalMinutes: 15)
     record.setEnabled(true, now: baseDate)
@@ -120,12 +159,35 @@ func overdueRecurringRunCatchesUpOnceAfterWake() {
 func cleanRelaunchDefersWorkMissedWhileAppWasQuit() {
     var record = AutomationScheduleRecord(intervalMinutes: 20)
     record.setEnabled(true, now: baseDate)
+    let session = ConsoleLoginSession.make(username: "tester", uid: 501, loginSeconds: 1_800_000_000)
+    record.scheduleLoginExport(for: session)
+    record.scheduleWakeExport(at: baseDate)
     let relaunchedAt = baseDate.addingTimeInterval(2 * 60 * 60)
 
-    record.deferOverdueRecurringRun(from: relaunchedAt)
+    record.resumeAfterCleanShutdown(at: relaunchedAt)
 
     #expect(record.dueTriggers(at: relaunchedAt).isEmpty)
+    #expect(record.loginRunAt == nil)
+    #expect(record.wakeRunAt == nil)
     #expect(record.nextRecurringRunAt == relaunchedAt.addingTimeInterval(20 * 60))
+}
+
+@Test
+func recordsFromBeforeWakeSchedulingStillDecode() throws {
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    let encoded = try encoder.encode(AutomationScheduleRecord(intervalMinutes: 15))
+    var payload = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    payload.removeValue(forKey: "wakeRunAt")
+    payload.removeValue(forKey: "lastWakeEventAt")
+    let legacyData = try JSONSerialization.data(withJSONObject: payload)
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+
+    let decoded = try decoder.decode(AutomationScheduleRecord.self, from: legacyData)
+
+    #expect(decoded.wakeRunAt == nil)
+    #expect(decoded.lastWakeEventAt == nil)
 }
 
 @Test

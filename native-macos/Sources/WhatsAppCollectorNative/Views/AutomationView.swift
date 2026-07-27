@@ -19,7 +19,7 @@ struct AutomationView: View {
                     scheduledRunText: store.scheduledExportStatusText
                 )
 
-                GroupBox("Launch at Login") {
+                GroupBox("Login & Wake") {
                     VStack(alignment: .leading, spacing: 12) {
                         Toggle(isOn: Binding(
                             get: { store.draftLaunchAtLoginEnabled },
@@ -28,7 +28,16 @@ struct AutomationView: View {
                             Label("Open WhatsApp Collector when you log in", systemImage: "power")
                         }
                         .toggleStyle(.switch)
-                        Text("When enabled, WhatsApp Collector runs one export five minutes after each login, even when recurring exports are off.")
+                        Text("Launches the WhatsApp Collector menu-bar app after you sign in. This setting alone does not run an export.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+
+                        Toggle(isOn: $store.draftRunExportAfterLoginEnabled) {
+                            Label("Run an export after login", systemImage: "arrow.clockwise.circle")
+                        }
+                        .toggleStyle(.switch)
+                        .disabled(store.draftLaunchAtLoginEnabled == false)
+                        Text("Optional. Runs one export five minutes after you log in following startup or restart, five minutes after you sign out and later log back into this macOS account (including after using another or Guest account), and five minutes after the Mac wakes from sleep. Recurring exports can remain off.")
                             .font(.callout)
                             .foregroundStyle(.secondary)
 
@@ -49,6 +58,11 @@ struct AutomationView: View {
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         }
+                        if let pendingWakeExportAt = store.pendingWakeExportAt {
+                            Text("Next wake export: \(DisplayFormatters.date(pendingWakeExportAt))")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .padding(.vertical, 4)
                 }
@@ -59,7 +73,7 @@ struct AutomationView: View {
                             Text("Status")
                                 .foregroundStyle(.secondary)
                             Spacer()
-                            Text(store.schedule?.displayState ?? "Unknown")
+                            Text(store.automationStatusText)
                                 .font(.headline)
                         }
                         HStack {

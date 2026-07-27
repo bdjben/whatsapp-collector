@@ -8,4 +8,5 @@ enum AppPreferences {
     static let loginSchedulingInitialized = "loginSchedulingInitialized"
     static let lastWindowLaunchSessionID = "lastWindowLaunchSessionID"
     static let pendingChromeOwnershipPath = "pendingChromeOwnershipPath"
+    static let runExportAfterLogin = "runExportAfterLogin"
 }

@@ -82,7 +82,7 @@ struct HelpView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Use the Automation tab to start or stop recurring exports. Recurring exports run while WhatsApp Collector remains open in the menu bar. You may close the dashboard window; choosing Quit stops future automatic exports. If the Mac sleeps through a due time, the app performs one catch-up export after wake. Reopening after an explicit Quit starts a fresh interval instead of replaying missed runs.")
                             .foregroundStyle(.secondary)
-                        Text("Turn on Open at Login to start the menu-bar app automatically and run one export five minutes after each login, even when recurrence is off. The dashboard can stay hidden during login launches. Saving changed settings updates the next run without starting an export; use Run Export when you want one immediately.")
+                        Text("Open at Login only starts the menu-bar app. The separate, default-off Run an Export After Login option runs once five minutes after login following startup or restart, once after you sign out and later log back into this macOS account (including after using another or Guest account), and once five minutes after wake from sleep. Recurring exports can remain off. The dashboard can stay hidden during login launches.")
                             .foregroundStyle(.secondary)
                         Button {
                             Task { await store.installSchedule() }

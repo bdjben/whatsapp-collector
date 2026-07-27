@@ -69,8 +69,8 @@ struct DashboardView: View {
                 systemImage: "calendar.badge.clock"
             )
             MetricTile(
-                title: "Schedule",
-                value: store.schedule?.displayState ?? "Unknown",
+                title: "Automation",
+                value: store.automationStatusText,
                 detail: scheduleDetail,
                 systemImage: "clock.arrow.circlepath"
             )

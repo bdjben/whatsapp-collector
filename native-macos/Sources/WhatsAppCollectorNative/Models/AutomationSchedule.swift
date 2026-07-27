@@ -3,10 +3,13 @@ import Foundation
 enum AutomaticExportTrigger: String, Codable, Hashable, Sendable {
     case login
     case recurring
+    case wake
 }
 
 struct AutomationScheduleRecord: Codable, Equatable, Sendable {
     static let loginDelay: TimeInterval = 5 * 60
+    static let wakeDelay: TimeInterval = 5 * 60
+    static let wakeDeduplicationWindow: TimeInterval = 60
 
     var enabled: Bool
     var intervalMinutes: Int
@@ -14,6 +17,8 @@ struct AutomationScheduleRecord: Codable, Equatable, Sendable {
     var loginSessionID: String?
     var loginRunAt: Date?
     var loginAttemptedSessionID: String?
+    var wakeRunAt: Date?
+    var lastWakeEventAt: Date?
     var currentRunStartedAt: Date?
     var currentRunTriggers: Set<AutomaticExportTrigger>
     var lastRunAt: Date?
@@ -31,6 +36,8 @@ struct AutomationScheduleRecord: Codable, Equatable, Sendable {
         loginSessionID = nil
         loginRunAt = nil
         loginAttemptedSessionID = nil
+        wakeRunAt = nil
+        lastWakeEventAt = nil
         currentRunStartedAt = nil
         currentRunTriggers = []
         lastRunAt = nil
@@ -89,9 +96,38 @@ struct AutomationScheduleRecord: Codable, Equatable, Sendable {
         loginAttemptedSessionID = loginSessionID
     }
 
+    mutating func scheduleWakeExport(at wakeDate: Date) {
+        if let lastWakeEventAt {
+            let elapsed = wakeDate.timeIntervalSince(lastWakeEventAt)
+            if elapsed >= 0, elapsed < Self.wakeDeduplicationWindow {
+                return
+            }
+        }
+        lastWakeEventAt = wakeDate
+        let dueAt = wakeDate.addingTimeInterval(Self.wakeDelay)
+        wakeRunAt = dueAt
+        if enabled, let nextRecurringRunAt, nextRecurringRunAt <= dueAt {
+            self.nextRecurringRunAt = dueAt
+        }
+    }
+
+    mutating func cancelPendingWakeExport() {
+        wakeRunAt = nil
+    }
+
+    mutating func cancelPendingEventExports() {
+        cancelPendingLoginExport()
+        cancelPendingWakeExport()
+    }
+
     mutating func deferOverdueRecurringRun(from now: Date) {
         guard enabled, let nextRecurringRunAt, nextRecurringRunAt <= now else { return }
         self.nextRecurringRunAt = Self.nextRun(after: now, intervalMinutes: intervalMinutes)
+    }
+
+    mutating func resumeAfterCleanShutdown(at now: Date) {
+        cancelPendingEventExports()
+        deferOverdueRecurringRun(from: now)
     }
 
     func dueTriggers(at now: Date) -> Set<AutomaticExportTrigger> {
@@ -104,6 +140,9 @@ struct AutomationScheduleRecord: Codable, Equatable, Sendable {
            let loginSessionID,
            loginAttemptedSessionID != loginSessionID {
             triggers.insert(.login)
+        }
+        if let wakeRunAt, wakeRunAt <= now {
+            triggers.insert(.wake)
         }
         return triggers
     }
@@ -122,6 +161,9 @@ struct AutomationScheduleRecord: Codable, Equatable, Sendable {
         if triggers.contains(.login) {
             loginRunAt = nil
             loginAttemptedSessionID = loginSessionID
+        }
+        if triggers.contains(.wake) {
+            wakeRunAt = nil
         }
         currentRunTriggers.formUnion(triggers)
     }

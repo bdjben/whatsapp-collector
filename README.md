@@ -152,11 +152,16 @@ Changing collection or schedule settings takes effect after you click **Save
 Changes**. Saving does not start an export. Use **Run Export** when you want one
 immediately.
 
-**Open WhatsApp Collector when you log in** starts the menu-bar app and schedules
-one export five minutes after each login, even if recurring exports are off.
-The optional hidden-dashboard setting keeps login launches out of the way while
-leaving the menu-bar item available. A manual app launch still shows the
-dashboard.
+**Open WhatsApp Collector when you log in** only starts the menu-bar app; it does
+not run an export by itself. The optional hidden-dashboard setting keeps login
+launches out of the way while leaving the menu-bar item available. A manual app
+launch still shows the dashboard.
+
+**Run an export after login** is a separate, default-off option. When enabled,
+the app runs one export five minutes after login following startup or restart,
+five minutes after you sign out and later log back into this macOS account
+(including after using another or Guest account), and five minutes after the
+Mac wakes from sleep. Recurring exports can remain off.
 
 ### Diagnostics And Help
 
