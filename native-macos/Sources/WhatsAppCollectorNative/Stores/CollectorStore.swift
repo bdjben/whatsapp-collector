@@ -18,6 +18,7 @@ final class CollectorStore: ObservableObject {
     @Published var busyState: BusyState = .idle
     @Published var lastError: String?
     @Published var diagnostics: String = ""
+    @Published private(set) var lastExportFailureDiagnostics: String = ""
     @Published var aiPrompt: String = DisplayFormatters.aiPrompt(path: CollectorConfiguration.defaultOutputPath)
     @Published var scheduleIntervalMinutes: Int = 15
     @Published var draftScheduleIntervalMinutes: Int = 15
@@ -46,6 +47,11 @@ final class CollectorStore: ObservableObject {
     private var didBootstrap = false
 
     var isBusy: Bool { busyState != .idle }
+
+    var displayedDiagnostics: String {
+        guard lastExportFailureDiagnostics.isEmpty == false else { return diagnostics }
+        return "LAST EXPORT FAILURE (retained for troubleshooting)\n\(lastExportFailureDiagnostics)\n\nLATEST RESPONSE\n\(diagnostics)"
+    }
 
     var hasUnsavedChanges: Bool {
         draftConfiguration != configuration
@@ -136,6 +142,7 @@ final class CollectorStore: ObservableObject {
         draftScheduleIntervalMinutes = loadedAutomation.intervalMinutes
         aiPrompt = DisplayFormatters.aiPrompt(path: loadedConfiguration.outputPath)
         availableLabels = Self.loadStringArray(for: .availableLabels, from: UserDefaults.standard)
+        lastExportFailureDiagnostics = defaults.string(forKey: "lastExportFailureDiagnostics") ?? ""
         refreshLaunchAtLoginStatus()
         draftLaunchAtLoginEnabled = launchAtLoginEnabled
         launchMinimizedEnabled = UserDefaults.standard.bool(forKey: AppPreferences.launchMinimized)
@@ -639,6 +646,10 @@ final class CollectorStore: ObservableObject {
             } else {
                 lastError = error.localizedDescription
                 diagnostics = error.localizedDescription
+            }
+            if command == .runExport {
+                lastExportFailureDiagnostics = "\(Self.isoFormatter.string(from: Date()))\n\(diagnostics)"
+                defaults.set(lastExportFailureDiagnostics, forKey: "lastExportFailureDiagnostics")
             }
             return nil
         }

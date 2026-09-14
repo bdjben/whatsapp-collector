@@ -287,7 +287,9 @@ System Settings > Displays, then click **Save Changes**.
 
 ### Export fails
 
-Open **Diagnostics** and check the latest bridge response. Common causes are:
+Open **Diagnostics** and check the latest bridge response and retained last
+export failure. The last failure includes its timestamp and remains available
+after a status refresh or app restart. Common causes are:
 
 - Chrome is not installed.
 - WhatsApp Web is not logged in inside the dedicated profile.
@@ -297,6 +299,14 @@ Open **Diagnostics** and check the latest bridge response. Common causes are:
 Starting an export while Chrome is closed is supported: the app automatically
 opens the configured dedicated profile and verifies its exact process before it
 collects anything.
+
+If an error mentions `configured-labeled-chat-message-capture-incomplete`, the
+collector could not capture messages from a chat covered by an optional
+**Always Include** label rule. The error names the affected chats, and
+Diagnostics includes the lookup failures. The previous valid JSON is preserved.
+Version **1.1.22** fixes a case where a masked contact number prevented chat
+lookup: it can search by the stored full phone number and verify the opened
+chat's identity before exporting its messages.
 
 ### Automatic exports are not running
 

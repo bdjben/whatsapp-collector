@@ -164,12 +164,19 @@ def assess_export_quality(payload: dict[str, Any]) -> dict[str, Any]:
             }
         )
     if payload.get("allowLabels") and labeled_message_warnings:
+        prior_report = payload.get("exportQuality")
+        prior_issues = prior_report.get("issues", []) if isinstance(prior_report, dict) else []
+        failed_threads = next((
+            issue.get("threads", []) for issue in prior_issues
+            if isinstance(issue, dict) and issue.get("code") == "configured-labeled-chat-message-capture-incomplete"
+        ), [])
         issues.append(
             {
                 "code": "configured-labeled-chat-message-capture-incomplete",
                 "severity": "error",
                 "detail": "At least one non-locked Always Include chat could not be opened to capture its recent messages.",
                 "warnings": labeled_message_warnings[:5],
+                **({"threads": failed_threads} if failed_threads else {}),
             }
         )
 
@@ -217,7 +224,19 @@ def quality_error_message(report: dict[str, Any]) -> str:
     if not isinstance(issues, list) or not issues:
         return "WhatsApp export failed quality validation."
     codes = [str(issue.get("code") or "unknown") for issue in issues if isinstance(issue, dict)]
-    return "WhatsApp export failed quality validation: " + ", ".join(codes)
+    message = "WhatsApp export failed quality validation: " + ", ".join(codes)
+    failed_names = [
+        str(thread.get("chatTitle") or "Unknown chat")
+        for issue in issues if isinstance(issue, dict)
+        for thread in issue.get("threads", []) if isinstance(thread, dict)
+        if issue.get("code") == "configured-labeled-chat-message-capture-incomplete"
+    ]
+    if failed_names:
+        message += ". Could not capture recent messages from Always Include chats: " + ", ".join(failed_names[:5])
+        if len(failed_names) > 5:
+            message += f" (and {len(failed_names) - 5} more)"
+        message += ". See Diagnostics for details."
+    return message
 
 
 def restore_latest_acceptable_backup(output_path: Path) -> Path | None:

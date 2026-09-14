@@ -4,9 +4,11 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 import socket
 import socketserver
 import struct
+import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler
 from typing import Any
@@ -283,6 +285,42 @@ def test_devtools_bridge_opens_exact_chat_through_sidebar_search_without_enter(
     assert [request["params"]["key"] for request in key_requests] == ["Backspace", "Backspace"]
     assert not any(request["params"].get("key") == "Enter" for request in key_requests)
     assert [request["method"] for request in state.requests].count("Input.dispatchMouseEvent") == 6
+
+
+@pytest.mark.parametrize("expected_jids,expected_x", [([], 10), (["right@lid"], 20), (["absent@lid"], None)])
+def test_sidebar_result_matches_formatted_phone_and_prefers_chat_identity(monkeypatch, expected_jids, expected_x):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is used only to execute JavaScript regression fixtures")
+    bridge = ChromeDevToolsBridge(port=19220)
+    expressions = []
+    monkeypatch.setattr(bridge, "_choose_target", lambda **kwargs: {})
+    monkeypatch.setattr(bridge, "_send", lambda *args: {})
+    monkeypatch.setattr(devtools_bridge.time, "sleep", lambda _: None)
+
+    def point(target, expression):
+        expressions.append(expression)
+        return {"x": 1, "y": 1}
+
+    monkeypatch.setattr(bridge, "_evaluate_point", point)
+    bridge.open_chat_via_search("+447700900123", expected_jids=expected_jids)
+    expression = next(js for js in expressions if "WA_COLLECTOR_SEARCH_RESULT_POINT" in js)
+    fixture = '''
+        const row = (id, x, title) => ({
+            offsetParent: {}, innerText: title,
+            __reactFiber$test: {memoizedProps:{chat:{id:{_serialized:id}}}},
+            querySelector: () => ({getAttribute: () => title}),
+            scrollIntoView() {},
+            getBoundingClientRect: () => ({left:x, top:0, width:0, height:0})
+        });
+        const document = {querySelectorAll: () => [
+            row('wrong@lid', 10, '+44 7700 900123'),
+            row('right@lid', 20, 'Renamed contact')
+        ]};
+    '''
+    result = subprocess.run([node, "-e", fixture + "console.log(JSON.stringify(" + expression + "));"], check=True, capture_output=True, text=True)
+    value = json.loads(result.stdout)
+    assert (value["x"] if value else None) == expected_x
 
 
 def test_devtools_bridge_activates_and_waits_for_whatsapp_readiness(fake_devtools_server, monkeypatch) -> None:

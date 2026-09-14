@@ -61,10 +61,7 @@ struct CollectorBridge: Sendable {
         try process.run()
         stdin.fileHandleForWriting.write(input)
         stdin.fileHandleForWriting.closeFile()
-        process.waitUntilExit()
-
-        let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
-        let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+        let (outputData, errorData) = BridgeProcessOutput.waitForExit(process, stdout: stdout, stderr: stderr)
         let output = String(data: outputData, encoding: .utf8) ?? ""
         let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
 
@@ -152,6 +149,40 @@ struct CollectorBridge: Sendable {
             parts.append("stderr:\n\(error)")
         }
         return parts.joined(separator: "\n\n")
+    }
+}
+
+enum BridgeProcessOutput {
+    static func waitForExit(_ process: Process, stdout: Pipe, stderr: Pipe) -> (Data, Data) {
+        let output = PipeReader(handle: stdout.fileHandleForReading)
+        let errors = PipeReader(handle: stderr.fileHandleForReading)
+        let readers = DispatchGroup()
+        // Drain both pipes while the bridge runs; waiting first can deadlock on a large diagnostic response.
+        for reader in [output, errors] {
+            readers.enter()
+            DispatchQueue.global(qos: .utility).async {
+                reader.read()
+                readers.leave()
+            }
+        }
+        process.waitUntilExit()
+        readers.wait()
+        return (output.data, errors.data)
+    }
+
+    private final class PipeReader: @unchecked Sendable {
+        private let handle: FileHandle
+        private let lock = NSLock()
+        private var bytes = Data()
+
+        init(handle: FileHandle) { self.handle = handle }
+
+        func read() {
+            let result = handle.readDataToEndOfFile()
+            lock.withLock { bytes = result }
+        }
+
+        var data: Data { lock.withLock { bytes } }
     }
 }
 

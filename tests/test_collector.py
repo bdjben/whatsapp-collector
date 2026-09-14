@@ -1,6 +1,10 @@
 import base64
 import hashlib
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from whatsapp_collector.collector import (
     CHAT_LIST_BODY_JS,
@@ -2192,6 +2196,133 @@ def test_opened_chat_falls_back_to_exact_sidebar_search_when_row_is_not_visible(
     assert messages[0]["text"] == "Recent visible message"
 
 
+class IdentityFallbackSession:
+    def __init__(self, *, opened_jid="123@lid", visible_wrong_chat=False, fail_search=False):
+        self.opened_jid = opened_jid
+        self.visible_wrong_chat = visible_wrong_chat
+        self.fail_search = fail_search
+        self.searched = []
+        self.cleared = 0
+
+    def run_json(self, js):
+        if "CHAT_LIST_RESET" in js:
+            return {"ok": True}
+        if "OPENED_CHAT_RECENT_MESSAGES" in js:
+            jid = "unrelated@lid" if self.visible_wrong_chat and not self.searched else self.opened_jid
+            return {
+                "openedChatTitle": "+44 7700 900123",
+                "openedChatJid": jid,
+                "messages": [{"id": f"false_{jid}_message", "from": jid, "t": 1783503974, "type": "chat", "body": "Expected message"}],
+            }
+        raise AssertionError("Unexpected script")
+
+    def run_async_json(self, script, **kwargs):
+        if '"contact"' in script:
+            return {"rows": [{"key": "123@lid", "value": {"id": "123@lid", "displayNameLID": "+44\u2219\u2219\u2219\u221923", "phoneNumber": "447700900123@c.us"}}]}
+        if '"chat"' in script:
+            return {"rows": [{"key": "123@lid", "value": {"id": "123@lid"}}]}
+        raise AssertionError("Unexpected database lookup")
+
+    def clear_sidebar_search(self):
+        self.cleared += 1
+
+    def click_point(self, expression):
+        if not self.visible_wrong_chat:
+            raise RuntimeError("Not in visible list")
+
+    def open_chat_via_search(self, name, *, expected_jids):
+        self.searched.append((name, expected_jids))
+        if self.fail_search:
+            raise RuntimeError("No matching chat in search")
+
+
+def test_masked_labeled_contact_uses_full_phone_number_and_verifies_chat_identity():
+    session = IdentityFallbackSession()
+    collector = WhatsAppCollector(session=session)
+    messages = collector._opened_chat_recent_messages_for_chat("+44\u2219\u2219\u2219\u221923", max_messages=15, thread_key="123@lid")
+
+    assert [name for name, _ in session.searched] == ["+447700900123"]
+    assert set(session.searched[0][1]) == {"123@lid", "447700900123@c.us", "447700900123@s.whatsapp.net"}
+    assert messages[0]["messageId"] == "false_123@lid_message"
+    assert messages[0]["text"] == "Expected message"
+
+
+def test_wrong_visible_chat_retries_search_and_does_not_export_wrong_messages():
+    session = IdentityFallbackSession(visible_wrong_chat=True)
+    collector = WhatsAppCollector(session=session)
+    messages = collector._opened_chat_recent_messages_for_chat("Example Contact", max_messages=15, thread_key="123@lid")
+
+    assert session.searched[0][0] == "Example Contact"
+    assert [message["messageId"] for message in messages] == ["false_123@lid_message"]
+
+
+def test_mismatched_chat_is_reported_as_failure_even_when_title_is_an_exact_match():
+    session = IdentityFallbackSession(opened_jid="unrelated@lid")
+    collector = WhatsAppCollector(session=session)
+    with pytest.raises(RuntimeError, match="Opened chat identity did not match"):
+        collector._opened_chat_recent_messages_for_chat("+44 7700 900123", max_messages=15, thread_key="123@lid")
+
+
+def test_chat_identity_does_not_treat_internal_lid_as_a_phone_number():
+    collector = WhatsAppCollector(session=IdentityFallbackSession())
+    names, jids = collector._chat_open_identity("123@lid", "123@lid")
+    assert names == ["+447700900123"]
+    assert "123@lid" in jids
+
+
+def test_chat_identity_preserves_non_latin_and_emoji_names():
+    collector = WhatsAppCollector(session=object())
+    for name in ["\u05e9\u05dc\u05d5\u05dd", "\U0001f680", "jane@example.com"]:
+        names, _ = collector._chat_open_identity(name, None)
+        assert names == [name]
+        assert collector._opened_chat_matches_identity({"openedChatTitle": name}, candidates=names, expected_jids=[])
+
+
+def test_chat_identity_rejects_messages_from_another_chat_despite_matching_header():
+    collector = WhatsAppCollector(session=object())
+    assert not collector._opened_chat_matches_identity(
+        {"openedChatJid": "123@lid", "openedChatTitle": "Example", "messages": [{"id": "false_unrelated@lid_msg"}]},
+        candidates=["Example"], expected_jids=["123@lid"],
+    )
+
+
+def test_labeled_capture_failure_keeps_chat_details_after_quality_revalidation():
+    from whatsapp_collector.export_quality import ExportQualityError, validate_export_quality
+
+    class FailedChatCollector(WhatsAppCollector):
+        def collect_snapshot(self):
+            return Snapshot("WhatsApp", "https://web.whatsapp.com/", [], [])
+
+        def collect_labeled_threads(self, **kwargs):
+            return [IndexedDBThread("123@lid", "Example Contact", None, ["Clients"], None, 0, "", None, False, [])]
+
+        def _is_locked_chat(self, jid):
+            return False
+
+        def _opened_chat_recent_messages_for_chat(self, *args, **kwargs):
+            raise RuntimeError("No matching chat in search")
+
+        def _excluded_recent_chat_names(self, labels):
+            return set()
+
+        def collect_chat_list(self):
+            return []
+
+        def _recent_default_view_exports(self, **kwargs):
+            return []
+
+        def _recent_indexeddb_chat_exports(self, **kwargs):
+            return []
+
+    payload = FailedChatCollector(session=object()).collect_dashboard_export(allow_labels=["Clients"])
+    with pytest.raises(ExportQualityError, match="Example Contact") as raised:
+        validate_export_quality(payload)
+    issue = next(i for i in raised.value.report["issues"] if i["code"] == "configured-labeled-chat-message-capture-incomplete")
+    assert issue["threads"][0]["chatTitle"] == "Example Contact"
+    assert issue["threads"][0]["issues"][0]["detail"] == "No matching chat in search"
+    assert "labeled-message-capture-failed:1" in payload["exportWarnings"]
+
+
 def test_chat_list_reset_clears_sidebar_search_even_when_reset_script_fails() -> None:
     class ResetFailureSession:
         def __init__(self) -> None:
@@ -2227,6 +2358,35 @@ def test_opened_chat_recent_messages_js_scrolls_to_load_enough_visible_history()
     assert "sourceMessageId: messageId(child)" in script
     assert "selectedMediaMessages.set(messageId(child), child)" in script
     assert ".slice(0, maxMessages)" in script
+
+
+def test_opened_chat_capture_rejects_a_chat_change_during_collection():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is used only to execute JavaScript regression fixtures")
+    fixture = '''
+        const window = {};
+        const setTimeout = callback => callback();
+        let headerReads = 0;
+        const msg = {id:{_serialized:'false_expected@lid_message'}, type:'chat', body:'Fixture', t:100};
+        const container = {__reactFiber$test:{memoizedProps:{msg}}};
+        const document = {
+            querySelector(selector) {
+                if (selector === '#main header') {
+                    return {__reactFiber$test:{memoizedProps:{chat:{id:{_serialized:++headerReads === 1 ? 'expected@lid' : 'other@lid'}}}}};
+                }
+                return null;
+            },
+            querySelectorAll(selector) {
+                if (selector.includes('header [title]')) return [{getAttribute:()=>'Example'}];
+                if (selector.includes('msg-container')) return [container];
+                return [];
+            }
+        };
+    '''
+    script = WhatsAppCollector._opened_chat_recent_messages_js(max_messages=1)
+    result = subprocess.run([node, "-e", fixture + script + ".then(()=>{process.exitCode=1}).catch(error=>console.log(error.message));"], check=True, capture_output=True, text=True)
+    assert "The opened chat changed during message capture" in result.stdout
 
 
 def test_latest_thread_summary_prefers_latest_recent_message_over_preview_inference() -> None:

@@ -99,10 +99,10 @@ class ChromeWhatsAppSession:
             raise RuntimeError("Click-point requires DevTools-backed Chrome session")
         return self._devtools.click_point(expression)
 
-    def open_chat_via_search(self, chat_name: str) -> dict[str, Any]:
+    def open_chat_via_search(self, chat_name: str, *, expected_jids: list[str] | None = None) -> dict[str, Any]:
         if self._devtools is None:
             raise RuntimeError("Sidebar chat search requires a DevTools-backed Chrome session")
-        return self._devtools.open_chat_via_search(chat_name)
+        return self._devtools.open_chat_via_search(chat_name, expected_jids=expected_jids)
 
     def clear_sidebar_search(self) -> dict[str, Any]:
         if self._devtools is None:

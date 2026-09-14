@@ -47,7 +47,7 @@ struct DiagnosticsView: View {
             }
             .padding(.horizontal, 22)
 
-            TextEditor(text: $store.diagnostics)
+            TextEditor(text: .constant(store.displayedDiagnostics))
                 .font(.system(.body, design: .monospaced))
                 .textSelection(.enabled)
                 .padding(8)

@@ -9,6 +9,7 @@ import json
 import mimetypes
 import re
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from whatsapp_collector.attachment_store import (
     StoreResult,
 )
 from whatsapp_collector.chrome_session import ChromeWhatsAppSession
+from whatsapp_collector.devtools_bridge import CHAT_IDENTITY_HELPERS_JS
 from whatsapp_collector.export_quality import attach_export_quality
 from whatsapp_collector.models import (
     ChatRow,
@@ -369,6 +371,7 @@ class WhatsAppCollector:
         export_warnings: list[str] = []
         message_capture_skipped_count = 0
         labeled_message_capture_failed_count = 0
+        labeled_message_failures: list[dict[str, Any]] = []
         locked_labeled_chat_count = 0
         empty_labeled_chat_count = 0
         try:
@@ -433,6 +436,12 @@ class WhatsAppCollector:
                     locked_labeled_chat_count += 1
                 elif "opened-chat-check-failed" in issue_codes:
                     labeled_message_capture_failed_count += 1
+                    labeled_message_failures.append({
+                        "chatTitle": thread.display_name,
+                        "threadKey": thread.jid,
+                        "labels": clean_labels,
+                        "issues": (source_diagnostics or {}).get("issues", []),
+                    })
                 else:
                     empty_labeled_chat_count += 1
                 continue
@@ -519,6 +528,10 @@ class WhatsAppCollector:
         if export_warnings:
             payload["exportWarnings"] = export_warnings
         attach_export_quality(payload)
+        if labeled_message_failures:
+            for issue in payload["exportQuality"]["issues"]:
+                if issue.get("code") == "configured-labeled-chat-message-capture-incomplete":
+                    issue["threads"] = labeled_message_failures
         return payload
 
     def _model_storage_stores(self) -> list[str]:
@@ -1454,7 +1467,7 @@ class WhatsAppCollector:
 
         if opened_chat_error:
             if "requires a DevTools-backed Chrome session" not in opened_chat_error:
-                issues.append({"code": "opened-chat-check-failed", "detail": opened_chat_error[:240]})
+                issues.append({"code": "opened-chat-check-failed", "detail": opened_chat_error[:2000]})
         elif opened_chat_checked and not opened_chat_messages and not indexeddb_messages:
             issues.append({"code": "no-message-source-produced-exportable-content"})
 
@@ -1731,6 +1744,63 @@ class WhatsAppCollector:
             "retried": retried,
         }
 
+    def _chat_open_identity(self, chat_name: str, thread_key: str | None) -> tuple[list[str], list[str]]:
+        candidates = [chat_name]
+        jids = self._message_jid_aliases(thread_key)
+        if jids and hasattr(self.session, "run_async_json"):
+            try:
+                contact_rows = self._idb_get_many("contact", [thread_key])
+                chat_rows = self._idb_get_many("chat", [thread_key])
+            except (RuntimeError, TimeoutError, ValueError):
+                contact_rows, chat_rows = [], []
+            for row in [*contact_rows, *chat_rows]:
+                value = row.get("value") or {}
+                candidates.extend(value.get(key) for key in ("name", "shortName", "formattedTitle", "phoneNumber"))
+                for key in ("id", "phoneNumber", "historyChatId", "accountLid"):
+                    jids.extend(self._message_jid_aliases(value.get(key)))
+        # Only phone-address JIDs are phone numbers; @lid identifiers must never become search numbers.
+        candidates.extend(jid for jid in jids if jid.endswith(("@c.us", "@s.whatsapp.net")))
+        searchable: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            if not isinstance(candidate, str) or not candidate.strip():
+                continue
+            candidate = candidate.strip()
+            if candidate.endswith(("@c.us", "@s.whatsapp.net")):
+                candidate = "+" + candidate.split("@", 1)[0]
+            if candidate.endswith(("@lid", "@g.us", "@broadcast")) or re.search(r"[\u2219\u2022\u00b7*]{2,}", candidate):
+                continue
+            normalized = self._chat_lookup_name(candidate)
+            if normalized and normalized not in seen:
+                searchable.append(candidate)
+                seen.add(normalized)
+        return searchable[:4], list(dict.fromkeys(jids))
+
+    @staticmethod
+    def _chat_lookup_name(name: str) -> str:
+        normalized = unicodedata.normalize("NFKC", name).casefold()
+        normalized = re.sub(r"[\u200e\u200f]", "", normalized).strip()
+        if re.fullmatch(r"[+\d\s().-]+", normalized) and len(re.sub(r"\D", "", normalized)) >= 7:
+            return re.sub(r"\D", "", normalized)
+        return re.sub(r"\s+", " ", normalized)
+
+    def _opened_chat_matches_identity(
+        self, payload: dict[str, Any], *, candidates: list[str], expected_jids: list[str]
+    ) -> bool:
+        opened_jid = payload.get("openedChatJid")
+        if opened_jid and expected_jids and opened_jid not in expected_jids:
+            return False
+        message_jids = {
+            jid for item in payload.get("messages", []) if isinstance(item, dict)
+            if (jid := self._message_jid_from_storage_key(item.get("id")))
+        }
+        if message_jids and expected_jids:
+            return message_jids.issubset(set(expected_jids))
+        if opened_jid and expected_jids:
+            return True
+        opened_title = self._chat_lookup_name(str(payload.get("openedChatTitle") or ""))
+        return bool(opened_title) and any(opened_title == self._chat_lookup_name(name) for name in candidates)
+
     def _opened_chat_recent_messages_for_chat(
         self,
         chat_name: str,
@@ -1742,27 +1812,34 @@ class WhatsAppCollector:
         if not hasattr(self.session, "click_point"):
             raise RuntimeError("Opened-chat message capture requires a DevTools-backed Chrome session")
         self._reset_chat_list_to_top()
-        click_expression = self._chat_row_click_point_expression(chat_name)
-        try:
-            self.session.click_point(click_expression)
-        except RuntimeError as click_error:
-            if not hasattr(self.session, "open_chat_via_search"):
-                raise
-            try:
-                self.session.open_chat_via_search(chat_name)
-            except RuntimeError as search_error:
-                raise RuntimeError(
-                    f"Could not open WhatsApp chat {chat_name!r} from the visible list or exact sidebar search: "
-                    f"visible-list={click_error}; sidebar-search={search_error}"
-                ) from search_error
-        payload = self.session.run_json(self._opened_chat_recent_messages_js(max_messages=max_messages))
-        opened_title = str(payload.get("openedChatTitle") or "").strip()
-        if not opened_title:
-            return []
-        opened_normalized = self._normalized_chat_identity(opened_title)
-        target_normalized = self._normalized_chat_identity(chat_name)
-        if opened_normalized and target_normalized and opened_normalized != target_normalized:
-            return []
+        candidates, expected_jids = self._chat_open_identity(chat_name, thread_key)
+        errors: list[str] = []
+        payload: dict[str, Any] | None = None
+        for candidate in candidates:
+            for use_search in (False, True):
+                try:
+                    if use_search:
+                        if not hasattr(self.session, "open_chat_via_search"):
+                            break
+                        if expected_jids:
+                            self.session.open_chat_via_search(candidate, expected_jids=expected_jids)
+                        else:
+                            self.session.open_chat_via_search(candidate)
+                    else:
+                        self.session.click_point(self._chat_row_click_point_expression(candidate))
+                    captured = self.session.run_json(self._opened_chat_recent_messages_js(max_messages=max_messages))
+                    if not self._opened_chat_matches_identity(captured, candidates=candidates, expected_jids=expected_jids):
+                        raise RuntimeError(f"Opened chat identity did not match {chat_name!r} (opened title: {captured.get('openedChatTitle')!r})")
+                    payload = captured
+                    break
+                except RuntimeError as exc:
+                    route = "sidebar-search" if use_search else "visible-list"
+                    errors.append(f"{candidate!r} ({route}): {exc}")
+            if payload is not None:
+                break
+        if payload is None:
+            detail = "; ".join(errors) or "No usable contact name or full phone number was available."
+            raise RuntimeError(f"Could not capture WhatsApp chat {chat_name!r}. {detail}")
         messages = payload.get("messages")
         if not isinstance(messages, list):
             return []
@@ -1808,6 +1885,7 @@ class WhatsAppCollector:
     @staticmethod
     def _opened_chat_recent_messages_js(*, max_messages: int) -> str:
         return f'''(async () => {{
+            {CHAT_IDENTITY_HELPERS_JS}
             const maxMessages = {int(max_messages)};
             const maxInlineBytes = 8000000;
             const maxPasses = Math.max(4, Math.min(40, Math.ceil(maxMessages / 8) + 6));
@@ -1818,6 +1896,7 @@ class WhatsAppCollector:
                 .map(el => (el.getAttribute('title') || (el.textContent || '').trim()))
                 .filter(Boolean);
             const openedChatTitle = titleCandidates.find(title => !['Profile details', 'click here for contact info'].includes(title)) || '';
+            const openedChatJid = waCollectorChatId(document.querySelector('#main header'));
             const normalizeJid = (value) => {{
                 if (!value) return null;
                 if (typeof value === 'string') return value;
@@ -2031,7 +2110,10 @@ class WhatsAppCollector:
             }}
             window.__waCollectorSelectedMediaMessages = selectedMediaMessages;
             const messages = (await Promise.all(selected.map(item => summarizeMsg(item.msg, item.container)))).filter(Boolean);
-            return JSON.stringify({{OPENED_CHAT_RECENT_MESSAGES: true, openedChatTitle, messages}});
+            if (openedChatJid && waCollectorChatId(document.querySelector('#main header')) !== openedChatJid) {{
+                throw new Error('The opened chat changed during message capture.');
+            }}
+            return JSON.stringify({{OPENED_CHAT_RECENT_MESSAGES: true, openedChatTitle, openedChatJid, messages}});
         }})()'''
 
     @staticmethod

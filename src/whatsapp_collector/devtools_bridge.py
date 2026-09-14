@@ -15,6 +15,20 @@ from typing import Any, Callable
 _WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _DEFAULT_TIMEOUT_SECONDS = 120.0
 
+CHAT_IDENTITY_HELPERS_JS = '''
+    const waCollectorChatId = element => {
+        const key = element && Object.keys(element).find(key => key.startsWith('__reactFiber$'));
+        let fiber = key ? element[key] : null;
+        for (let depth = 0; fiber && depth < 32; depth++, fiber = fiber.return) {
+            const props = fiber.memoizedProps;
+            const id = props && (props.chat || props.chatModel)?.id;
+            const serialized = typeof id === 'string' ? id : id?._serialized;
+            if (typeof serialized === 'string' && serialized.includes('@')) return serialized;
+        }
+        return null;
+    };
+'''
+
 
 class _LocalWebSocket:
     def __init__(self, url: str, *, timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS) -> None:
@@ -634,6 +648,7 @@ class ChromeDevToolsBridge:
         self,
         chat_name: str,
         *,
+        expected_jids: list[str] | None = None,
         attempts: int = 20,
         delay_seconds: float = 0.25,
     ) -> dict[str, Any]:
@@ -673,14 +688,21 @@ class ChromeDevToolsBridge:
             name_json = json.dumps(target_name)
             result_expression = rf'''(() => {{
                 /* WA_COLLECTOR_SEARCH_RESULT_POINT */
+                {CHAT_IDENTITY_HELPERS_JS}
                 const targetName = {name_json};
+                const expectedJids = new Set({json.dumps(expected_jids or [])});
                 const normalize = value => String(value || '').normalize('NFKC').replace(/[\u200e\u200f]/g, '').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
                 const wanted = normalize(targetName);
+                const phone = value => /^[+\d\s().-]+$/.test(value) && value.replace(/\D/g, '').length >= 7
+                    ? value.replace(/\D/g, '') : null;
+                const wantedPhone = phone(wanted);
                 const rows = [...document.querySelectorAll('#pane-side [role="row"], #pane-side [data-testid^="list-item-"]')]
                     .filter(element => element.offsetParent !== null);
-                const row = rows.find(element => {{
-                    const titles = [...element.querySelectorAll('[title]')].map(item => item.getAttribute('title'));
-                    if (titles.some(title => normalize(title) === wanted)) return true;
+                const row = rows.find(element => expectedJids.has(waCollectorChatId(element))) || rows.find(element => {{
+                    const jid = waCollectorChatId(element);
+                    if (jid && expectedJids.size && !expectedJids.has(jid)) return false;
+                    const title = element.querySelector('[data-testid="cell-frame-title"] [title], [title]')?.getAttribute('title');
+                    if (title && (normalize(title) === wanted || (wantedPhone && phone(normalize(title)) === wantedPhone))) return true;
                     const firstLine = String(element.innerText || '').split('\n').map(normalize).find(Boolean);
                     return firstLine === wanted;
                 }});
@@ -699,6 +721,7 @@ class ChromeDevToolsBridge:
                     last_error = exc
                     time.sleep(max(0.0, float(delay_seconds)))
             if result_point is None:
+                self._clear_sidebar_search_for_target(target)
                 raise RuntimeError(
                     f"No exact WhatsApp sidebar search result appeared for {target_name!r}: {last_error}"
                 ) from last_error
