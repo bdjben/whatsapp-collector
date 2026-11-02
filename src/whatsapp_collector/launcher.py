@@ -22,6 +22,11 @@ DEFAULT_FALLBACK_DISPLAY_NAME = "LAPTOP"
 DEFAULT_DEBUG_PORT = 19220
 DEFAULT_PLACEMENT_MODE = "edge-hidden"
 DEFAULT_SETTLE_SECONDS = 15.0
+BACKGROUND_EXPORT_FLAGS = (
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+)
 EDGE_PLACEMENT_VISIBLE_SLIVER = 48
 EDGE_PLACEMENT_WIDTH = 420
 EDGE_PLACEMENT_HEIGHT = 220
@@ -248,6 +253,15 @@ def debug_port_has_profile_conflict(debug_port: int, profile_dir: Path) -> bool:
         if not _command_has_exact_argument(command, profile_argument):
             return True
     return False
+
+
+def _owned_browser_missing_background_flags(profile_dir: Path, debug_port: int) -> list[int]:
+    output = _chrome_process_output()
+    owned = set(_matching_chrome_process_ids(output, required_arguments=(
+        f"--user-data-dir={profile_dir.expanduser()}", f"--remote-debugging-port={int(debug_port)}",
+    )))
+    configured = set(_matching_chrome_process_ids(output, required_arguments=BACKGROUND_EXPORT_FLAGS, expected_pids=owned))
+    return sorted(owned - configured)
 
 
 def load_display_frames() -> dict[str, DisplayFrame]:
@@ -521,6 +535,7 @@ def launch_dedicated_chrome_window(
         f"--remote-debugging-port={int(debug_port)}",
         "--no-first-run",
         "--no-default-browser-check",
+        *BACKGROUND_EXPORT_FLAGS,
         "--new-window",
         target_url,
     ]
@@ -579,11 +594,19 @@ def ensure_dedicated_whatsapp_window(
     )
 
     launched = False
+    background_flags_upgraded = False
 
     def relaunch_window() -> None:
         nonlocal launched
-        terminate_profile_processes(profile_dir)
-        terminate_debug_port_processes(debug_port)
+        if debug_port_has_profile_conflict(debug_port, profile_dir):
+            raise RuntimeError("DevTools port belongs to another Chrome profile; refusing to restart it")
+        owned_pids = set(chrome_profile_process_ids(profile_dir, debug_port=debug_port))
+        other_profile_pids = set(chrome_profile_process_ids(profile_dir)) - owned_pids
+        if other_profile_pids:
+            raise RuntimeError("Dedicated profile is running on another port; refusing to restart it")
+        termination = terminate_profile_processes(profile_dir, debug_port=debug_port, expected_pids=owned_pids)
+        if termination.get("remainingProcessIds"):
+            raise RuntimeError("Dedicated Chrome did not stop; refusing to launch a competing instance")
         if delay_seconds:
             time.sleep(delay_seconds)
         launch_dedicated_chrome_window(
@@ -600,17 +623,23 @@ def ensure_dedicated_whatsapp_window(
         _activate_whatsapp_target(bridge)
 
     if debug_port_has_profile_conflict(debug_port, profile_dir):
-        relaunch_window()
+        raise RuntimeError("DevTools port belongs to another Chrome profile; refusing to restart it")
     else:
+        needs_relaunch = False
         try:
             bridge.wait_until_ready(attempts=1, delay_seconds=delay_seconds)
             bridge.wait_until_page_targets_exist(attempts=1, delay_seconds=delay_seconds)
             bridge.wait_until_target_url_exists(attempts=1, delay_seconds=delay_seconds)
-            if _marker_targets(bridge):
-                relaunch_window()
+            if _owned_browser_missing_background_flags(profile_dir, debug_port):
+                needs_relaunch = True
+                background_flags_upgraded = True
+            elif _marker_targets(bridge):
+                needs_relaunch = True
             else:
                 _activate_whatsapp_target(bridge)
         except RuntimeError:
+            needs_relaunch = True
+        if needs_relaunch:
             relaunch_window()
 
     bounds = placement_bounds(display, placement_mode)
@@ -641,6 +670,8 @@ def ensure_dedicated_whatsapp_window(
         "targetUrl": target_url,
         "debugPort": int(debug_port),
         "launched": launched,
+        "backgroundFlagsUpgraded": background_flags_upgraded,
+        "backgroundExportFlags": list(BACKGROUND_EXPORT_FLAGS),
         "chromeProcessIds": chrome_process_ids,
         "chromeProcessId": chrome_process_ids[0] if chrome_process_ids else None,
     }

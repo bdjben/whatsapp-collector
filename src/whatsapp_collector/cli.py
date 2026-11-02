@@ -292,8 +292,9 @@ def main(argv: Sequence[str] | None = None, *, collector: WhatsAppCollector | No
                     max_all_chats=max_all_chats,
                     include_groups=args.include_groups,
                     attachments_dir=output_path.parent / "Attachments",
+                    previous_export=current_export.payload,
                 )
-                validate_export_quality(payload)
+                validate_export_quality(payload, previous_export=current_export.payload)
                 payload["written_to"] = str(
                     write_atomic_json(payload, output_path, known_current=current_export)
                 )

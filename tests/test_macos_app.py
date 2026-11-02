@@ -219,7 +219,11 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     app_preferences_source = (project / "native-macos" / "Sources" / "WhatsAppCollectorNative" / "Support" / "AppPreferences.swift").read_text()
 
     assert 'MenuBarExtra("W↗")' in app_source
-    assert "@StateObject private var updateMonitor = UpdateMonitor()" in app_source
+    delegate_source, scene_source = app_source.split("@main", 1)
+    assert "let updateMonitor = UpdateMonitor()" in delegate_source
+    assert "startBackgroundServices()" in delegate_source
+    assert "await store.bootstrap()" in delegate_source
+    assert "await store.bootstrap()" not in scene_source
     assert "updateMonitor.startAutomaticChecks()" in app_source
     assert "Task { await updateMonitor.checkNow(trigger: .manual) }" in app_source
     assert "Update Available:" in app_source

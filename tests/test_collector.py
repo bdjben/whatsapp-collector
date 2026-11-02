@@ -30,6 +30,7 @@ class StubSession:
             }
         if "CHAT_LIST_BODY" in js:
             return {
+                "bodyScope": "sidebar",
                 "body": "All\nUnread\nFavorites\nGroups\nExample Contact\nTuesday\nNeed to push to beginning of may\nExample Lead\nMonday\nHaha i hear you\n7 unread messages\nNew Prospect\nSunday\nWould love to connect\nExcluded Contact\nSunday\nShould be excluded\n"
             }
         raise AssertionError(f"Unexpected js: {js}")
@@ -191,11 +192,11 @@ def test_navigation_js_targets_all_and_collapsed_labels_filter() -> None:
     assert 'biz-tools-labels' in LABELS_BODY_JS
     assert "'Labels','Lists'" in LABELS_BODY_JS
     assert 'CHAT_LIST_RESET' in CHAT_LIST_RESET_JS
-    assert "aria-label')||'')==='Chats'" in CHAT_LIST_RESET_JS
-    assert "['Close','Back']" in CHAT_LIST_RESET_JS
+    assert "getAttribute('aria-label') === 'Chats'" in CHAT_LIST_RESET_JS
+    assert "['Close', 'Back']" in CHAT_LIST_RESET_JS
     assert 'getElementById("all-filter")' in CHAT_LIST_BODY_JS
-    assert 'scrollTop=0' in CHAT_LIST_RESET_JS
-    assert '\\d{1,2}:\\d{2}(?:\\s?[AP]M)?' in CHAT_LIST_BODY_JS
+    assert 'scrollTop = 0' in CHAT_LIST_RESET_JS
+    assert r'\d{1,2}:\d{2}(?:\s?[AP]M)?' in CHAT_LIST_BODY_JS
 
 
 def test_plan_all_view_rows_honors_configured_recent_all_view_chat_count() -> None:
@@ -796,7 +797,7 @@ def test_indexeddb_album_children_are_coalesced_into_parent_message() -> None:
     serialized = collector._serialize_recent_messages(messages)
     assert [message["messageId"] for message in serialized] == ["false_thread@lid_chat", "false_thread@lid_album"]
     album = serialized[1]
-    assert album["timestamp"] == "1970-01-01T00:01:42+00:00"
+    assert album["timestamp"] == "1970-01-01T00:01:40+00:00"
     assert album["text"] == "Album caption"
     assert [item["sourceMessageId"] for item in album["attachments"]] == [
         "false_thread@lid_child_1",
@@ -875,6 +876,7 @@ def test_downloaded_attachment_wins_when_message_sources_merge() -> None:
 
     assert merged["attachments"][0]["status"] == "downloaded"
     assert merged["attachments"][0]["localPath"] == "/tmp/file.pdf"
+    assert "skippedReason" not in merged["attachments"][0]
 
 
 def test_attachment_id_does_not_change_when_filename_becomes_more_accurate() -> None:
@@ -1109,7 +1111,7 @@ def test_collect_labeled_threads_includes_all_labeled_chats_except_archive_label
             if "LABELS_BODY" in js:
                 return {"body": "Labels"}
             if "CHAT_LIST_BODY" in js:
-                return {"rows": [], "body": "All"}
+                return {"rows": [], "body": "All", "bodyScope": "sidebar"}
             raise AssertionError(f"Unexpected js: {js}")
 
         def run_async_json(self, script: str, result_var: str = "__hermes_async_result"):
@@ -1288,7 +1290,10 @@ def test_collect_dashboard_export_emits_labeled_plus_recent_default_view_threads
     assert payload["excludeLabels"] == DEFAULT_EXCLUDED_LABELS
     assert payload["maxRecentMessages"] == 15
     assert [thread["chatTitle"] for thread in payload["threads"]] == ["Example Contact", "New Prospect", "Example Lead"]
-    assert sorted(payload["threads"], key=lambda thread: thread["chatTitle"]) == [
+    assert all("cached-history-still-stale" not in [issue["code"] for issue in thread.get("sourceDiagnostics", {}).get("issues", [])]
+               for thread in payload["threads"])
+    assert sorted(({key: value for key, value in thread.items() if key not in {"sourceDiagnostics", "sourceViews"}}
+                   for thread in payload["threads"]), key=lambda thread: thread["chatTitle"]) == [
         {
             "threadKey": "141394635137028@lid",
             "chatTitle": "Example Contact",
@@ -1663,7 +1668,7 @@ def test_collect_dashboard_export_limits_indexeddb_fallback_to_same_top_recency_
             if "CHAT_LIST_RESET" in js:
                 return {"ok": True}
             if "CHAT_LIST_BODY" in js:
-                return {"rows": [], "body": "All"}
+                return {"rows": [], "body": "All", "bodyScope": "sidebar"}
             if "OPENED_CHAT_RECENT_MESSAGES" in js:
                 raise RuntimeError("no visible rows")
             raise AssertionError(f"Unexpected js: {js}")
@@ -1746,7 +1751,7 @@ def test_collect_dashboard_export_can_skip_groups_unless_always_include_label_ma
             if "CHAT_LIST_RESET" in js:
                 return {"ok": True}
             if "CHAT_LIST_BODY" in js:
-                return {"rows": [], "body": "All"}
+                return {"rows": [], "body": "All", "bodyScope": "sidebar"}
             raise AssertionError(f"Unexpected js: {js}")
 
         def run_async_json(self, script: str, result_var: str = "__hermes_async_result"):

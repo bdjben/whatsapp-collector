@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import math
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from whatsapp_collector.message_expiry import complete_live_capture, confirmed_empty, epoch, expected_expired
 
 
 LATEST_CONTENT_UNAVAILABLE_THREAD_LIMIT = 2
@@ -28,6 +31,21 @@ def assess_export_quality(payload: dict[str, Any]) -> dict[str, Any]:
     text_unavailable_count = 0
     content_available_count = 0
     content_unavailable_count = 0
+    keys = Counter(str(thread.get("threadKey") or "").strip() for thread in thread_items if isinstance(thread, dict))
+    duplicates = [key for key, count in keys.items() if key and count > 1]
+    if duplicates:
+        issues.append({"code": "duplicate-thread-ids", "severity": "error",
+                       "detail": "Multiple records have the same resolved chat identity.", "threadKeys": duplicates})
+    if keys.get("", 0):
+        issues.append({"code": "missing-thread-id", "severity": "error", "count": keys[""]})
+    empty_count = sum(confirmed_empty(_object(thread.get("sourceDiagnostics")))
+                      for thread in thread_items if isinstance(thread, dict) and not _thread_messages(thread))
+    unverified_empty_threads = [{"threadKey": thread.get("threadKey"), "chatTitle": _thread_title(thread)}
+                               for thread in thread_items if isinstance(thread, dict) and not _thread_messages(thread)
+                               and not confirmed_empty(_object(thread.get("sourceDiagnostics")))]
+    if unverified_empty_threads:
+        issues.append({"code": "unverified-empty-thread", "severity": "error", "threads": unverified_empty_threads,
+                       "detail": "An empty exported thread lacks a completed identity-verified live capture."})
     raw_export_warnings = payload.get("exportWarnings")
     export_warnings = [
         str(warning)
@@ -38,7 +56,8 @@ def assess_export_quality(payload: dict[str, Any]) -> dict[str, Any]:
     for thread in thread_items:
         if not isinstance(thread, dict):
             continue
-        source_view_counts[str(thread.get("sourceView") or "labeled/forced")] += 1
+        for view in set(thread.get("sourceViews") or [thread.get("sourceView") or "labeled/forced"]):
+            source_view_counts[str(view)] += 1
         messages = _thread_messages(thread)
         if not messages:
             continue
@@ -72,7 +91,7 @@ def assess_export_quality(payload: dict[str, Any]) -> dict[str, Any]:
                 "detail": "The export did not contain any threads.",
             }
         )
-    if thread_count > 0 and message_count <= 0:
+    if thread_count > 0 and message_count <= 0 and empty_count != thread_count:
         issues.append(
             {
                 "code": "no-messages-captured",
@@ -141,6 +160,78 @@ def assess_export_quality(payload: dict[str, Any]) -> dict[str, Any]:
     labeled_message_warnings = [
         warning for warning in export_warnings if warning.startswith("labeled-message-capture-failed:")
     ]
+    stale_cached_threads = [
+        {"chatTitle": _thread_title(thread), "threadKey": thread.get("threadKey"),
+         "issues": _object(thread.get("sourceDiagnostics")).get("issues", [])}
+        for thread in thread_items if isinstance(thread, dict)
+        if any(issue.get("code") == "cached-history-still-stale"
+               for issue in _object(thread.get("sourceDiagnostics")).get("issues", []) if isinstance(issue, dict))
+    ]
+    incomplete_live_threads = [
+        {"chatTitle": _thread_title(thread), "threadKey": thread.get("threadKey"),
+         "sourceDiagnostics": _object(thread.get("sourceDiagnostics"))}
+        for thread in thread_items if isinstance(thread, dict)
+        if _object(thread.get("sourceDiagnostics")).get("captureIncomplete")
+        or any(_object(_object(thread.get("sourceDiagnostics")).get("captureState")).get(flag)
+               for flag in ("isLoading", "waitTimedOut", "timedOut", "timeout"))
+    ]
+    if incomplete_live_threads:
+        issues.append({
+            "code": "live-chat-capture-incomplete", "severity": "error", "threads": incomplete_live_threads,
+            "detail": "Live capture remained loading, timed out, or stale after bounded recovery; cached content cannot prove completion.",
+        })
+    identity_conflicts = [finding for finding in _object(payload.get("exportDiagnostics")).get("identityConsolidation", [])
+                          if any(conflict.get("code") in {"matching-message-timestamp-conflict", "newer-evidence-outside-complete-capture"}
+                                 for conflict in finding.get("conflicts", []))]
+    if identity_conflicts:
+        issues.append({"code": "conflicting-message-identity", "severity": "error", "threads": identity_conflicts,
+                       "detail": "Records for one chat disagree on a message timestamp; the collector cannot resolve this safely."})
+    unconfirmed_empty = [thread for thread in _object(payload.get("exportDiagnostics")).get("skippedThreads", [])
+                         if any(issue.get("code") == "empty-chat-not-confirmed"
+                                for issue in _object(thread.get("sourceDiagnostics")).get("issues", []) if isinstance(issue, dict))]
+    if unconfirmed_empty:
+        issues.append({"code": "empty-chat-capture-unverified", "severity": "error", "threads": unconfirmed_empty,
+                       "detail": "A selected conversation returned no messages without positive proof that its live history is empty."})
+    if stale_cached_threads:
+        issues.append({
+            "code": "cached-history-refresh-incomplete", "severity": "error",
+            "detail": "Cached messages are older than known chat recency and could not be refreshed from the live conversation.",
+            "threads": stale_cached_threads,
+        })
+    comparison = _object(_object(payload.get("exportDiagnostics")).get("historyComparison"))
+    regressions = comparison.get("unverifiedRegressions", [])
+    if regressions:
+        issues.append({
+            "code": "unverified-history-regression", "severity": "error",
+            "detail": "A conversation regressed against the previous export without a successful live message capture.",
+            "threads": regressions,
+        })
+    attachment_items = [attachment
+                        for thread in thread_items if isinstance(thread, dict)
+                        for message in _thread_messages(thread)
+                        for attachment in message.get("attachments", []) if isinstance(attachment, dict)]
+    missing_attachments = [attachment for attachment in attachment_items if attachment.get("status") != "downloaded"]
+    if missing_attachments:
+        issues.append({
+            "code": "attachments-not-downloaded", "severity": "warning",
+            "detail": "Message content includes attachment metadata, but some attachment bytes were not retained.",
+            "count": len(missing_attachments),
+            "reasonCounts": dict(Counter(str(item.get("skippedReason") or "unknown") for item in missing_attachments)),
+        })
+    live_regressions = comparison.get("liveCapturedRegressions", [])
+    if live_regressions:
+        issues.append({
+            "code": "history-changed-after-live-capture", "severity": "warning",
+            "detail": "Live-captured history is shorter or older than the previous export; messages may have been removed or expired.",
+            "threads": live_regressions,
+        })
+    if comparison.get("expectedExpirations"):
+        issues.append({"code": "expected-message-expiration", "severity": "info",
+                       "detail": "Missing messages passed their observed expiry deadlines and were not marked kept.",
+                       "threads": comparison["expectedExpirations"]})
+    if empty_count:
+        issues.append({"code": "confirmed-empty-chats", "severity": "info", "count": empty_count,
+                       "detail": "Identity-verified live conversations finished loading and contain no exportable messages."})
     if payload.get("allowLabels") and label_collection_warnings:
         issues.append(
             {
@@ -182,7 +273,13 @@ def assess_export_quality(payload: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "ok": not any(issue.get("severity") == "error" for issue in issues),
-        "rulesVersion": 3,
+        "rulesVersion": 5,
+        "attachmentCompleteness": {
+            "complete": not missing_attachments,
+            "detected": len(attachment_items),
+            "downloaded": len(attachment_items) - len(missing_attachments),
+            "notDownloaded": len(missing_attachments),
+        },
         "thresholds": {
             "latestContentUnavailableThreadLimit": LATEST_CONTENT_UNAVAILABLE_THREAD_LIMIT,
             "perThreadContentUnavailableFraction": "1/3 rounded up",
@@ -192,6 +289,9 @@ def assess_export_quality(payload: dict[str, Any]) -> dict[str, Any]:
         "metrics": {
             "threadCount": thread_count,
             "messageCount": message_count,
+            "confirmedEmptyThreadCount": empty_count,
+            "expectedExpiredMessageCount": comparison.get("expectedExpiredMessageCount", 0),
+            "unexplainedMissingMessageCount": comparison.get("unexplainedMissingMessageCount", 0),
             "textAvailableCount": text_available_count,
             "textUnavailableCount": text_unavailable_count,
             "contentAvailableCount": content_available_count,
@@ -202,18 +302,118 @@ def assess_export_quality(payload: dict[str, Any]) -> dict[str, Any]:
                 label_collection_warnings + exclusion_filter_warnings + labeled_message_warnings
             ),
         },
-        "issues": issues,
+        # Existing downstream consumers treat every issue as a blocking error.
+        "issues": [issue for issue in issues if issue.get("severity") == "error"],
+        "observations": [issue for issue in issues if issue.get("severity") != "error"],
     }
 
 
-def attach_export_quality(payload: dict[str, Any]) -> dict[str, Any]:
+def compare_export_history(payload: dict[str, Any], previous_export: dict[str, Any]) -> dict[str, Any]:
+    previous_threads: dict[str, list[dict[str, Any]]] = {}
+    for thread in previous_export.get("threads", []):
+        if isinstance(thread, dict) and thread.get("threadKey"):
+            previous_threads.setdefault(str(thread["threadKey"]), []).append(thread)
+    unverified: list[dict[str, Any]] = []
+    live_captured: list[dict[str, Any]] = []
+    expirations: list[dict[str, Any]] = []
+    window_shifts: list[dict[str, Any]] = []
+    expired_count = missing_count = 0
+    comparable_counts = payload.get("maxRecentMessages") == previous_export.get("maxRecentMessages")
+    limit = _positive_int(payload.get("maxRecentMessages"))
+    selected = list(payload.get("threads", []))
+    present = {str(t.get("threadKey")) for t in selected if isinstance(t, dict)}
+    for skipped in _object(payload.get("exportDiagnostics")).get("skippedThreads", []):
+        if skipped.get("threadKey") and str(skipped["threadKey"]) not in present and skipped.get("reason") != "locked-chat":
+            selected.append({**skipped, "messages": [], "recentMessages": []})
+    for thread in selected:
+        if not isinstance(thread, dict):
+            continue
+        previous_records = previous_threads.get(str(thread.get("threadKey")))
+        if not previous_records:
+            continue
+        previous = previous_records[0]
+        old_by_id = {str(message.get("messageId")): message for record in previous_records
+                     for message in _thread_messages(record) if message.get("messageId")}
+        old_messages = sorted(old_by_id.values(), key=lambda m: epoch(m.get("timestamp")) or 0, reverse=True)
+        if limit:
+            old_messages = old_messages[:limit]
+        messages = _thread_messages(thread)
+        latest, old_latest = _latest_message_epoch(messages), _latest_message_epoch(old_messages)
+        older = old_latest is not None and (latest is None or latest < old_latest - 1)
+        shorter = comparable_counts and len(messages) < len(old_messages)
+        diagnostics = _object(thread.get("sourceDiagnostics"))
+        if any(issue.get("code") == "locked-chat-not-opened" for issue in diagnostics.get("issues", []) if isinstance(issue, dict)):
+            continue
+        current_ids = {str(message.get("messageId")) for message in messages if message.get("messageId")}
+        absent = [message for message in old_messages if str(message.get("messageId")) not in current_ids]
+        oldest_current = min((epoch(m.get("timestamp")) for m in messages if epoch(m.get("timestamp"))), default=None)
+        outside_window = [m for m in absent if limit and len(messages) >= limit and oldest_current
+                          and epoch(m.get("timestamp")) and epoch(m["timestamp"]) < oldest_current]
+        absent = [m for m in absent if m not in outside_window]
+        expired = [m for m in absent if expected_expired(m, payload.get("exportedAt"))]
+        unexplained = [m for m in absent if m not in expired]
+        if not comparable_counts and not older:
+            unexplained = []
+        expired_count += len(expired)
+        missing_count += len(unexplained)
+        if not older and not shorter and not absent:
+            if outside_window:
+                window_shifts.append({"threadKey": thread.get("threadKey"), "messageCount": len(outside_window)})
+            continue
+        if not comparable_counts and not older and not expired:
+            continue
+        freshly_captured = complete_live_capture(diagnostics, limit)
+        finding = {
+            "chatTitle": _thread_title(thread), "threadKey": thread.get("threadKey"),
+            "previousMessageCount": len(old_messages), "currentMessageCount": len(messages),
+            "previousLatestAt": previous.get("lastMessageAt"), "currentLatestAt": thread.get("lastMessageAt"),
+            "latestTimestampRegressed": older, "messageCountDecreased": shorter,
+            "expectedExpiredMessageCount": len(expired), "unexplainedMissingMessageCount": len(unexplained),
+            "outsideRecentWindowMessageCount": len(outside_window), "confirmedEmpty": confirmed_empty(diagnostics),
+            "expiryEvidenceMissingCount": sum(not m.get("expiry") for m in unexplained),
+            "missingMessages": [{"messageId": m.get("messageId"), "timestamp": m.get("timestamp"),
+                                 "reason": "expected-expiration" if m in expired else "unexplained",
+                                 "expiry": m.get("expiry")} for m in absent],
+        }
+        finding["classification"] = ("expected-expiration" if expired and not unexplained else
+                                     "confirmed-live-history-change" if freshly_captured else "unverified-loss")
+        if expired and not unexplained:
+            expirations.append(finding)
+        else:
+            (live_captured if freshly_captured else unverified).append(finding)
+    return {
+        "previousExportedAt": previous_export.get("exportedAt"),
+        "unverifiedRegressions": unverified, "liveCapturedRegressions": live_captured,
+        "expectedExpirations": expirations, "recentWindowShifts": window_shifts,
+        "expectedExpiredMessageCount": expired_count, "unexplainedMissingMessageCount": missing_count,
+        "expiryBoundaryGraceSeconds": 120,
+    }
+
+
+def _latest_message_epoch(messages: list[dict[str, Any]]) -> float | None:
+    timestamps: list[float] = []
+    for message in messages:
+        try:
+            timestamps.append(datetime.fromisoformat(str(message.get("timestamp") or "").replace("Z", "+00:00")).timestamp())
+        except (ValueError, OverflowError, OSError):
+            continue
+    return max(timestamps) if timestamps else None
+
+
+def _object(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def attach_export_quality(payload: dict[str, Any], *, previous_export: dict[str, Any] | None = None) -> dict[str, Any]:
+    if previous_export:
+        payload.setdefault("exportDiagnostics", {})["historyComparison"] = compare_export_history(payload, previous_export)
     report = assess_export_quality(payload)
     payload["exportQuality"] = report
     return report
 
 
-def validate_export_quality(payload: dict[str, Any]) -> dict[str, Any]:
-    report = attach_export_quality(payload)
+def validate_export_quality(payload: dict[str, Any], *, previous_export: dict[str, Any] | None = None) -> dict[str, Any]:
+    report = attach_export_quality(payload, previous_export=previous_export)
     if not report["ok"]:
         raise ExportQualityError(report)
     return report

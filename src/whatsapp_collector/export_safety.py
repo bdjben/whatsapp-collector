@@ -6,7 +6,7 @@ import os
 import shutil
 import tempfile
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -36,6 +36,7 @@ class ExportFileAssessment:
     fingerprint: FileFingerprint | None = None
     quality: dict[str, Any] | None = None
     error: str | None = None
+    payload: dict[str, Any] | None = field(default=None, repr=False)
 
     @property
     def acceptable(self) -> bool:
@@ -120,6 +121,7 @@ def assess_export_file(output_path: Path) -> ExportFileAssessment:
         "acceptable" if report["ok"] else "degraded",
         fingerprint=after,
         quality=report,
+        payload=payload if report["ok"] else None,
     )
 
 

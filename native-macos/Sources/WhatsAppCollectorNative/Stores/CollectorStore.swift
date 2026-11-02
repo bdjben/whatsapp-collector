@@ -16,9 +16,13 @@ final class CollectorStore: ObservableObject {
     @Published var export: WhatsAppExport?
     @Published var selectedThreadID: String?
     @Published var busyState: BusyState = .idle
+    @Published private(set) var exportProgress: ExportProgress?
+    @Published private(set) var displayedExportProgress: ExportProgress?
     @Published var lastError: String?
     @Published var diagnostics: String = ""
+    @Published private(set) var exportContentDiagnostics: String = ""
     @Published private(set) var lastExportFailureDiagnostics: String = ""
+    @Published private(set) var lastSchedulerCheckAt: Date?
     @Published var aiPrompt: String = DisplayFormatters.aiPrompt(path: CollectorConfiguration.defaultOutputPath)
     @Published var scheduleIntervalMinutes: Int = 15
     @Published var draftScheduleIntervalMinutes: Int = 15
@@ -34,7 +38,7 @@ final class CollectorStore: ObservableObject {
     @Published var draftRunExportAfterLoginEnabled: Bool = false
 
     private let bridge = CollectorBridge()
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
     private var automationRecord = AutomationScheduleRecord()
     private var automationTask: Task<Void, Never>?
     private var legacyMigrationTask: Task<Void, Never>?
@@ -49,8 +53,43 @@ final class CollectorStore: ObservableObject {
     var isBusy: Bool { busyState != .idle }
 
     var displayedDiagnostics: String {
-        guard lastExportFailureDiagnostics.isEmpty == false else { return diagnostics }
-        return "LAST EXPORT FAILURE (retained for troubleshooting)\n\(lastExportFailureDiagnostics)\n\nLATEST RESPONSE\n\(diagnostics)"
+        var sections = ["NATIVE AUTOMATION (current scheduler)\n\(automationDiagnostics.formattedJSON)"]
+        if let exportProgress {
+            sections.append("LATEST EXPORT PROGRESS (last reported phase, not proof of completion)\n\(exportProgress.summary)\n\(exportProgress.detail ?? "")")
+        }
+        if exportContentDiagnostics.isEmpty == false {
+            sections.append("CURRENT EXPORT (saved content quality, skipped chats, and media outcomes)\n\(exportContentDiagnostics)")
+        }
+        if lastExportFailureDiagnostics.isEmpty == false {
+            sections.append("LAST EXPORT FAILURE (retained for troubleshooting; may precede a later successful export)\n\(lastExportFailureDiagnostics)")
+        }
+        sections.append("LATEST BRIDGE RESPONSE (its schedule field describes the retired LaunchAgent, not native automation)\n\(diagnostics)")
+        return sections.joined(separator: "\n\n")
+    }
+
+    var automationDiagnostics: AutomationDiagnostics {
+        let blockedReason: String?
+        if automationTask == nil {
+            blockedReason = didBootstrap ? "Startup initialization is in progress." : "Application startup has not initialized automation."
+        } else if legacyMigrationPending {
+            blockedReason = "Waiting for migration from the older scheduler."
+        } else if exportInProgress {
+            blockedReason = "An export is already running."
+        } else if isBusy {
+            blockedReason = "Waiting for the current \(busyState.title.lowercased()) operation."
+        } else {
+            blockedReason = nil
+        }
+        return AutomationDiagnostics(
+            appVersion: AppMetadata.shortVersionString,
+            schedulerActive: automationTask != nil,
+            schedulerInitializedAt: automationTask == nil ? nil : automationRecord.schedulerInitializedAt,
+            lastSchedulerCheckAt: lastSchedulerCheckAt,
+            blockedReason: blockedReason,
+            launchAtLoginEnabled: launchAtLoginEnabled,
+            runExportAfterLoginEnabled: runExportAfterLoginEnabled,
+            schedule: automationRecord
+        )
     }
 
     var hasUnsavedChanges: Bool {
@@ -123,16 +162,17 @@ final class CollectorStore: ObservableObject {
         return export?.threads.first { $0.id == selectedThreadID }
     }
 
-    init() {
-        let loadedConfiguration = Self.loadConfiguration(from: UserDefaults.standard)
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        let loadedConfiguration = Self.loadConfiguration(from: defaults)
         let legacyInterval: Int
-        if UserDefaults.standard.object(forKey: DefaultsKey.scheduleIntervalMinutes.rawValue) == nil {
+        if defaults.object(forKey: DefaultsKey.scheduleIntervalMinutes.rawValue) == nil {
             legacyInterval = 15
         } else {
-            legacyInterval = max(1, UserDefaults.standard.integer(forKey: DefaultsKey.scheduleIntervalMinutes.rawValue))
+            legacyInterval = max(1, defaults.integer(forKey: DefaultsKey.scheduleIntervalMinutes.rawValue))
         }
         let loadedAutomation = Self.loadAutomationRecord(
-            from: UserDefaults.standard,
+            from: defaults,
             fallbackIntervalMinutes: legacyInterval
         )
         configuration = loadedConfiguration
@@ -141,13 +181,13 @@ final class CollectorStore: ObservableObject {
         scheduleIntervalMinutes = loadedAutomation.intervalMinutes
         draftScheduleIntervalMinutes = loadedAutomation.intervalMinutes
         aiPrompt = DisplayFormatters.aiPrompt(path: loadedConfiguration.outputPath)
-        availableLabels = Self.loadStringArray(for: .availableLabels, from: UserDefaults.standard)
+        availableLabels = Self.loadStringArray(for: .availableLabels, from: defaults)
         lastExportFailureDiagnostics = defaults.string(forKey: "lastExportFailureDiagnostics") ?? ""
         refreshLaunchAtLoginStatus()
         draftLaunchAtLoginEnabled = launchAtLoginEnabled
-        launchMinimizedEnabled = UserDefaults.standard.bool(forKey: AppPreferences.launchMinimized)
+        launchMinimizedEnabled = defaults.bool(forKey: AppPreferences.launchMinimized)
         draftLaunchMinimizedEnabled = launchMinimizedEnabled
-        runExportAfterLoginEnabled = UserDefaults.standard.bool(forKey: AppPreferences.runExportAfterLogin)
+        runExportAfterLoginEnabled = defaults.bool(forKey: AppPreferences.runExportAfterLogin)
             && launchAtLoginEnabled
         draftRunExportAfterLoginEnabled = runExportAfterLoginEnabled
         if runExportAfterLoginEnabled == false {
@@ -384,6 +424,7 @@ final class CollectorStore: ObservableObject {
         do {
             let data = try Data(contentsOf: url)
             let decoded = try JSONDecoder().decode(WhatsAppExport.self, from: data)
+            exportContentDiagnostics = ExportContentDiagnostics.formattedJSON(from: data)
             let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
             let modifiedAt = (attributes?[.modificationDate] as? Date).map { Self.isoFormatter.string(from: $0) }
             let sizeBytes = (attributes?[.size] as? NSNumber)?.intValue ?? data.count
@@ -417,6 +458,7 @@ final class CollectorStore: ObservableObject {
             lastError = nil
         } catch {
             export = nil
+            exportContentDiagnostics = ""
             selectedThreadID = nil
             if FileManager.default.fileExists(atPath: url.path) {
                 lastError = "Could not preview export: \(error.localizedDescription)"
@@ -562,9 +604,11 @@ final class CollectorStore: ObservableObject {
         automaticTriggers.formUnion(automationRecord.dueTriggers(at: startedAt))
         if automaticTriggers.isEmpty == false {
             automationRecord.beginRun(triggers: automaticTriggers, at: startedAt)
-            persistAutomationRecord()
-            rebuildScheduleState()
+        } else {
+            automationRecord.beginAttempt(triggers: [], at: startedAt)
         }
+        persistAutomationRecord()
+        rebuildScheduleState()
 
         await closePendingOwnedChromeNow()
         let ownershipURL = pendingChromeOwnershipURL
@@ -612,6 +656,15 @@ final class CollectorStore: ObservableObject {
             )
             persistAutomationRecord()
             rebuildScheduleState()
+        } else {
+            automationRecord.finishAttempt(
+                at: completedAt,
+                outcome: succeeded ? .succeeded : .failed,
+                failureMessage: succeeded ? nil : lastError,
+                threadCount: response?.threadCount ?? response?.export?.threadCount
+            )
+            persistAutomationRecord()
+            rebuildScheduleState()
         }
         exportInProgress = false
     }
@@ -624,6 +677,21 @@ final class CollectorStore: ObservableObject {
     ) async -> BridgeResponse? {
         busyState = busy
         lastError = nil
+        if command == .runExport {
+            exportProgress = nil
+            displayedExportProgress = nil
+        }
+        let bridgeStartedAt = ContinuousClock.now
+        let (progressStream, progressContinuation) = AsyncStream<ExportProgress>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let progressTask = Task { @MainActor in
+            for await progress in progressStream {
+                if command == .runExport {
+                    self.exportProgress = progress
+                    // Producer phases use different clock origins; only the UI uses our shared clock.
+                    self.displayedExportProgress = progress.displayed(since: bridgeStartedAt)
+                }
+            }
+        }
         let bridge = self.bridge
         let config = configuration
         do {
@@ -632,13 +700,18 @@ final class CollectorStore: ObservableObject {
                     command,
                     configuration: config,
                     intervalMinutes: intervalMinutes,
-                    chromeOwnershipURL: chromeOwnershipURL
+                    chromeOwnershipURL: chromeOwnershipURL,
+                    onProgress: { progressContinuation.yield($0) }
                 )
             }.value
+            progressContinuation.finish()
+            await progressTask.value
             diagnostics = raw
             busyState = .idle
             return response
         } catch {
+            progressContinuation.finish()
+            await progressTask.value
             busyState = .idle
             if let bridgeError = error as? BridgeError {
                 lastError = bridgeError.message
@@ -668,6 +741,8 @@ final class CollectorStore: ObservableObject {
 
     private func startAutomationLoop() {
         guard automationTask == nil else { return }
+        automationRecord.schedulerInitializedAt = Date()
+        persistAutomationRecord()
         if wakeObserver == nil {
             wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
                 forName: NSWorkspace.didWakeNotification,
@@ -685,9 +760,17 @@ final class CollectorStore: ObservableObject {
                 try? await Task.sleep(nanoseconds: Self.automationPollNanoseconds)
             }
         }
+        rebuildScheduleState()
     }
 
     private func evaluateAutomaticExports() async {
+        lastSchedulerCheckAt = Date()
+#if DEBUG
+        if ProcessInfo.processInfo.environment["WHATSAPP_COLLECTOR_QA_MODE"] == "1",
+           let path = ProcessInfo.processInfo.environment["WHATSAPP_COLLECTOR_QA_DIAGNOSTICS_PATH"] {
+            try? Data(automationDiagnostics.formattedJSON.utf8).write(to: URL(fileURLWithPath: path), options: .atomic)
+        }
+#endif
         syncLoginScheduling()
         guard legacyMigrationPending == false else { return }
         guard exportInProgress == false, busyState == .idle else { return }
@@ -880,7 +963,13 @@ final class CollectorStore: ObservableObject {
     }
 
     private var pendingChromeOwnershipURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
+#if DEBUG
+        if ProcessInfo.processInfo.environment["WHATSAPP_COLLECTOR_QA_MODE"] == "1",
+           let path = ProcessInfo.processInfo.environment["WHATSAPP_COLLECTOR_QA_DIAGNOSTICS_PATH"] {
+            return URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent("chrome-ownership.json")
+        }
+#endif
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/WhatsApp Collector")
             .appendingPathComponent("pending-chrome-ownership.json")
     }

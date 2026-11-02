@@ -231,3 +231,102 @@ func loginLaunchIsHiddenOnlyForFirstLaunchNearLogin() {
         now: session.startedAt.addingTimeInterval(20 * 60)
     ))
 }
+
+@Test
+func failedAttemptKeepsLastSuccessAndRearmsRecurrence() throws {
+    var record = AutomationScheduleRecord(intervalMinutes: 180)
+    record.setEnabled(true, now: baseDate)
+    let firstStart = baseDate.addingTimeInterval(180 * 60)
+    let firstCompletion = firstStart.addingTimeInterval(60)
+    record.beginRun(triggers: [.recurring], at: firstStart)
+    record.completeRun(at: firstCompletion, succeeded: true, failureMessage: nil, threadCount: 25, exportedAt: nil, outputPath: nil)
+    let secondStart = try #require(record.nextRecurringRunAt)
+    let failureAt = secondStart.addingTimeInterval(60)
+    record.beginRun(triggers: [.recurring], at: secondStart)
+    record.completeRun(at: failureAt, succeeded: false, failureMessage: "A required chat was unavailable.", threadCount: nil, exportedAt: nil, outputPath: nil)
+
+    #expect(record.lastRunAt == failureAt)
+    #expect(record.lastSuccessAt == firstCompletion)
+    #expect(record.nextRecurringRunAt == failureAt.addingTimeInterval(180 * 60))
+    #expect(record.recentAttempts?.map(\.outcome) == [.succeeded, .failed])
+    #expect(record.recentAttempts?.last?.failureMessage == "A required chat was unavailable.")
+}
+
+@Test
+func manualAttemptDoesNotMoveTheRecurringSchedule() {
+    var record = AutomationScheduleRecord(intervalMinutes: 180)
+    record.setEnabled(true, now: baseDate)
+    let originalDue = record.nextRecurringRunAt
+    record.beginAttempt(triggers: [], at: baseDate.addingTimeInterval(60))
+    record.finishAttempt(at: baseDate.addingTimeInterval(90), outcome: .succeeded, failureMessage: nil, threadCount: 12)
+
+    #expect(record.nextRecurringRunAt == originalDue)
+    #expect(record.lastRunAt == nil)
+    #expect(record.recentAttempts?.last?.triggers.isEmpty == true)
+    #expect(record.recentAttempts?.last?.threadCount == 12)
+}
+
+@Test
+func manualAttemptAbsorbsAnAutomaticTriggerWithoutDuplicatingHistory() {
+    var record = AutomationScheduleRecord(intervalMinutes: 1)
+    record.setEnabled(true, now: baseDate)
+    record.beginAttempt(triggers: [], at: baseDate)
+    record.beginRun(triggers: [.recurring], at: baseDate)
+    record.absorbDueTriggers([.wake])
+    record.completeRun(at: baseDate.addingTimeInterval(90), succeeded: true, failureMessage: nil, threadCount: 12, exportedAt: nil, outputPath: nil)
+
+    #expect(record.recentAttempts?.count == 1)
+    #expect(record.recentAttempts?.last?.triggers == [.recurring, .wake])
+    #expect(record.recentAttempts?.last?.outcome == .succeeded)
+}
+
+@Test
+func recentAttemptHistoryIsBounded() {
+    var record = AutomationScheduleRecord()
+    for index in 0..<25 {
+        let date = baseDate.addingTimeInterval(Double(index * 60))
+        record.beginAttempt(triggers: [], at: date)
+        record.finishAttempt(at: date.addingTimeInterval(30), outcome: .succeeded, failureMessage: nil, threadCount: 1)
+    }
+
+    #expect(record.recentAttempts?.count == 20)
+    #expect(record.recentAttempts?.first?.startedAt == baseDate.addingTimeInterval(5 * 60))
+}
+
+@Test
+func existingSettingsDecodeWithoutNewDiagnosticsFields() throws {
+    var record = AutomationScheduleRecord(intervalMinutes: 180)
+    record.setEnabled(true, now: baseDate)
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    var payload = try #require(JSONSerialization.jsonObject(with: encoder.encode(record)) as? [String: Any])
+    payload.removeValue(forKey: "recentAttempts")
+    payload.removeValue(forKey: "schedulerInitializedAt")
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let decoded = try decoder.decode(AutomationScheduleRecord.self, from: JSONSerialization.data(withJSONObject: payload))
+
+    #expect(decoded.enabled)
+    #expect(decoded.intervalMinutes == 180)
+    #expect(decoded.nextRecurringRunAt == record.nextRecurringRunAt)
+    #expect(decoded.recentAttempts == nil)
+    #expect(decoded.schedulerInitializedAt == nil)
+}
+
+@Test
+func interruptedManualAttemptSurvivesRestartAndIsMarkedInterrupted() throws {
+    var record = AutomationScheduleRecord(intervalMinutes: 180)
+    record.setEnabled(true, now: baseDate)
+    let originalDue = record.nextRecurringRunAt
+    record.beginAttempt(triggers: [], at: baseDate)
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    var restored = try decoder.decode(AutomationScheduleRecord.self, from: encoder.encode(record))
+    restored.recoverInterruptedRun(at: baseDate.addingTimeInterval(60))
+
+    #expect(restored.nextRecurringRunAt == originalDue)
+    #expect(restored.recentAttempts?.last?.outcome == .interrupted)
+    #expect(restored.recentAttempts?.last?.completedAt == baseDate.addingTimeInterval(60))
+}

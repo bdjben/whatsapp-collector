@@ -17,7 +17,7 @@ from whatsapp_collector.collector import (
     WhatsAppCollector,
 )
 from whatsapp_collector.export_quality import ExportQualityError, validate_export_quality
-from whatsapp_collector.export_safety import ExportFileAssessment, protected_export, write_atomic_json
+from whatsapp_collector.export_safety import ExportFileAssessment, assess_export_file, protected_export, write_atomic_json
 from whatsapp_collector.launcher import (
     DEFAULT_DEBUG_PORT,
     DEFAULT_MARKER_TITLE,
@@ -363,6 +363,7 @@ def default_collect_export(
         exclude_labels=exclude_labels,
         include_groups=include_groups,
         attachments_dir=output_path.parent / "Attachments",
+        previous_export=assess_export_file(output_path).payload,
     )
 
 
@@ -445,7 +446,7 @@ def create_app_handler(
                             marker_url_substring=effective.marker_url_substring,
                             target_url=effective.target_url,
                         )
-                        validate_export_quality(export)
+                        validate_export_quality(export, previous_export=current_export.payload)
                         _write_atomic_json(export, effective.output_path, known_current=current_export)
                         thread_count = len(export.get("threads", [])) if isinstance(export.get("threads"), list) else 0
                         summary = _read_export_summary(effective.output_path, parse_json=False)

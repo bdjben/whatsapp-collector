@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import fcntl
 import hashlib
+import json
 import mimetypes
 import os
 from pathlib import Path
@@ -76,13 +77,83 @@ class AttachmentStore:
         if not directory.exists():
             return None
         with self._locked():
-            return self._existing_unlocked(
+            attachment = self._existing_unlocked(
                 directory,
                 expected_size=expected_size,
                 expected_filehash=expected_filehash,
                 mime_type=mime_type,
                 file_name=file_name,
             )
+            if attachment:
+                self._record_identity(directory, message_id, attachment, expected_filehash)
+            return attachment
+
+    def verified_media(self, *, thread_key: str, message_ids: list[str]) -> list[dict[str, str | int]]:
+        """Offer only freshly verified files, never trust the identity record alone."""
+        directory = self._thread_directory(thread_key)
+        if not message_ids or not directory.exists():
+            return []
+        verified: list[dict[str, str | int]] = []
+        with self._locked():
+            records = (
+                record for message_id in dict.fromkeys(message_ids)
+                for record in sorted((directory / self._stable_path_token(message_id)).glob("*/.verified-media.json"))
+            )
+            for record in records:
+                try:
+                    metadata = json.loads(record.read_text(encoding="utf-8"))
+                    if not isinstance(metadata, dict):
+                        continue
+                    message_id = metadata["sourceMessageId"]
+                    file_name = metadata["fileName"]
+                    size = metadata["sizeBytes"]
+                    filehash = metadata["filehash"]
+                    if (not isinstance(message_id, str) or not message_id
+                            or not isinstance(file_name, str) or Path(file_name).name != file_name
+                            or not isinstance(size, int) or isinstance(size, bool) or size <= 0
+                            or not isinstance(filehash, str) or not self.expected_sha256(filehash)
+                            or metadata.get("mimeType") is not None and not isinstance(metadata["mimeType"], str)
+                            or record.parent.parent.name != self._stable_path_token(message_id)):
+                        continue
+                    if self._validate_path(
+                        record.parent / file_name, expected_size=size,
+                        expected_filehash=filehash, mime_type=metadata.get("mimeType"),
+                        file_name=file_name,
+                    ) is None:
+                        continue
+                except (OSError, ValueError, KeyError, TypeError):
+                    continue
+                verified.append({"sourceMessageId": message_id, "filehash": filehash, "sizeBytes": size})
+        return verified
+
+    @staticmethod
+    def _record_identity(
+        directory: Path, message_id: str, attachment: StoredAttachment, filehash: str | None,
+    ) -> None:
+        if not filehash or AttachmentStore.expected_sha256(filehash) != attachment.sha256:
+            return
+        metadata = json.dumps({
+            "sourceMessageId": message_id, "filehash": filehash,
+            "sizeBytes": attachment.size_bytes, "fileName": attachment.file_name,
+            "mimeType": attachment.mime_type,
+        }, sort_keys=True)
+        record = directory / ".verified-media.json"
+        temporary_path: Path | None = None
+        try:
+            if record.exists() and record.read_text(encoding="utf-8") == metadata:
+                return
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix=".pending-", dir=directory, delete=False) as handle:
+                temporary_path = Path(handle.name)
+                handle.write(metadata)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, record)
+        except (OSError, UnicodeError):
+            # This index is an optimization; verified attachment retention still succeeds.
+            pass
+        finally:
+            if temporary_path:
+                temporary_path.unlink(missing_ok=True)
 
     def preflight(self, *, thread_key: str, expected_size: int | None) -> StoreResult | None:
         if not self.policy.enabled:
@@ -138,19 +209,20 @@ class AttachmentStore:
                 skipped_reason="attachment-downloads-disabled",
                 note="Automatic attachment downloads are turned off; metadata remains in the export.",
             )
+        sha256 = hashlib.sha256(data).hexdigest()
         validation_error = self._validation_error(
             data,
             expected_size=expected_size,
             expected_filehash=expected_filehash,
             mime_type=mime_type,
             file_name=file_name,
+            actual_sha=sha256,
         )
         if validation_error:
             return StoreResult(skipped_reason="attachment-verification-failed", note=validation_error)
 
         directory = self._attachment_directory(thread_key, message_id, attachment_id)
         output_path = directory / file_name
-        sha256 = hashlib.sha256(data).hexdigest()
         with self._locked():
             existing = self._existing_unlocked(
                 directory,
@@ -160,6 +232,7 @@ class AttachmentStore:
                 file_name=file_name,
             )
             if existing:
+                self._record_identity(directory, message_id, existing, expected_filehash)
                 return StoreResult(attachment=existing)
 
             replaced_size = output_path.stat().st_size if output_path.exists() and output_path.is_file() else 0
@@ -194,8 +267,7 @@ class AttachmentStore:
                 if temporary_path and temporary_path.exists():
                     temporary_path.unlink(missing_ok=True)
 
-        return StoreResult(
-            attachment=StoredAttachment(
+            attachment = StoredAttachment(
                 path=output_path,
                 relative_path=str(output_path.relative_to(self.root.parent)),
                 size_bytes=len(data),
@@ -204,7 +276,8 @@ class AttachmentStore:
                 file_name=file_name,
                 download_method=download_method,
             )
-        )
+            self._record_identity(directory, message_id, attachment, expected_filehash)
+        return StoreResult(attachment=attachment)
 
     def _existing_unlocked(
         self,
@@ -215,6 +288,9 @@ class AttachmentStore:
         mime_type: str | None,
         file_name: str,
     ) -> StoredAttachment | None:
+        # A filename and length alone cannot establish that these are today's bytes.
+        if self.expected_sha256(expected_filehash) is None:
+            return None
         if not directory.exists():
             return None
         for candidate in sorted(directory.iterdir()):
@@ -310,18 +386,30 @@ class AttachmentStore:
         file_name: str,
     ) -> tuple[int, str] | None:
         try:
+            if path.is_symlink():
+                return None
+            before = path.stat()
+            if expected_size is not None and expected_size > 0 and before.st_size != expected_size:
+                return None
             data = path.read_bytes()
+            after = path.stat()
+            if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns
+            ):
+                return None
         except OSError:
             return None
+        sha256 = hashlib.sha256(data).hexdigest()
         if cls._validation_error(
             data,
             expected_size=expected_size,
             expected_filehash=expected_filehash,
             mime_type=mime_type,
             file_name=file_name,
+            actual_sha=sha256,
         ):
             return None
-        return len(data), hashlib.sha256(data).hexdigest()
+        return len(data), sha256
 
     @classmethod
     def _validation_error(
@@ -332,11 +420,12 @@ class AttachmentStore:
         expected_filehash: str | None,
         mime_type: str | None,
         file_name: str,
+        actual_sha: str | None = None,
     ) -> str | None:
         if expected_size is not None and expected_size > 0 and len(data) != expected_size:
             return f"Expected {expected_size:,} bytes from WhatsApp metadata, received {len(data):,}."
         expected_sha = cls.expected_sha256(expected_filehash)
-        actual_sha = hashlib.sha256(data).hexdigest()
+        actual_sha = actual_sha or hashlib.sha256(data).hexdigest()
         if expected_sha and actual_sha != expected_sha:
             return "Downloaded bytes did not match WhatsApp's SHA-256 file hash."
         if not cls._signature_matches(data, mime_type=mime_type, file_name=file_name):

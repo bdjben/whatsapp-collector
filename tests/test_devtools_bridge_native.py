@@ -267,6 +267,18 @@ def test_devtools_bridge_evaluates_and_clicks_via_native_websocket_without_node(
     assert "Page.bringToFront" not in methods
 
 
+@pytest.mark.parametrize(
+    "remote_value,message",
+    [(None, "No matching visible WhatsApp target"), ({"x": "invalid", "y": 1}, "invalid position")],
+)
+def test_missing_or_invalid_click_target_has_actionable_error(monkeypatch, remote_value, message):
+    bridge = ChromeDevToolsBridge(port=19220)
+    monkeypatch.setattr(bridge, "_send", lambda *args: {"result": {"value": remote_value}})
+
+    with pytest.raises(RuntimeError, match=message):
+        bridge._evaluate_point({}, "missing target")
+
+
 def test_devtools_bridge_opens_exact_chat_through_sidebar_search_without_enter(
     fake_devtools_server,
     monkeypatch,
@@ -369,3 +381,53 @@ def test_visible_media_download_uses_stable_whatsapp_message_id(fake_devtools_se
         if request["method"] == "Runtime.evaluate"
     ]
     assert any("value._serialized || value.$1 || String(value)" in expression for expression in expressions)
+
+
+@pytest.mark.parametrize("scenario", ["selected", "scrolled", "wrong-chat", "changed-chat", "wrong-hash"])
+def test_media_recovery_javascript_checks_identity_and_loads_exact_message(scenario):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is used only for JavaScript regression fixtures")
+    script = []
+    bridge = ChromeDevToolsBridge(port=19220)
+    bridge.evaluate = lambda expression: script.append(expression) or '{"ok":false}'
+    bridge.request_visible_media_download("false_expected@lid_message", file_hash="hash", force=False)
+    fixture = '''
+        const scenario = SCENARIO;
+        let downloads = 0, scrolls = 0, headerReads = 0;
+        const setTimeout = callback => callback();
+        const message = {id:{_serialized:'false_expected@lid_message'},filehash:scenario==='wrong-hash'?'bad':'hash',
+                         downloadMedia:async()=>{downloads++}};
+        const container = {__reactFiber$test:{memoizedProps:{msg:message}}};
+        const panel = {value:1000,clientHeight:500,get scrollTop(){return this.value},
+                       set scrollTop(value){this.value=value;scrolls++}};
+        const window = {__waCollectorSelectedMediaChatJid:'expected@lid',
+                        __waCollectorSelectedMediaMessages:new Map([['false_expected@lid_message',message]])};
+        if(scenario==='scrolled') window.__waCollectorSelectedMediaMessages.clear();
+        const document = {
+            querySelector(selector){
+                if(selector==='#main header'){
+                    headerReads++;
+                    const id = scenario==='wrong-chat'||(scenario==='changed-chat'&&headerReads>1)?'other@lid':'expected@lid';
+                    return {__reactFiber$test:{memoizedProps:{chat:{id}}}};
+                }
+                if(selector.includes('conversation-panel-messages')) return panel;
+                return null;
+            },
+            querySelectorAll(){return scenario==='scrolled'&&scrolls>0?[container]:[]}
+        };
+        const caches = {open:async()=>({match:async()=>({blob:async()=>({size:12})})})};
+    '''.replace("SCENARIO", json.dumps(scenario))
+    result = subprocess.run([node, "-e", fixture + script[0] + ".then(result=>console.log(JSON.stringify({result:JSON.parse(result),downloads,scrolls})));"],
+                            check=True, capture_output=True, text=True)
+    observed = json.loads(result.stdout)
+    if scenario in ("selected", "scrolled"):
+        assert observed["result"]["ok"] is True, observed
+        assert observed["downloads"] == 1
+        assert observed["scrolls"] == (1 if scenario == "scrolled" else 0)
+    else:
+        assert observed["result"]["ok"] is False
+        assert observed["downloads"] == 0
+        assert observed["scrolls"] == 0
+        expected = {"wrong-chat": "message-not-visible", "changed-chat": "chat-changed-during-media-recovery", "wrong-hash": "message-filehash-mismatch"}
+        assert observed["result"]["error"] == expected[scenario]

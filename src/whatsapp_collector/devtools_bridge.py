@@ -468,27 +468,49 @@ class ChromeDevToolsBridge:
         """Ask WhatsApp's live message model to fetch and decrypt one visible media item."""
 
         expression = f'''(async () => {{
+            {CHAT_IDENTITY_HELPERS_JS}
             const targetId = {json.dumps(message_id)};
             const expectedHash = {json.dumps(file_hash)};
             const messageId = (value) => typeof value === 'string'
                 ? value
                 : value && (value._serialized || value.$1 || String(value));
-            let message = window.__waCollectorSelectedMediaMessages && window.__waCollectorSelectedMediaMessages.get(targetId) || null;
-            for (const container of [...document.querySelectorAll('#main [data-testid="msg-container"]')]) {{
-                if (message) break;
-                const fiberKey = Object.keys(container).find(key => key.startsWith('__reactFiber$'));
-                let fiber = fiberKey ? container[fiberKey] : null;
-                while (fiber) {{
-                    const candidate = fiber.memoizedProps && fiber.memoizedProps.msg;
-                    if (candidate && messageId(candidate.id) === targetId) {{
-                        message = candidate;
-                        break;
+            const openedChatJid = waCollectorChatId(document.querySelector('#main header'));
+            const selectedChatMatches = openedChatJid && window.__waCollectorSelectedMediaChatJid === openedChatJid;
+            let message = selectedChatMatches && window.__waCollectorSelectedMediaMessages?.get(targetId) || null;
+            const findVisibleMessage = () => {{
+                for (const container of [...document.querySelectorAll('#main [data-testid="msg-container"]')]) {{
+                    const fiberKey = Object.keys(container).find(key => key.startsWith('__reactFiber$'));
+                    let fiber = fiberKey ? container[fiberKey] : null;
+                    while (fiber) {{
+                        const candidate = fiber.memoizedProps && fiber.memoizedProps.msg;
+                        if (candidate && messageId(candidate.id) === targetId) return candidate;
+                        const children = typeof candidate?.collection?.byParentMessage === 'function'
+                            ? candidate.collection.byParentMessage(candidate.id) : null;
+                        const child = (children?.models || children?._models || []).find(item => messageId(item.id) === targetId);
+                        if (child) return child;
+                        fiber = fiber.return;
                     }}
-                    fiber = fiber.return;
                 }}
-                if (message) break;
+                return null;
+            }};
+            if (!message) message = findVisibleMessage();
+            const targetChatJid = targetId.split('_')[1];
+            // Only scroll for a message in the identity-verified current conversation.
+            if (!message && openedChatJid && (targetChatJid === openedChatJid || selectedChatMatches)) {{
+                const panel = document.querySelector('#main [data-testid="conversation-panel-messages"]');
+                for (let pass = 0; panel && pass < 8 && !message; pass++) {{
+                    if (waCollectorChatId(document.querySelector('#main header')) !== openedChatJid)
+                        return JSON.stringify({{ok:false,error:'chat-changed-during-media-recovery'}});
+                    const before = panel.scrollTop;
+                    panel.scrollTop = Math.max(0, before - Math.max(420, panel.clientHeight * 0.9));
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    message = findVisibleMessage();
+                    if (!message && before === panel.scrollTop && pass >= 2) break;
+                }}
             }}
             if (!message) return JSON.stringify({{ok:false,error:'message-not-visible'}});
+            if (openedChatJid && waCollectorChatId(document.querySelector('#main header')) !== openedChatJid)
+                return JSON.stringify({{ok:false,error:'chat-changed-during-media-recovery'}});
             if (expectedHash && message.filehash && message.filehash !== expectedHash) {{
                 return JSON.stringify({{ok:false,error:'message-filehash-mismatch'}});
             }}
@@ -723,7 +745,8 @@ class ChromeDevToolsBridge:
             if result_point is None:
                 self._clear_sidebar_search_for_target(target)
                 raise RuntimeError(
-                    f"No exact WhatsApp sidebar search result appeared for {target_name!r}: {last_error}"
+                    f"WhatsApp sidebar search did not find a matching visible chat for {target_name!r}. "
+                    f"The chat may be hidden, not loaded, or displayed under a different name. Details: {last_error}"
                 ) from last_error
             self._dispatch_mouse_click(target, result_point, button="left")
             time.sleep(0.6)
@@ -790,8 +813,10 @@ class ChromeDevToolsBridge:
             raise RuntimeError(details.get("text") if isinstance(details, dict) else "Runtime.evaluate failed while locating click point")
         remote_value = result.get("result", {})
         point = remote_value.get("value") if isinstance(remote_value, dict) else None
+        if point is None:
+            raise RuntimeError("No matching visible WhatsApp target was found. It may be absent, hidden, or not loaded yet.")
         if not isinstance(point, dict) or not isinstance(point.get("x"), (int, float)) or not isinstance(point.get("y"), (int, float)):
-            raise RuntimeError("Click expression did not return numeric {x,y}")
+            raise RuntimeError("WhatsApp returned an invalid position for the matching target.")
         return {"x": float(point["x"]), "y": float(point["y"])}
 
     def _dispatch_mouse_click(self, target: dict[str, Any], point: dict[str, float], *, button: str) -> None:

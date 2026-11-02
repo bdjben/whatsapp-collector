@@ -55,6 +55,9 @@ def test_launch_dedicated_chrome_window_opens_background_chrome_instance(monkeyp
     assert f"--user-data-dir={tmp_path}" in command
     assert "--remote-debugging-port=19220" in command
     assert "--new-window" in command
+    assert "--disable-background-timer-throttling" in command
+    assert "--disable-backgrounding-occluded-windows" in command
+    assert "--disable-renderer-backgrounding" in command
     assert "https://web.whatsapp.com/" in command
     assert not any(str(part).startswith("data:text/html,") for part in command)
     assert command.count("https://web.whatsapp.com/") == 1
@@ -371,7 +374,7 @@ def test_ensure_dedicated_whatsapp_window_launches_when_debug_port_is_not_ready(
     monkeypatch.setattr("whatsapp_collector.launcher.load_display_frames", fake_load_display_frames)
     monkeypatch.setattr("whatsapp_collector.launcher.ChromeDevToolsBridge", FakeBridge)
     monkeypatch.setattr("whatsapp_collector.launcher.debug_port_has_profile_conflict", lambda debug_port, profile_dir: False)
-    monkeypatch.setattr("whatsapp_collector.launcher.terminate_profile_processes", lambda profile_dir: launched.setdefault('terminated_profile', profile_dir))
+    monkeypatch.setattr("whatsapp_collector.launcher.terminate_profile_processes", lambda profile_dir, **kwargs: {"remainingProcessIds": []})
     monkeypatch.setattr("whatsapp_collector.launcher.terminate_debug_port_processes", lambda debug_port: launched.setdefault('terminated_debug_port', debug_port))
     monkeypatch.setattr("whatsapp_collector.launcher.launch_dedicated_chrome_window", fake_launch_dedicated_chrome_window)
     monkeypatch.setattr("whatsapp_collector.launcher.time.sleep", lambda seconds: sleeps.append(seconds))
@@ -421,7 +424,7 @@ def test_ensure_dedicated_whatsapp_window_restarts_stale_devtools_port_without_p
     monkeypatch.setattr("whatsapp_collector.launcher.debug_port_has_profile_conflict", lambda debug_port, profile_dir: False)
     monkeypatch.setattr(
         "whatsapp_collector.launcher.terminate_profile_processes",
-        lambda profile_dir: calls["terminated_profiles"].append(profile_dir),
+        lambda profile_dir, **kwargs: calls["terminated_profiles"].append(profile_dir) or {"remainingProcessIds": []},
     )
     monkeypatch.setattr(
         "whatsapp_collector.launcher.terminate_debug_port_processes",
@@ -435,7 +438,7 @@ def test_ensure_dedicated_whatsapp_window_restarts_stale_devtools_port_without_p
     assert payload["windowId"] == 2026
     assert payload["launched"] is True
     assert calls["terminated_profiles"] == [tmp_path]
-    assert calls["terminated_ports"] == [19220]
+    assert calls["terminated_ports"] == []
     assert calls["launch"]["profile_dir"] == tmp_path
 
 
@@ -470,7 +473,7 @@ def test_ensure_dedicated_whatsapp_window_restarts_stale_devtools_port_without_w
     monkeypatch.setattr("whatsapp_collector.launcher.debug_port_has_profile_conflict", lambda debug_port, profile_dir: False)
     monkeypatch.setattr(
         "whatsapp_collector.launcher.terminate_profile_processes",
-        lambda profile_dir: calls["terminated_profiles"].append(profile_dir),
+        lambda profile_dir, **kwargs: calls["terminated_profiles"].append(profile_dir) or {"remainingProcessIds": []},
     )
     monkeypatch.setattr(
         "whatsapp_collector.launcher.terminate_debug_port_processes",
@@ -484,7 +487,7 @@ def test_ensure_dedicated_whatsapp_window_restarts_stale_devtools_port_without_w
     assert payload["windowId"] == 3030
     assert payload["launched"] is True
     assert calls["terminated_profiles"] == [tmp_path]
-    assert calls["terminated_ports"] == [19220]
+    assert calls["terminated_ports"] == []
     assert calls["launch"]["profile_dir"] == tmp_path
 
 

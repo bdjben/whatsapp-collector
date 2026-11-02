@@ -16,6 +16,25 @@ struct DashboardView: View {
                     scheduledRunText: store.scheduledExportStatusText
                 )
 
+                if store.exportActivityIsVisible, let progress = store.displayedExportProgress {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(progress.summary)
+                            .font(.callout.weight(.medium))
+                        if let detail = progress.detail, !detail.isEmpty {
+                            Text(detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if let fraction = progress.fractionCompleted {
+                            ProgressView(value: fraction)
+                                .accessibilityLabel(progress.summary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
                 metrics
                 actions
                 collectionSettings

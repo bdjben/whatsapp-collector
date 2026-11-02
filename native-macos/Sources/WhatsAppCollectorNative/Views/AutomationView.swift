@@ -144,8 +144,12 @@ struct AutomationView: View {
                     value: currentRunText(schedule)
                 )
                 ScheduleReadoutRow(
-                    title: "Last automatic run",
-                    value: timestampText(schedule.lastSuccessAt ?? schedule.lastRunAt)
+                    title: "Last automatic attempt",
+                    value: timestampText(schedule.lastRunAt)
+                )
+                ScheduleReadoutRow(
+                    title: "Last successful automatic export",
+                    value: timestampText(schedule.lastSuccessAt)
                 )
                 ScheduleReadoutRow(
                     title: "Threads exported",

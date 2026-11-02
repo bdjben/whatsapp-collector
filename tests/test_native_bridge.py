@@ -69,6 +69,83 @@ def test_native_bridge_uses_backward_compatible_attachment_defaults() -> None:
     assert config["attachment_storage_limit_bytes"] == 1_500_000_000
 
 
+@pytest.mark.parametrize("failure_stage", [None, "preparing-browser", "validating", "writing"])
+def test_native_progress_phases_surround_operations_and_only_complete_after_commit(
+    tmp_path: Path, monkeypatch, capsys, failure_stage: str | None,
+) -> None:
+    bridge = _load_native_bridge()
+    output = tmp_path / "export.json"
+    records = []
+    clock = {"now": 100.0}
+    monkeypatch.setattr(bridge.time, "monotonic", lambda: clock["now"])
+
+    def expect_phase(phase):
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        batch = [json.loads(line.removeprefix("WAC_PROGRESS:")) for line in captured.err.splitlines()]
+        assert len(batch) == 1
+        assert batch[0]["phase"] == phase
+        assert set(batch[0]) == {"phase", "completed", "total", "detail", "elapsedSeconds"}
+        records.extend(batch)
+        if failure_stage == phase:
+            raise RuntimeError("Simulated " + phase + " failure")
+
+    def ensure(cfg):
+        expect_phase("preparing-browser")
+        return {"launched": False}, {20518}
+
+    def ready(cfg, window, pids):
+        clock["now"] += 30
+        return window, pids
+
+    class FakeCollector:
+        def collect_dashboard_export(self, **kwargs):
+            clock["now"] += 12
+            return _good_export()
+
+    validate = bridge.validate_export_quality
+    write = bridge.write_atomic_json
+
+    def validate_candidate(export, **kwargs):
+        expect_phase("validating")
+        assert not output.exists()
+        return validate(export, **kwargs)
+
+    def commit(export, path, **kwargs):
+        expect_phase("writing")
+        assert not output.exists()
+        result = write(export, path, **kwargs)
+        clock["now"] += 1
+        return result
+
+    def close(*args, **kwargs):
+        expect_phase("closing-browser")
+        assert json.loads(output.read_text())["threads"][0]["chatTitle"] == "Good Thread"
+        return {"remainingProcessIds": []}
+
+    monkeypatch.setattr(bridge, "_ensure_export_window", ensure)
+    monkeypatch.setattr(bridge, "_wait_for_export_readiness", ready)
+    monkeypatch.setattr(bridge, "_collector", lambda cfg: FakeCollector())
+    monkeypatch.setattr(bridge, "validate_export_quality", validate_candidate)
+    monkeypatch.setattr(bridge, "write_atomic_json", commit)
+    monkeypatch.setattr(bridge, "terminate_profile_processes", close)
+    payload = {"outputPath": str(output), "profileDir": str(tmp_path / "profile")}
+    if failure_stage:
+        with pytest.raises(RuntimeError, match="Simulated"):
+            bridge.dispatch("run-export", payload)
+        assert capsys.readouterr().err == ""
+        assert not output.exists()
+        assert "complete" not in [record["phase"] for record in records]
+    else:
+        assert bridge.dispatch("run-export", payload)["ok"]
+        expect_phase("complete")
+        assert [record["phase"] for record in records] == [
+            "preparing-browser", "validating", "writing", "closing-browser", "complete",
+        ]
+        assert [record["elapsedSeconds"] for record in records] == [0, 42, 42, 43, 43]
+        assert records[-1]["completed"] == records[-1]["total"] == 1
+
+
 def _good_export() -> dict[str, Any]:
     return {
         "source": "whatsapp",
@@ -135,8 +212,16 @@ def _incomplete_labeled_export() -> dict[str, Any]:
     return payload
 
 
-def test_native_run_export_retries_then_writes_when_quality_recovers(tmp_path: Path, monkeypatch) -> None:
+def test_native_run_export_collects_once_then_writes_valid_export(tmp_path: Path, monkeypatch) -> None:
     bridge = _load_native_bridge()
+    quality_calls = []
+    validate_quality = bridge.validate_export_quality
+
+    def count_quality_checks(export, **kwargs):
+        quality_calls.append(export)
+        return validate_quality(export, **kwargs)
+
+    monkeypatch.setattr(bridge, "validate_export_quality", count_quality_checks)
     output = tmp_path / "export.json"
     ownership_path = tmp_path / "chrome-ownership.json"
     ownership_path.write_text(json.dumps({"profileDir": "original"}))
@@ -157,7 +242,7 @@ def test_native_run_export_retries_then_writes_when_quality_recovers(tmp_path: P
         def collect_dashboard_export(self, **kwargs):
             captured_kwargs.append(kwargs)
             calls["count"] += 1
-            return _degraded_export() if calls["count"] == 1 else _good_export()
+            return _good_export()
 
     def fake_ensure_window(cfg):
         ensure_calls.append(cfg)
@@ -187,7 +272,8 @@ def test_native_run_export_retries_then_writes_when_quality_recovers(tmp_path: P
 
     assert result["ok"] is True
     assert result["threadCount"] == 1
-    assert calls["count"] == 2
+    assert calls["count"] == 1
+    assert len(quality_calls) == 1
     assert captured_kwargs[-1]["download_attachments"] is True
     assert captured_kwargs[-1]["max_total_attachment_bytes"] == 1_500_000_000
     assert json.loads(output.read_text())["threads"][0]["chatTitle"] == "Good Thread"
@@ -202,6 +288,43 @@ def test_native_run_export_retries_then_writes_when_quality_recovers(tmp_path: P
     assert ownership["profileDir"] == str(tmp_path / "profile")
     assert ownership["debugPort"] == 19220
     assert ownership["expectedChromeProcessIds"] == [20518]
+    assert result["exportQuality"]["ok"] is True
+    assert "exportDiagnostics" in result
+    assert "attachmentSummary" in result
+
+
+def test_native_regression_fails_once_and_preserves_existing_export(tmp_path: Path, monkeypatch) -> None:
+    from copy import deepcopy
+
+    bridge = _load_native_bridge()
+    output = tmp_path / "export.json"
+    previous = _good_export()
+    previous["maxRecentMessages"] = 15
+    thread = previous["threads"][0]
+    thread["recentMessages"] = [dict(thread["recentMessages"][0], messageId=f"m{index}") for index in range(15)]
+    output.write_text(json.dumps(previous))
+    original_bytes = output.read_bytes()
+    calls = []
+
+    class FakeCollector:
+        def collect_dashboard_export(self, **kwargs):
+            calls.append(kwargs)
+            current = deepcopy(previous)
+            current["threads"][0]["recentMessages"] = [dict(thread["recentMessages"][0], timestamp="2026-06-01T20:00:00+00:00")]
+            return current
+
+    monkeypatch.setattr(bridge, "_collector", lambda cfg: FakeCollector())
+    monkeypatch.setattr(bridge, "_ensure_export_window", lambda cfg: ({"launched": False}, {20518}))
+    monkeypatch.setattr(bridge, "_wait_for_export_readiness", lambda cfg, window, pids: (window, pids))
+    monkeypatch.setattr(bridge.time, "sleep", lambda seconds: None)
+    monkeypatch.setenv(bridge.CHROME_OWNERSHIP_PATH_ENV, str(tmp_path / "ownership.json"))
+    with pytest.raises(bridge.ExportQualityError, match="unverified-history-regression") as error:
+        bridge.dispatch("run-export", {"outputPath": str(output), "profileDir": str(tmp_path / "profile")})
+    assert len(calls) == 1
+    assert all(call["previous_export"] == previous for call in calls)
+    assert "attempts" not in error.value.report
+    assert error.value.report["exportRecovery"]["status"] == "retained-current"
+    assert output.read_bytes() == original_bytes
 
 
 def test_native_run_export_relaunches_dedicated_profile_once_when_owned_chrome_exits(tmp_path: Path, monkeypatch) -> None:
@@ -412,7 +535,7 @@ def test_native_run_export_rejects_degraded_export_and_restores_last_good(tmp_pa
     with pytest.raises(bridge.ExportQualityError) as exc_info:
         bridge.dispatch("run-export", {"outputPath": str(output), "profileDir": str(tmp_path / "profile")})
 
-    assert calls["count"] == 3
+    assert calls["count"] == 1
     assert exc_info.value.report["restoredLastGood"] == str(last_good)
     assert json.loads(output.read_text())["threads"][0]["chatTitle"] == "Good Thread"
 
@@ -472,7 +595,7 @@ def test_native_quality_failure_does_not_roll_valid_current_back_to_older_backup
     assert json.loads(output.read_text())["threads"][0]["chatTitle"] == "Current Newest"
 
 
-def test_native_labeled_phase_timeout_retries_and_retains_current_export(
+def test_native_labeled_phase_timeout_fails_once_and_retains_current_export(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -514,7 +637,7 @@ def test_native_labeled_phase_timeout_retries_and_retains_current_export(
     with pytest.raises(bridge.ExportQualityError) as exc_info:
         bridge.dispatch("run-export", {"outputPath": str(output), "profileDir": str(tmp_path / "profile")})
 
-    assert calls["count"] == 3
+    assert calls["count"] == 1
     assert output.read_bytes() == original_bytes
     assert exc_info.value.report["exportRecovery"]["status"] == "retained-current"
     assert "configured-label-collection-incomplete" in [

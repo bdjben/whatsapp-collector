@@ -52,6 +52,7 @@ class RecentMessage:
     message_type: str
     subtype: str | None
     attachments: list[RecentAttachment] = field(default_factory=list)
+    expiry: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

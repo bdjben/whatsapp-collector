@@ -145,6 +145,8 @@ Use **Automation** to run recurring exports. Scheduling is owned by the
 menu-bar app: the dashboard window may be closed, but choosing **Quit** stops
 future automatic exports. If the Mac sleeps through a due time, the app runs
 one catch-up export after wake rather than replaying every missed interval.
+Automation initializes when the application launches, including when the
+dashboard is hidden at login. Opening the dashboard is not required.
 After an explicit Quit, reopening the app starts a fresh interval instead of
 replaying work missed while it was not running.
 
@@ -166,8 +168,80 @@ Mac wakes from sleep. Recurring exports can remain off.
 ### Diagnostics And Help
 
 Use **Diagnostics** when Chrome, WhatsApp Web, scheduling, or export quality
-needs debugging. Use **Help** for setup notes, update links, and older-app
-cleanup.
+needs debugging. Its native automation section shows the actual schedule,
+initialization time, latest scheduler check, and up to 20 recent export attempts
+with their triggers and outcomes. The Automation tab lists the last automatic
+attempt separately from the last successful automatic export. Older bridge
+responses may include the retired LaunchAgent scheduler; that section is
+explicitly labeled and does not describe the current schedule.
+The saved-content section remains available after relaunch and includes
+per-chat skips, loading observations, media recovery attempts, and attachment
+completeness. A passing message-content check can still include missing media;
+attachment metadata does not mean that the file bytes were downloaded.
+Sparse or stale IndexedDB fallback history is refreshed from the live chat.
+Unverified backward-moving or shorter history compared with the previous
+export fails validation and preserves the last-good export. A live
+capture that confirms changed history is reported separately, so removed or
+expired messages are not silently restored from an older export. Changing the
+message lookback or moving a chat outside the selection horizon is not itself
+a history regression. Locked chats remain an expected, explicitly reported skip.
+History comparison uses message IDs, not just a count floor. Per-message expiry
+evidence includes the observed duration, expiry deadline, kept status, source,
+and observation time. The current conversation timer is recorded separately
+and is never applied retroactively. An elapsed deadline only explains a missing
+message when its ephemeral status and non-kept state are known, allowing a
+two-minute clock boundary margin. Unknown metadata still requires live proof.
+Diagnostics distinguishes expected expiration, confirmed live history changes,
+unverified missing messages, and normal recent-message window turnover.
+`exportQuality.issues` contains only blocking errors; nonfatal information and
+warnings are in additive `exportQuality.observations`, so existing consumers
+that require an empty issues array do not reject legitimate expiry or emptiness.
+An identity-verified conversation whose history is fully loaded and explicitly
+exhausted may be exported with empty message arrays and null latest-message
+fields. When WhatsApp leaves its history-exhaustion flag false, a bounded,
+stable live observation can also establish emptiness: the matching live model
+and conversation pane must remain loaded, without exportable content or active
+loading/repair. Diagnostics retain the proof type and observation details.
+A blank, loading, or disconnected pane is not a confirmed-empty chat.
+Resolved chat IDs take precedence over display names for admission. Same-ID
+aliases are consolidated by message identity, with labels, participants, media
+results, and source provenance preserved. The newest complete live capture
+controls message membership; older cached records cannot resurrect expired
+messages. Conflicting message timestamps or any remaining duplicate thread IDs
+fail validation before writing. These fields are additive; older exports without
+expiry evidence remain readable and receive conservative live verification.
+This does not change historical export backups or attachment retention.
+
+Collection uses one candidate per job, with bounded retries of individual
+failed chat captures instead of restarting the whole export. Same-job captures
+are reused when the same resolved chat appears through multiple selection
+paths; the cache does not survive into another job. State-driven waits allow
+ready chats to proceed while preserving bounded loading and identity checks.
+Wait budgets use elapsed wall-clock time rather than counting polling intervals.
+The dedicated Chrome instance disables background timer throttling so hidden
+collection windows do not stretch these waits. Older dedicated instances are
+upgraded with an exact-profile, port, and process-ID-bound relaunch; unrelated
+Chrome instances are never restarted for this upgrade.
+The All-view scan reads only verified sidebar rows, waits for virtualized rows
+to settle, and collects the configured horizon. Conversation-pane banners are
+never treated as chat titles. Recency recovery compares known exportable
+messages, not a chat's raw activity timestamp, which may describe a call or a
+system event that is intentionally outside the message export.
+Album attachments cover their exact child-message IDs without counting those
+children again as separate chat bubbles. Album parent timestamps remain the
+parent's own timestamps across IndexedDB and live capture. Shared locations
+retain valid coordinates and a map link rather than treating their thumbnail
+image bytes as text. The viewport-aware scroll scan accommodates tall media
+messages while keeping an elapsed-time and iteration limit.
+Diagnostics include phase timings and per-chat attempts, elapsed time, and reuse.
+Capture diagnostics distinguish actual active loading from incomplete model
+coverage, including when a bounded retry cannot resolve the coverage gap.
+The native dashboard receives live phase progress while collection is running;
+a progress record is not proof that validation or the final write succeeded.
+Verified attachment reuse checks the exact source message, content hash, and
+size before omitting redundant browser media transfer. Missing or changed files
+must be retrieved and verified again.
+Use **Help** for setup notes, update links, and older-app cleanup.
 
 ## Important Settings
 

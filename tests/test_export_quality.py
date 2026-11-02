@@ -37,6 +37,20 @@ def _message(message_id: str, *, text_available: bool = True, attachments: list[
     }
 
 
+def test_incomplete_capture_failure_retains_state_without_message_bodies() -> None:
+    thread = _thread("Example", [_message("m1")])
+    thread["messages"][0]["text"] = "PRIVATE MESSAGE CONTENT"
+    diagnostics = {"captureIncomplete": True, "captureAttempts": 2,
+                   "captureState": {"isLoading": True,
+                                    "incompleteReasons": ["missing-required-model-messages"],
+                                    "missingRequiredMessageCount": 1}}
+    thread["sourceDiagnostics"] = diagnostics
+    report = assess_export_quality({"threads": [thread]})
+    issue = next(issue for issue in report["issues"] if issue["code"] == "live-chat-capture-incomplete")
+    assert issue["threads"][0]["sourceDiagnostics"] == diagnostics
+    assert "PRIVATE MESSAGE CONTENT" not in json.dumps(report)
+
+
 def test_export_quality_accepts_readable_all_view_export() -> None:
     payload = {
         "maxAllViewChats": 15,

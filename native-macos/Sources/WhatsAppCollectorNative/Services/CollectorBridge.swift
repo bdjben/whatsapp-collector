@@ -16,7 +16,8 @@ struct CollectorBridge: Sendable {
         _ command: BridgeCommand,
         configuration: CollectorConfiguration,
         intervalMinutes: Int? = nil,
-        chromeOwnershipURL: URL? = nil
+        chromeOwnershipURL: URL? = nil,
+        onProgress: (@Sendable (ExportProgress) -> Void)? = nil
     ) throws -> (BridgeResponse, String) {
         let request = BridgeRequest(configuration: configuration, intervalMinutes: intervalMinutes)
         let input = try JSONEncoder().encode(request)
@@ -27,7 +28,7 @@ struct CollectorBridge: Sendable {
             )
             try input.write(to: chromeOwnershipURL, options: .atomic)
         }
-        return try run(command, input: input, chromeOwnershipURL: chromeOwnershipURL)
+        return try run(command, input: input, chromeOwnershipURL: chromeOwnershipURL, onProgress: onProgress)
     }
 
     func closeOwnedChrome(at chromeOwnershipURL: URL) throws -> (BridgeResponse, String) {
@@ -38,7 +39,8 @@ struct CollectorBridge: Sendable {
     private func run(
         _ command: BridgeCommand,
         input: Data,
-        chromeOwnershipURL: URL?
+        chromeOwnershipURL: URL?,
+        onProgress: (@Sendable (ExportProgress) -> Void)? = nil
     ) throws -> (BridgeResponse, String) {
         let script = try bridgeScriptURL()
         let python = try pythonURL()
@@ -61,7 +63,7 @@ struct CollectorBridge: Sendable {
         try process.run()
         stdin.fileHandleForWriting.write(input)
         stdin.fileHandleForWriting.closeFile()
-        let (outputData, errorData) = BridgeProcessOutput.waitForExit(process, stdout: stdout, stderr: stderr)
+        let (outputData, errorData) = BridgeProcessOutput.waitForExit(process, stdout: stdout, stderr: stderr, onProgress: onProgress)
         let output = String(data: outputData, encoding: .utf8) ?? ""
         let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
 
@@ -153,9 +155,9 @@ struct CollectorBridge: Sendable {
 }
 
 enum BridgeProcessOutput {
-    static func waitForExit(_ process: Process, stdout: Pipe, stderr: Pipe) -> (Data, Data) {
+    static func waitForExit(_ process: Process, stdout: Pipe, stderr: Pipe, onProgress: (@Sendable (ExportProgress) -> Void)? = nil) -> (Data, Data) {
         let output = PipeReader(handle: stdout.fileHandleForReading)
-        let errors = PipeReader(handle: stderr.fileHandleForReading)
+        let errors = PipeReader(handle: stderr.fileHandleForReading, onProgress: onProgress)
         let readers = DispatchGroup()
         // Drain both pipes while the bridge runs; waiting first can deadlock on a large diagnostic response.
         for reader in [output, errors] {
@@ -174,12 +176,22 @@ enum BridgeProcessOutput {
         private let handle: FileHandle
         private let lock = NSLock()
         private var bytes = Data()
+        private let onProgress: (@Sendable (ExportProgress) -> Void)?
 
-        init(handle: FileHandle) { self.handle = handle }
+        init(handle: FileHandle, onProgress: (@Sendable (ExportProgress) -> Void)? = nil) {
+            self.handle = handle
+            self.onProgress = onProgress
+        }
 
         func read() {
-            let result = handle.readDataToEndOfFile()
-            lock.withLock { bytes = result }
+            var parser = BridgeProgressParser()
+            while true {
+                let chunk = handle.availableData
+                if chunk.isEmpty { break }
+                lock.withLock { bytes.append(chunk) }
+                if let onProgress { parser.append(chunk, emit: onProgress) }
+            }
+            if let onProgress { parser.finish(emit: onProgress) }
         }
 
         var data: Data { lock.withLock { bytes } }

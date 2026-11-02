@@ -300,41 +300,42 @@ def _wait_for_export_readiness(
 
 
 def _run_export(cfg: dict[str, Any]) -> dict[str, Any]:
+    started_at = time.monotonic()
+
+    def progress(phase: str, detail: str, *, completed: int | None = None, total: int | None = None) -> None:
+        print("WAC_PROGRESS:" + json.dumps({
+            "phase": phase,
+            "completed": completed,
+            "total": total,
+            "detail": detail,
+            "elapsedSeconds": round(max(0.0, time.monotonic() - started_at), 3),
+        }), file=sys.stderr, flush=True)
+
+    progress("preparing-browser", "Preparing the dedicated Chrome profile and waiting for WhatsApp Web to become ready.")
     with protected_export(cfg["output_path"]) as current_export:
-        attempts: list[dict[str, Any]] = []
-        export: dict[str, Any] | None = None
         window, expected_pids = _ensure_export_window(cfg)
         window, expected_pids = _wait_for_export_readiness(cfg, window, expected_pids)
-        for attempt in range(1, 4):
-            export = _collector(cfg).collect_dashboard_export(
-                account_label=cfg["account_label"],
-                max_messages=cfg["max_messages"],
-                max_all_chats=cfg["max_all_chats"],
-                allow_labels=cfg["allow_labels"],
-                exclude_labels=cfg["exclude_labels"],
-                include_groups=cfg["include_groups"],
-                attachments_dir=cfg["output_path"].parent / "Attachments",
-                download_attachments=cfg["download_attachments"],
-                max_total_attachment_bytes=cfg["attachment_storage_limit_bytes"],
-            )
-            try:
-                validate_export_quality(export)
-                break
-            except ExportQualityError as exc:
-                attempts.append(exc.report)
-                if attempt < 3:
-                    time.sleep(4 * attempt)
-                    continue
-                report = dict(exc.report)
-                report["attempts"] = attempts
-                raise ExportQualityError(report) from exc
-        if export is None:
-            raise RuntimeError("Collector did not return an export payload")
+        export = _collector(cfg).collect_dashboard_export(
+            account_label=cfg["account_label"],
+            max_messages=cfg["max_messages"],
+            max_all_chats=cfg["max_all_chats"],
+            allow_labels=cfg["allow_labels"],
+            exclude_labels=cfg["exclude_labels"],
+            include_groups=cfg["include_groups"],
+            attachments_dir=cfg["output_path"].parent / "Attachments",
+            download_attachments=cfg["download_attachments"],
+            max_total_attachment_bytes=cfg["attachment_storage_limit_bytes"],
+            previous_export=current_export.payload,
+        )
+        progress("validating", "Checking the collected candidate against export quality and retained history before saving.")
+        validate_export_quality(export, previous_export=current_export.payload)
+        progress("writing", "Saving the validated export atomically; the new export is not committed yet.")
         write_atomic_json(export, cfg["output_path"], known_current=current_export)
         summary = _read_export_summary(cfg["output_path"], parse_json=False)
         thread_count = len(export.get("threads", [])) if isinstance(export.get("threads"), list) else 0
         summary["threadCount"] = thread_count
         summary["exportedAt"] = export.get("exportedAt")
+        progress("closing-browser", "Export committed. Closing only the captured dedicated Chrome processes.")
         termination = terminate_profile_processes(
             cfg["profile_dir"],
             debug_port=cfg["debug_port"],
@@ -343,12 +344,23 @@ def _run_export(cfg: dict[str, Any]) -> dict[str, Any]:
             delay_seconds=0.2,
         )
         remaining_pids = termination.get("remainingProcessIds", [])
+        progress(
+            "complete",
+            "Export saved successfully. Dedicated browser cleanup is still pending."
+            if remaining_pids else "Export saved successfully and dedicated browser cleanup finished.",
+            completed=thread_count,
+            total=thread_count,
+        )
         return {
             "ok": True,
             "command": "run-export",
             "checkedAt": _now(),
             "export": summary,
             "threadCount": thread_count,
+            "exportQuality": export.get("exportQuality"),
+            "exportWarnings": export.get("exportWarnings", []),
+            "exportDiagnostics": export.get("exportDiagnostics", {}),
+            "attachmentSummary": export.get("attachmentSummary", {}),
             "window": {
                 "profileDir": str(cfg["profile_dir"]),
                 "debugPort": cfg["debug_port"],

@@ -9,6 +9,9 @@ private extension NSUserInterfaceItemIdentifier {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private static var suppressInitialDashboard = false
+    let store = CollectorStore()
+    let updateMonitor = UpdateMonitor()
+    private var startupTask: Task<Void, Never>?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         let defaults = UserDefaults.standard
@@ -20,12 +23,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             previouslySeenSessionID: defaults.string(forKey: AppPreferences.lastWindowLaunchSessionID),
             now: Date()
         )
+#if DEBUG
+        if ProcessInfo.processInfo.environment["WHATSAPP_COLLECTOR_QA_MODE"] == "1",
+           ProcessInfo.processInfo.environment["WHATSAPP_COLLECTOR_QA_HIDE_DASHBOARD"] == "1" {
+            Self.suppressInitialDashboard = true
+        }
+#endif
         if let session {
             defaults.set(session.id, forKey: AppPreferences.lastWindowLaunchSessionID)
         }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        startBackgroundServices()
         NSWindow.allowsAutomaticWindowTabbing = false
         NSApp.setActivationPolicy(.regular)
         if Self.suppressInitialDashboard {
@@ -40,6 +50,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApp.activate(ignoringOtherApps: true)
             }
         }
+    }
+
+    private func startBackgroundServices() {
+        guard startupTask == nil else { return }
+        updateMonitor.startAutomaticChecks()
+        startupTask = Task { await store.bootstrap() }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -132,8 +148,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct WhatsAppCollectorNativeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @Environment(\.openWindow) private var openWindow
-    @StateObject private var store = CollectorStore()
-    @StateObject private var updateMonitor = UpdateMonitor()
+    private var store: CollectorStore { appDelegate.store }
+    private var updateMonitor: UpdateMonitor { appDelegate.updateMonitor }
     private let updaterController: SPUStandardUpdaterController
 
     init() {
@@ -148,10 +164,6 @@ struct WhatsAppCollectorNativeApp: App {
                 .environment(\.appActions, appActions)
                 .frame(minWidth: 1080, minHeight: 700)
                 .background(MainWindowAccessor(store: store))
-                .task {
-                    updateMonitor.startAutomaticChecks()
-                    await store.bootstrap()
-                }
         }
         .defaultSize(width: 1180, height: 760)
 

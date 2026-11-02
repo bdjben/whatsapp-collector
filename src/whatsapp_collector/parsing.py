@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 WEEKDAY_OR_TIME = re.compile(
-    r"^(Today|Yesterday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|\d{1,2}:\d{2}|\d{1,2}/\d{1,2}/\d{2,4})$",
+    r"^(Today|Yesterday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|\d{1,2}:\d{2}(?:\s?[AP]M)?|\d{1,2}/\d{1,2}/\d{2,4})$",
     re.IGNORECASE,
 )
 UI_NOISE = {
@@ -14,11 +14,14 @@ UI_NOISE = {
     "Labels",
     "Business tools",
     "2",
+    "Click here to get older messages from your phone.",
+    "Use WhatsApp on your phone to see older chat history.",
 }
 
 
 def _clean_lines(body: str) -> list[str]:
-    return [line.replace("\u200e", "").strip() for line in body.splitlines() if line.strip()]
+    return [re.sub(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", line).replace("\u00a0", " ").strip()
+            for line in body.splitlines() if line.strip()]
 
 
 def parse_labels(body: str) -> list[dict[str, int | str]]:
@@ -42,12 +45,13 @@ def parse_labels(body: str) -> list[dict[str, int | str]]:
 
 
 def parse_chat_list(body: str) -> list[dict[str, int | str | bool]]:
+    """Parse legacy sidebar-only text; callers must establish its DOM provenance."""
     lines = _clean_lines(body)
     rows: list[dict[str, int | str | bool]] = []
     idx = 0
     while idx < len(lines):
         line = lines[idx]
-        if line in UI_NOISE or line.endswith("chats") or line.endswith("chat"):
+        if line in UI_NOISE or re.fullmatch(r"\d+ chats?", line):
             idx += 1
             continue
         if idx + 2 >= len(lines) or not WEEKDAY_OR_TIME.match(lines[idx + 1]):

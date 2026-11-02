@@ -6,10 +6,27 @@ enum AutomaticExportTrigger: String, Codable, Hashable, Sendable {
     case wake
 }
 
+struct ExportAttempt: Codable, Equatable, Sendable {
+    enum Outcome: String, Codable, Sendable {
+        case running
+        case succeeded
+        case failed
+        case interrupted
+    }
+
+    var startedAt: Date
+    var completedAt: Date?
+    var triggers: Set<AutomaticExportTrigger>
+    var outcome: Outcome = .running
+    var failureMessage: String?
+    var threadCount: Int?
+}
+
 struct AutomationScheduleRecord: Codable, Equatable, Sendable {
     static let loginDelay: TimeInterval = 5 * 60
     static let wakeDelay: TimeInterval = 5 * 60
     static let wakeDeduplicationWindow: TimeInterval = 60
+    static let retainedAttemptLimit = 20
 
     var enabled: Bool
     var intervalMinutes: Int
@@ -28,6 +45,8 @@ struct AutomationScheduleRecord: Codable, Equatable, Sendable {
     var lastThreadCount: Int?
     var lastExportedAt: String?
     var lastOutputPath: String?
+    var schedulerInitializedAt: Date?
+    var recentAttempts: [ExportAttempt]?
 
     init(intervalMinutes: Int = 15) {
         enabled = false
@@ -47,6 +66,8 @@ struct AutomationScheduleRecord: Codable, Equatable, Sendable {
         lastThreadCount = nil
         lastExportedAt = nil
         lastOutputPath = nil
+        schedulerInitializedAt = nil
+        recentAttempts = nil
     }
 
     var isRunning: Bool {
@@ -149,6 +170,7 @@ struct AutomationScheduleRecord: Codable, Equatable, Sendable {
 
     mutating func beginRun(triggers: Set<AutomaticExportTrigger>, at date: Date) {
         guard triggers.isEmpty == false else { return }
+        beginAttempt(triggers: triggers, at: date)
         absorbDueTriggers(triggers)
         currentRunStartedAt = date
     }
@@ -166,6 +188,44 @@ struct AutomationScheduleRecord: Codable, Equatable, Sendable {
             wakeRunAt = nil
         }
         currentRunTriggers.formUnion(triggers)
+        if var attempts = recentAttempts, attempts.last?.outcome == .running {
+            attempts[attempts.count - 1].triggers.formUnion(triggers)
+            recentAttempts = attempts
+        }
+    }
+
+    mutating func beginAttempt(triggers: Set<AutomaticExportTrigger>, at date: Date) {
+        var attempts = recentAttempts ?? []
+        if attempts.last?.outcome == .running {
+            attempts[attempts.count - 1].triggers.formUnion(triggers)
+        } else {
+            attempts.append(ExportAttempt(startedAt: date, triggers: triggers))
+        }
+        recentAttempts = Array(attempts.suffix(Self.retainedAttemptLimit))
+    }
+
+    mutating func finishAttempt(
+        at date: Date,
+        outcome: ExportAttempt.Outcome,
+        failureMessage: String?,
+        threadCount: Int?
+    ) {
+        guard var attempts = recentAttempts, attempts.last?.outcome == .running else { return }
+        let index = attempts.count - 1
+        attempts[index].completedAt = date
+        attempts[index].outcome = outcome
+        attempts[index].failureMessage = failureMessage
+        attempts[index].threadCount = threadCount
+        recentAttempts = attempts
+        // Manual attempts update failure diagnostics without consuming or rescheduling automatic triggers.
+        if attempts[index].triggers.isEmpty {
+            if outcome == .failed {
+                lastFailureAt = date
+                lastFailureMessage = failureMessage
+            } else if outcome == .succeeded {
+                lastFailureMessage = nil
+            }
+        }
     }
 
     mutating func completeRun(
@@ -176,6 +236,12 @@ struct AutomationScheduleRecord: Codable, Equatable, Sendable {
         exportedAt: String?,
         outputPath: String?
     ) {
+        finishAttempt(
+            at: date,
+            outcome: succeeded ? .succeeded : .failed,
+            failureMessage: failureMessage,
+            threadCount: threadCount
+        )
         let completedTriggers = currentRunTriggers
         lastRunAt = date
         if succeeded {
@@ -197,6 +263,15 @@ struct AutomationScheduleRecord: Codable, Equatable, Sendable {
     }
 
     mutating func recoverInterruptedRun(at date: Date) {
+        if let startedAt = currentRunStartedAt {
+            beginAttempt(triggers: currentRunTriggers, at: startedAt)
+        }
+        finishAttempt(
+            at: date,
+            outcome: .interrupted,
+            failureMessage: "The export was interrupted when WhatsApp Collector stopped.",
+            threadCount: nil
+        )
         guard isRunning else {
             repairNextRecurringRunIfNeeded(now: date)
             return

@@ -3,11 +3,13 @@ from __future__ import annotations
 import base64
 from collections import defaultdict
 from contextlib import contextmanager
+from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
 import mimetypes
 import re
+import sys
 import time
 import unicodedata
 from pathlib import Path
@@ -24,6 +26,9 @@ from whatsapp_collector.attachment_store import (
 from whatsapp_collector.chrome_session import ChromeWhatsAppSession
 from whatsapp_collector.devtools_bridge import CHAT_IDENTITY_HELPERS_JS
 from whatsapp_collector.export_quality import attach_export_quality
+from whatsapp_collector.message_expiry import (
+    MESSAGE_EXPIRY_HELPERS_JS, complete_live_capture, confirmed_empty, epoch, expected_expired, expiry_metadata,
+)
 from whatsapp_collector.models import (
     ChatRow,
     IndexedDBThread,
@@ -37,8 +42,119 @@ from whatsapp_collector.parsing import parse_chat_list, parse_labels
 
 PAGE_META_JS = 'JSON.stringify(Object.assign({PAGE_META:true},{title:document.title,url:location.href}))'
 LABELS_BODY_JS = '''JSON.stringify({LABELS_BODY:true,body:(()=>{const isLabels=(el)=>{const aria=(el.getAttribute('aria-label')||'').trim();const text=(el.innerText||'').trim();return ['Labels','Lists'].includes(aria)||['Labels','Lists'].some(name=>text.startsWith(name));};const close=[...document.querySelectorAll('button,[role="button"]')].find(el=>el.getAttribute('aria-label')==='Close');if(close){close.click();}const directLabels=document.getElementById("labels-filter")||document.querySelector('[data-testid="biz-tools-labels"]')||[...document.querySelectorAll('button,[role="button"],a')].find(isLabels);if(directLabels){directLabels.click();return document.body.innerText;}const menu=[...document.querySelectorAll('button,[role="button"]')].find(el=>el.getAttribute('aria-label')==='Menu');if(menu){menu.click();const menuLabels=[...document.querySelectorAll('button,[role="button"],a')].find(isLabels);if(menuLabels){menuLabels.click();return document.body.innerText;}}const tools=[...document.querySelectorAll('button,[role="button"]')].find(el=>el.getAttribute('aria-label')==='Tools');if(tools){tools.click();const toolLabels=document.querySelector('[data-testid="biz-tools-labels"]')||[...document.querySelectorAll('button,[role="button"],a')].find(isLabels);if(toolLabels){toolLabels.click();}}return document.body.innerText;})()})'''
-CHAT_LIST_RESET_JS = r'''(async()=>{const sleep=(ms)=>new Promise(resolve=>setTimeout(resolve,ms)); const clickFirst=(predicate)=>{const item=[...document.querySelectorAll('button,[role="button"],a')].find(predicate); if(item){item.click(); return true;} return false;}; const clickedChats=clickFirst(el=>(el.getAttribute('aria-label')||'')==='Chats'); if(clickedChats){await sleep(350);} for(let i=0;i<3;i++){const panelButton=[...document.querySelectorAll('button,[role="button"]')].find(el=>['Close','Back'].includes(el.getAttribute('aria-label')||'')); if(!panelButton){break;} panelButton.click(); await sleep(250);} const all=document.getElementById("all-filter")||[...document.querySelectorAll('button,[role="button"],a')].find(el=>(el.innerText||'').trim()==='All'); if(all){all.click(); await sleep(250);} const pane=document.querySelector('#pane-side'); if(pane){pane.scrollTop=0; pane.dispatchEvent(new Event('scroll',{bubbles:true}));} return JSON.stringify({CHAT_LIST_RESET:true,ok:true,clickedChats});})()'''
-CHAT_LIST_BODY_JS = r'''JSON.stringify({CHAT_LIST_BODY:true,...(()=>{const close=[...document.querySelectorAll('button,[role="button"]')].find(el=>el.getAttribute('aria-label')==='Close'); if(close){close.click();} const all=document.getElementById("all-filter")||[...document.querySelectorAll('button,[role="button"],a')].find(el=>(el.innerText||'').trim()==='All'); if(all){all.click();} const timestampPattern=/^(Today|Yesterday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|\d{1,2}:\d{2}(?:\s?[AP]M)?|\d{1,2}\/\d{1,2}\/\d{2,4})$/i; const unreadPattern=/^(\d+) unread messages?$/i; const rows=[...document.querySelectorAll('#pane-side [role="row"][data-testid^="list-item-"]')].map((row)=>{let lines=(row.innerText||'').split('\n').map(line=>line.replace(/\u200e/g,'').replace(/\u00a0/g,' ').trim()).filter(Boolean); let unreadCount=0; let unreadFlag=false; if(lines.length){const unreadMatch=lines[0].match(unreadPattern); if(unreadMatch){unreadCount=parseInt(unreadMatch[1],10)||0; unreadFlag=unreadCount>0; lines=lines.slice(1);} else if(/^unread$/i.test(lines[0])){unreadCount=1; unreadFlag=true; lines=lines.slice(1);} } if(lines.length && /^\d+$/.test(lines[lines.length-1])){const badgeCount=parseInt(lines[lines.length-1],10)||0; if(badgeCount>0){unreadCount=Math.max(unreadCount,badgeCount); unreadFlag=true;} lines=lines.slice(0,-1);} const timestampIndex=lines.findIndex((line,idx)=>idx>0&&timestampPattern.test(line)); if(timestampIndex <= 0){return null;} const chatName=lines[0]; const timestampLabel=lines[timestampIndex]; const preview=lines.slice(timestampIndex+1).join(' ').replace(/\s+/g,' ').trim(); return {chat_name:chatName,timestamp_label:timestampLabel,preview:preview,unread_count:unreadCount,unread_flag:unreadFlag};}).filter(Boolean); return {body:document.body.innerText,rows:rows};})()})'''
+CHAT_LIST_RESET_JS = r'''(async () => {
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const controls = () => [...document.querySelectorAll('button,[role="button"],a')];
+    const chats = controls().find(el => el.getAttribute('aria-label') === 'Chats');
+    const clickedChats = Boolean(chats && chats.getAttribute('aria-pressed') !== 'true');
+    if (clickedChats) { chats.click(); await sleep(350); }
+    for (let i = 0; i < 3; i++) {
+        const close = [...document.querySelectorAll('button,[role="button"]')]
+            .find(el => ['Close', 'Back'].includes(el.getAttribute('aria-label')));
+        if (!close) break;
+        close.click();
+        await sleep(250);
+    }
+    const all = document.getElementById('all-filter') || controls().find(el => (el.innerText || '').trim() === 'All');
+    if (all && all.getAttribute('aria-selected') !== 'true') { all.click(); await sleep(250); }
+    const pane = document.querySelector('#pane-side');
+    if (pane) { pane.scrollTop = 0; pane.dispatchEvent(new Event('scroll', {bubbles: true})); }
+    return JSON.stringify({CHAT_LIST_RESET: true, ok: true, clickedChats});
+})()'''
+CHAT_LIST_BODY_JS = r'''(async () => {
+    const requestedHorizon = 15;
+    const deadlineMs = Math.min(120000, 8000 + Math.max(0, requestedHorizon - 15) * 200);
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const clean = value => String(value || '').replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '').replace(/\u00a0/g, ' ').trim();
+    const timestampPattern = /^(Today|Yesterday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|\d{1,2}:\d{2}(?:\s?[AP]M)?|\d{1,2}\/\d{1,2}\/\d{2,4})$/i;
+    const all = document.getElementById("all-filter") || [...document.querySelectorAll('#side [role="tab"], #side button')].find(el => clean(el.innerText) === 'All');
+    if (all && all.getAttribute('aria-selected') !== 'true') all.click();
+    const found = new Map();
+    const skippedIndices = new Set();
+    const rowIndex = row => {
+        const ariaIndex = Number(row.getAttribute('aria-rowindex'));
+        return ariaIndex > 0 ? ariaIndex - 1 : null;
+    };
+    // list-item-N is a recycled slot, not a stable position in the All list.
+    const rowPosition = row => {
+        const match = (row.getAttribute('style') || '').match(/translateY\(([\d.]+)px\)/);
+        return match ? Number(match[1]) : null;
+    };
+    let lastSignature = '', stableSince = performance.now(), lastPane = null, anchored = false;
+    let lastState = {};
+    const started = performance.now();
+    for (let pass = 0; pass < Math.ceil(deadlineMs / 100) && performance.now() - started < deadlineMs; pass++) {
+        const pane = document.querySelector('#pane-side') || document.querySelector('#side [data-testid="chat-list"]');
+        if (!pane) { await wait(100); continue; }
+        if (pane !== lastPane) {
+            lastPane = pane; found.clear(); skippedIndices.clear(); anchored = false;
+            pane.scrollTop = 0; pane.dispatchEvent(new Event('scroll', {bubbles:true}));
+            lastSignature = ''; stableSince = performance.now();
+        }
+        const selected = all && all.getAttribute('aria-selected') === 'true';
+        const loading = Boolean(pane.querySelector('[role="progressbar"], [aria-busy="true"], [data-testid*="loading"], [data-testid*="spinner"]'));
+        const candidates = [...pane.querySelectorAll('[role="row"], [data-testid^="list-item-"], [data-testid="cell-frame-container"]')];
+        const nodes = candidates.filter(node => !candidates.some(parent => parent !== node && parent.contains(node)));
+        const parsed = nodes.map((row, ordinal) => {
+            const lines = clean(row.innerText).split(/\r?\n/).map(clean).filter(Boolean);
+            const title = row.querySelector('span[title]') || row.querySelector('[data-testid="cell-frame-title"]');
+            const name = clean(title?.getAttribute('title') || title?.innerText || title?.textContent).replace(/^\d+ unread messages?\s*/i, '') || lines.find(line => !/^(\d+ unread messages?|unread)$/i.test(line));
+            const timeNode = row.querySelector('[data-testid="chat-list-timestamp"], [data-testid="cell-frame-primary-detail"]');
+            const timestamp = clean(timeNode?.innerText || timeNode?.textContent) || lines.find((line, i) => i > 0 && timestampPattern.test(line));
+            if (!name || !timestamp || ['Locked chats', 'Archived'].includes(name)) return null;
+            const previewNode = row.querySelector('[data-testid="last-msg-status"]') || row.querySelector('[data-testid="cell-frame-secondary"]');
+            let preview = clean(previewNode?.innerText || previewNode?.getAttribute('title') || previewNode?.textContent) || lines.slice(lines.indexOf(timestamp) + 1).join(' ');
+            let unread = 0;
+            for (const line of [...lines, ...[...row.querySelectorAll('[aria-label]')].map(el => clean(el.getAttribute('aria-label')))]) {
+                const match = line.match(/^(\d+) unread messages?$/i);
+                if (match) unread = Math.max(unread, Number(match[1]));
+                else if (/^unread$/i.test(line)) unread = Math.max(unread, 1);
+            }
+            if (!unread && /^\d+$/.test(lines.at(-1) || '')) unread = Number(lines.at(-1));
+            const index = rowIndex(row);
+            return {chat_name:name, timestamp_label:timestamp, preview:preview.replace(/\s+/g,' ').trim(),
+                unread_count:unread, unread_flag:unread > 0, index, position:rowPosition(row), ordinal};
+        }).filter(Boolean);
+        const signature = JSON.stringify(parsed);
+        if (signature !== lastSignature || loading || !selected) { lastSignature = signature; stableSince = performance.now(); }
+        const indices = nodes.map(rowIndex).filter(index => index !== null);
+        const positions = nodes.map(rowPosition).filter(position => position !== null);
+        const topReady = anchored || (pane.scrollTop === 0 && (positions.length ? positions.includes(0) : !indices.length || indices.includes(0)));
+        const grid = pane.querySelector('[aria-rowcount]');
+        const rowCount = grid ? Number(grid.getAttribute('aria-rowcount')) : null;
+        lastState = {source:'all-view-sidebar', allSelected:Boolean(selected), loading, rowCount,
+            renderedRows:parsed.length, capturedRows:found.size, requestedHorizon, elapsedMs:performance.now()-started};
+        if (selected && !loading && topReady && performance.now() - stableSince >= 250) {
+            anchored = true;
+            for (const node of nodes) {
+                const index = rowIndex(node);
+                if (index !== null && /^(Locked chats|Archived)(?:\s*\d+)?$/.test(clean(node.innerText || node.textContent))) skippedIndices.add(index);
+            }
+            for (const row of parsed) {
+                const key = row.position !== null ? `position:${row.position}` : row.index !== null ? `index:${row.index}` : `name:${row.chat_name}:${row.timestamp_label}`;
+                if (!found.has(key)) found.set(key, row);
+            }
+            const atEnd = pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 2;
+            const indexed = [...found.values()].every(row => row.index !== null && row.position === null);
+            const ordered = [...found.values()].sort((a,b) => a.position !== null && b.position !== null ? a.position-b.position : a.index !== null && b.index !== null ? a.index-b.index : 0);
+            const lastIndex = ordered[Math.min(requestedHorizon, ordered.length)-1]?.index;
+            const contiguous = !indexed || (lastIndex !== undefined && Array.from({length:lastIndex+1},(_,i) => found.has(`index:${i}`) || skippedIndices.has(i)).every(Boolean));
+            const horizonReady = found.size >= requestedHorizon && contiguous;
+            const complete = horizonReady || (rowCount !== null && rowCount >= 0 && found.size + skippedIndices.size >= rowCount) || (rowCount === null && atEnd && found.size > 0 && contiguous);
+            if (complete) {
+                const rows = ordered.slice(0,requestedHorizon).map(({index,position,ordinal,...row}) => row);
+                return JSON.stringify({CHAT_LIST_BODY:true, rows, bodyScope:'sidebar', captureState:{...lastState, capturedRows:rows.length, ready:true}});
+            }
+            if (parsed.length) {
+                pane.scrollTop += Math.max(100, pane.clientHeight * 0.75);
+                pane.dispatchEvent(new Event('scroll', {bubbles:true}));
+                lastSignature = ''; stableSince = performance.now();
+            }
+        }
+        await wait(100);
+    }
+    return JSON.stringify({CHAT_LIST_BODY:true, rows:[], bodyScope:'sidebar', captureState:{...lastState, ready:false}, error:'All-view sidebar did not settle before the capture deadline'});
+})()'''
 MODEL_STORAGE_STORES_JS = '''window.__hermes_async_result = null;(function(){const req=indexedDB.open("model-storage");req.onerror=()=>{window.__hermes_async_result=JSON.stringify({error:String(req.error)});};req.onsuccess=()=>{const db=req.result;window.__hermes_async_result=JSON.stringify({stores:Array.from(db.objectStoreNames)});db.close();};})();"started"'''
 
 DEFAULT_EXCLUDED_LABELS = ["Excluded Label", "Archive Label"]
@@ -47,6 +163,8 @@ DEFAULT_MAX_MESSAGES = MAX_MESSAGE_LOOKBACK_HARD_LIMIT
 DEFAULT_ALL_VIEW_CHAT_LIMIT = 15
 GROUP_INCLUDE_STANDARD = "standard"
 GROUP_INCLUDE_LABELED_ALWAYS = "labeledAlways"
+# Observed group controls: creation stores the group name in body, not a user message.
+NONCONTENT_CONTROL_MESSAGE_KINDS = frozenset({("gp2", "create"), ("gp2", "ephemeral")})
 ATTACHMENT_MESSAGE_TYPES = {
     "image",
     "document",
@@ -56,6 +174,7 @@ ATTACHMENT_MESSAGE_TYPES = {
     "sticker",
 }
 IDB_OPERATION_ATTEMPTS = 3
+CHAT_CAPTURE_ATTEMPTS = 2
 IDB_MESSAGE_ROWS_PER_DIRECTION_FLOOR = 64
 IDB_MESSAGE_ROWS_PER_DIRECTION_CEILING = 256
 
@@ -69,6 +188,31 @@ class WhatsAppCollector:
         self._idb_queried_message_jids: set[str] | None = None
         self._attachment_store: AttachmentStore | None = None
         self._attachment_policy = AttachmentPolicy()
+        self._previous_threads: dict[str, dict[str, Any]] = {}
+        self._opened_capture_details: dict[str, dict[str, Any]] = {}
+        self._skipped_recent_threads: list[dict[str, Any]] = []
+        self._chat_expiry_settings: dict[str, dict[str, Any]] = {}
+        self._excluded_thread_keys: set[str] = set()
+        self._run_captures: dict[tuple[str, int], dict[str, Any]] | None = None
+        self._run_timings: list[dict[str, Any]] | None = None
+        self._run_started = 0.0
+
+    def _export_progress(self, phase: str, completed: int, total: int | None, detail: str) -> None:
+        if self._run_timings is not None:
+            print("WAC_PROGRESS:" + json.dumps({
+                "phase": phase, "completed": completed, "total": total, "detail": detail,
+                "elapsedSeconds": round(time.monotonic() - self._run_started, 3),
+            }), file=sys.stderr, flush=True)
+
+    def _timed_export_call(self, phase: str, callback, *args, **kwargs):
+        started = time.monotonic()
+        self._export_progress(phase, 0, 1, "started")
+        try:
+            return callback(*args, **kwargs)
+        finally:
+            if self._run_timings is not None:
+                self._run_timings.append({"phase": phase, "elapsedSeconds": round(time.monotonic() - started, 3)})
+            self._export_progress(phase, 1, 1, "finished")
 
     def collect_labels(self) -> list[LabelStat]:
         payload = self.session.run_json(LABELS_BODY_JS)
@@ -97,9 +241,17 @@ class WhatsAppCollector:
             labels.append(clean)
         return sorted(labels, key=str.casefold)
 
-    def collect_chat_list(self) -> list[ChatRow]:
+    def collect_chat_list(self, *, max_chats: int | None = None) -> list[ChatRow]:
         self._reset_chat_list_to_top()
-        payload = self.session.run_json(CHAT_LIST_BODY_JS)
+        horizon = max(1, min(500, int(max_chats if max_chats is not None else getattr(self, "_all_view_capture_horizon", DEFAULT_ALL_VIEW_CHAT_LIMIT))))
+        script = CHAT_LIST_BODY_JS.replace("const requestedHorizon = 15;", f"const requestedHorizon = {horizon};")
+        payload = self.session.run_json(script)
+        if not isinstance(payload, dict):
+            raise RuntimeError("All-view sidebar capture returned an invalid payload")
+        state = payload.get("captureState")
+        self._chat_list_capture_details = dict(state) if isinstance(state, dict) else {}
+        if payload.get("error") or isinstance(state, dict) and state.get("ready") is not True:
+            raise RuntimeError(str(payload.get("error") or "All-view sidebar capture is incomplete"))
         structured_rows = payload.get("rows") if isinstance(payload, dict) else None
         if isinstance(structured_rows, list) and structured_rows:
             rows: list[ChatRow] = []
@@ -118,7 +270,11 @@ class WhatsAppCollector:
             rows = [row for row in rows if row.chat_name and row.timestamp_label]
             if rows:
                 return rows
-        return [ChatRow(**item) for item in parse_chat_list(payload["body"])]
+        if payload.get("bodyScope") == "sidebar":
+            if isinstance(structured_rows, list):
+                return []
+            return [ChatRow(**item) for item in parse_chat_list(str(payload.get("body") or ""))]
+        raise RuntimeError("Chat-list text has no sidebar provenance; refusing to parse conversation content")
 
     def _reset_chat_list_to_top(self) -> None:
         try:
@@ -229,6 +385,7 @@ class WhatsAppCollector:
             contact = contacts_by_id.get(jid, {})
             group = groups_by_id.get(jid, {})
             chat = chats_by_id.get(jid)
+            self._record_chat_expiry(jid, chat)
 
             phone_or_history_id = None
             if contact:
@@ -324,9 +481,23 @@ class WhatsAppCollector:
         attachments_dir: Path | str | None = None,
         download_attachments: bool = True,
         max_total_attachment_bytes: int = DEFAULT_MAX_ATTACHMENT_TOTAL_BYTES,
+        previous_export: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         previous_store = self._attachment_store
+        previous_horizon = getattr(self, "_all_view_capture_horizon", DEFAULT_ALL_VIEW_CHAT_LIMIT)
+        self._all_view_capture_horizon = max(1, min(500, int(max_all_chats)))
         previous_policy = self._attachment_policy
+        previous_threads = self._previous_threads
+        previous_run = self._run_captures, self._run_timings, self._run_started
+        baseline, _ = self._consolidate_threads((previous_export or {}).get("threads", []), max_messages=max_messages)
+        self._previous_threads = {
+            str(thread["threadKey"]): thread for thread in baseline
+            if isinstance(thread, dict) and thread.get("threadKey")
+        }
+        self._opened_capture_details = {}
+        self._skipped_recent_threads = []
+        self._excluded_thread_keys = set()
+        self._chat_expiry_settings = {}
         attachments_root = Path(attachments_dir).expanduser() if attachments_dir else None
         self._attachment_policy = AttachmentPolicy(
             enabled=bool(download_attachments),
@@ -335,9 +506,10 @@ class WhatsAppCollector:
             max_total_bytes=max(1, int(max_total_attachment_bytes)),
         )
         self._attachment_store = AttachmentStore(attachments_root, policy=self._attachment_policy) if attachments_root else None
+        self._run_captures, self._run_timings, self._run_started = {}, [], time.monotonic()
         try:
             with self._cached_idb_reads():
-                return self._collect_dashboard_export(
+                payload = self._collect_dashboard_export(
                     account_label=account_label,
                     allow_labels=allow_labels,
                     exclude_labels=exclude_labels,
@@ -346,9 +518,20 @@ class WhatsAppCollector:
                     include_groups=include_groups,
                     attachments_dir=attachments_root,
                 )
+                self._timed_export_call("quality-validation", attach_export_quality, payload, previous_export=previous_export)
+                payload.setdefault("exportDiagnostics", {})["phaseTimings"] = list(self._run_timings)
+                payload["exportDiagnostics"]["chatCaptures"] = [
+                    {key: value for key, value in capture.items() if key not in {"messages", "state", "error"}}
+                    for capture in self._run_captures.values()
+                ]
+                self._export_progress("complete", 1, 1, "candidate-ready" if payload["exportQuality"]["ok"] else "candidate-rejected")
+                return payload
         finally:
+            self._all_view_capture_horizon = previous_horizon
             self._attachment_store = previous_store
             self._attachment_policy = previous_policy
+            self._previous_threads = previous_threads
+            self._run_captures, self._run_timings, self._run_started = previous_run
 
     def _collect_dashboard_export(
         self,
@@ -367,16 +550,17 @@ class WhatsAppCollector:
         attachments_root = Path(attachments_dir).expanduser() if attachments_dir else None
         excluded_labels = self._effective_excluded_labels(exclude_labels)
         forced_labels = list(allow_labels or [])
-        snapshot = self.collect_snapshot()
+        snapshot = self._timed_export_call("discovery", self.collect_snapshot)
         export_warnings: list[str] = []
         message_capture_skipped_count = 0
         labeled_message_capture_failed_count = 0
         labeled_message_failures: list[dict[str, Any]] = []
         locked_labeled_chat_count = 0
         empty_labeled_chat_count = 0
+        skipped_threads: list[dict[str, Any]] = []
         try:
             threads = (
-                self.collect_labeled_threads(
+                self._timed_export_call("labeled-discovery", self.collect_labeled_threads,
                     allow_labels=forced_labels,
                     exclude_labels=excluded_labels,
                     include_groups=include_groups,
@@ -425,17 +609,20 @@ class WhatsAppCollector:
                 last_direction = str(latest_message.get("direction") or last_direction)
                 last_sender = latest_message.get("sender") or last_sender
                 last_text = str(latest_message.get("text") or last_text)
-            else:
+            elif not confirmed_empty(source_diagnostics or {}):
                 message_capture_skipped_count += 1
                 issue_codes = {
                     str(issue.get("code") or "")
                     for issue in (source_diagnostics or {}).get("issues", [])
                     if isinstance(issue, dict)
                 }
+                capture_loading = bool((source_diagnostics or {}).get("captureState", {}).get("isLoading"))
                 if locked_chat:
                     locked_labeled_chat_count += 1
-                elif "opened-chat-check-failed" in issue_codes:
+                    skip_reason = "locked-chat"
+                elif {"opened-chat-check-failed", "empty-chat-not-confirmed"} & issue_codes or capture_loading:
                     labeled_message_capture_failed_count += 1
+                    skip_reason = self._capture_skip_reason(source_diagnostics or {})
                     labeled_message_failures.append({
                         "chatTitle": thread.display_name,
                         "threadKey": thread.jid,
@@ -444,7 +631,16 @@ class WhatsAppCollector:
                     })
                 else:
                     empty_labeled_chat_count += 1
+                    skip_reason = "no-exportable-content"
+                skipped_threads.append({
+                    "chatTitle": thread.display_name, "threadKey": thread.jid,
+                    "labels": clean_labels, "reason": skip_reason,
+                    "sourceDiagnostics": source_diagnostics or {},
+                    "expectedLatestAt": self._format_timestamp(thread.last_message_timestamp),
+                })
                 continue
+            if not recent_messages:
+                last_message_at, last_direction, last_sender, last_text = None, "unknown", None, ""
             export_thread = {
                 "threadKey": thread.jid,
                 "chatTitle": thread.display_name,
@@ -474,12 +670,13 @@ class WhatsAppCollector:
         except (RuntimeError, TimeoutError, ValueError) as exc:
             excluded_recent_chat_names = set()
             export_warnings.append(f"excluded-label-filter-skipped:{type(exc).__name__}:{exc}")
-        refreshed_chat_rows = self.collect_chat_list()
+        refreshed_chat_rows = self._timed_export_call("recent-discovery", self.collect_chat_list)
         planned_chat_rows = self._plan_all_view_rows(snapshot.chat_list, refreshed_chat_rows, all_view_chat_limit=max_all_chats)
         exported_threads.extend(
             self._recent_default_view_exports(
                 chat_rows=planned_chat_rows,
                 existing_titles=[thread["chatTitle"] for thread in exported_threads],
+                existing_threads=exported_threads,
                 excluded_titles=excluded_recent_chat_names,
                 include_groups=include_groups,
                 max_messages=max_messages,
@@ -498,6 +695,10 @@ class WhatsAppCollector:
                 attachments_dir=attachments_root,
             )
         )
+        exported_threads, identity_diagnostics = self._consolidate_threads(exported_threads, max_messages=max_messages)
+        exported_threads = [thread for thread in exported_threads if thread.get("threadKey") not in self._excluded_thread_keys]
+        exported_threads.sort(key=self._export_thread_recency_key, reverse=True)
+        media_recovery = self._recover_missing_media(exported_threads, max_messages=max_messages, attachments_dir=attachments_root)
         exported_threads.sort(key=self._export_thread_recency_key, reverse=True)
         payload = {
             "source": "whatsapp",
@@ -512,11 +713,37 @@ class WhatsAppCollector:
             "maxAllViewChats": max_all_chats,
             "includeGroups": include_groups,
             "threads": exported_threads,
+            "exportDiagnostics": {
+                "allView": {
+                    "requestedChatCount": max_all_chats,
+                    "consideredRowCount": len(planned_chat_rows),
+                    "captureState": dict(getattr(self, "_chat_list_capture_details", {})),
+                    "exportedThreadCount": sum(
+                        "all" in thread.get("sourceViews", [thread.get("sourceView")])
+                        for thread in exported_threads
+                    ),
+                },
+                "skippedThreads": skipped_threads + self._skipped_recent_threads,
+                "mediaRecovery": media_recovery,
+                "identityConsolidation": identity_diagnostics,
+                "expiry": [
+                    {"threadKey": thread["threadKey"], "chatTitle": thread.get("chatTitle"),
+                     "setting": thread.get("expirySetting"),
+                     "messageCount": len(thread.get("messages", [])),
+                     "messagesWithExpiryEvidence": sum(bool(m.get("expiry")) for m in thread.get("messages", [])),
+                     "keptMessageCount": sum((m.get("expiry") or {}).get("kept") is True for m in thread.get("messages", [])),
+                     "unknownKeepStateCount": sum((m.get("expiry") or {}).get("kept") is None for m in thread.get("messages", [])),
+                     "confirmedEmpty": confirmed_empty(thread.get("sourceDiagnostics") or {})}
+                    for thread in exported_threads
+                ],
+            },
         }
         if attachments_root:
             payload["attachmentsRoot"] = str(attachments_root)
             payload["attachmentPolicy"] = self._attachment_policy.to_dict()
             payload["attachmentSummary"] = self._attachment_summary(payload)
+            if payload["attachmentSummary"]["notDownloaded"]:
+                export_warnings.append(f"attachments-not-downloaded:{payload['attachmentSummary']['notDownloaded']}")
         if message_capture_skipped_count:
             export_warnings.append(f"message-capture-skipped:{message_capture_skipped_count}")
         if labeled_message_capture_failed_count:
@@ -535,7 +762,7 @@ class WhatsAppCollector:
         return payload
 
     def _model_storage_stores(self) -> list[str]:
-        payload = self.session.run_async_json(MODEL_STORAGE_STORES_JS)
+        payload = self._timed_export_call("indexeddb", self.session.run_async_json, MODEL_STORAGE_STORES_JS)
         return list(payload["stores"])
 
     @contextmanager
@@ -557,6 +784,9 @@ class WhatsAppCollector:
             self._idb_queried_message_jids = previous_queried_message_jids
 
     def _run_idb_operation(self, script: str, *, operation: str) -> Any:
+        return self._timed_export_call("indexeddb", self._run_idb_operation_with_retries, script, operation=operation)
+
+    def _run_idb_operation_with_retries(self, script: str, *, operation: str) -> Any:
         last_error: Exception | None = None
         for attempt in range(1, IDB_OPERATION_ATTEMPTS + 1):
             try:
@@ -852,7 +1082,7 @@ class WhatsAppCollector:
 
     @staticmethod
     def _normalized_chat_identity(value: str) -> str:
-        return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
+        return "".join(character for character in unicodedata.normalize("NFKC", value or "").casefold() if character.isalnum())
 
     @staticmethod
     def _phone_digits(value: str | None) -> str:
@@ -949,6 +1179,7 @@ class WhatsAppCollector:
             for jid, normalized_labels in labels_for_jid.items()
             if self._thread_has_only_excluded_labels(normalized_labels, normalized_excluded_labels)
         ]
+        self._excluded_thread_keys.update(excluded_jids)
         contact_rows = self._idb_get_many("contact", excluded_jids)
         group_rows = self._idb_get_many("group-metadata", excluded_jids)
         contacts_by_id = {row["value"]["id"]: row["value"] for row in contact_rows}
@@ -1079,6 +1310,7 @@ class WhatsAppCollector:
         *,
         chat_rows: list[ChatRow],
         existing_titles: list[str],
+        existing_threads: list[dict[str, Any]] | None = None,
         excluded_titles: set[str],
         include_groups: str,
         max_messages: int,
@@ -1086,13 +1318,13 @@ class WhatsAppCollector:
         attachments_dir: Path | None = None,
     ) -> list[dict[str, Any]]:
         seen_titles = {self._normalized_chat_identity(title) for title in existing_titles}
+        seen_thread_keys = {str(thread.get("threadKey")) for thread in (existing_threads or []) if thread.get("threadKey")}
         recent_exports: list[dict[str, Any]] = []
         contacts_by_name, groups_by_name, chats_by_id, chats_by_alias, _ = self._default_view_lookup_maps()
         for row in chat_rows[:limit]:
             normalized_name = self._normalized_chat_identity(row.chat_name)
-            if not normalized_name or normalized_name in seen_titles or normalized_name in excluded_titles:
+            if not normalized_name:
                 continue
-            seen_titles.add(normalized_name)
 
             row_aliases = self._alias_keys_for_value(row.chat_name)
             contact = next((contacts_by_name[alias] for alias in row_aliases if alias in contacts_by_name), None)
@@ -1100,6 +1332,19 @@ class WhatsAppCollector:
             chat = self._resolve_default_view_chat(row, contact=contact, group=group, chats_by_alias=chats_by_alias)
             jid = (chat or contact or group or {}).get("id")
             chat = chats_by_id.get(jid, chat) if jid else chat
+            if jid:
+                if jid in seen_thread_keys or jid in self._excluded_thread_keys:
+                    for existing in existing_threads or []:
+                        if existing.get("threadKey") == jid:
+                            existing["sourceViews"] = sorted(set(existing.get("sourceViews", [existing.get("sourceView") or "labeled/forced"])) | {"all"})
+                    continue
+            elif normalized_name in seen_titles or normalized_name in excluded_titles:
+                continue
+            # Names are only a fallback. Distinct resolved IDs can share a display name.
+            seen_titles.add(normalized_name)
+            if jid:
+                seen_thread_keys.add(jid)
+                self._record_chat_expiry(jid, chat)
             is_group_chat = bool(group) or (isinstance(jid, str) and jid.endswith("@g.us"))
             if not self._include_group_for_policy(is_group_chat, set(), set(), include_groups):
                 continue
@@ -1144,10 +1389,19 @@ class WhatsAppCollector:
                 force=True,
                 return_diagnostics=True,
             )
-            if not recent_messages:
+            if not jid:
+                resolved = (source_diagnostics or {}).get("captureState", {}).get("resolvedThreadKey")
+                if resolved:
+                    jid = resolved
+                    seen_thread_keys.add(jid)
+            if not recent_messages and not confirmed_empty(source_diagnostics or {}):
+                self._skipped_recent_threads.append({
+                    "chatTitle": row.chat_name, "threadKey": jid, "sourceView": "all",
+                    "reason": self._capture_skip_reason(source_diagnostics or {}), "sourceDiagnostics": source_diagnostics or {},
+                })
                 continue
 
-            last_message = recent_messages[0]
+            last_message = recent_messages[0] if recent_messages else {}
             export_thread = {
                 "threadKey": jid or f"visible:{self._normalize_label_slug(row.chat_name)}",
                 "chatTitle": row.chat_name,
@@ -1158,10 +1412,10 @@ class WhatsAppCollector:
                 "unread": row.unread_count > 0 or row.unread_flag,
                 "starred": False,
                 "requiresResponse": row.unread_count > 0 or row.unread_flag,
-                "lastMessageAt": last_message["timestamp"],
-                "lastMessageDirection": last_message["direction"],
-                "lastMessageSender": last_message["sender"],
-                "lastMessageText": last_message["text"] or row.preview,
+                "lastMessageAt": last_message.get("timestamp"),
+                "lastMessageDirection": last_message.get("direction", "unknown"),
+                "lastMessageSender": last_message.get("sender"),
+                "lastMessageText": (last_message.get("text") or row.preview) if recent_messages else "",
                 "timestampLabel": row.timestamp_label,
                 "sourceView": "all",
                 "recentMessages": recent_messages,
@@ -1289,7 +1543,7 @@ class WhatsAppCollector:
             group = self._group_for_chat(chat, groups_by_id=groups_by_id, groups_by_alias=groups_by_alias)
             display_name = self._resolve_chat_display_name(jid, contact=contact, group=group, chat=chat)
             normalized_display_name = self._normalized_chat_identity(display_name)
-            if not normalized_display_name or normalized_display_name == "you" or normalized_display_name in seen_titles:
+            if not normalized_display_name or normalized_display_name == "you":
                 continue
 
             phone_or_history_id = None
@@ -1315,24 +1569,26 @@ class WhatsAppCollector:
                 )
             )
             source_diagnostics = None
-            if not recent_messages:
-                try:
-                    opened_messages = self._opened_chat_recent_messages_for_chat(
-                        display_name,
-                        max_messages=max_messages,
-                        attachments_dir=attachments_dir,
-                        thread_key=jid,
+            self._record_chat_expiry(jid, chat)
+            if not self._is_locked_chat(jid):
+                previous = self._previous_threads.get(jid, {})
+                recent_messages, source_diagnostics = self._refresh_recent_messages_from_opened_chat(
+                    display_name, recent_messages=recent_messages, max_messages=max_messages,
+                    attachments_dir=attachments_dir, thread_key=jid,
+                    expected_latest_timestamp=chat.get("t"),
+                    force=len(recent_messages) < max_messages or len(recent_messages) < len(previous.get("messages", [])),
+                    return_diagnostics=True,
+                )
+                previous_ids = {m.get("messageId") for m in previous.get("messages", [])}
+                current_ids = {m.get("messageId") for m in recent_messages}
+                if previous_ids - current_ids and not (source_diagnostics or {}).get("openedChatChecked"):
+                    recent_messages, source_diagnostics = self._refresh_recent_messages_from_opened_chat(
+                        display_name, recent_messages=recent_messages, max_messages=max_messages,
+                        attachments_dir=attachments_dir, thread_key=jid, expected_latest_timestamp=chat.get("t"),
+                        force=True, return_diagnostics=True,
                     )
-                    recent_messages = opened_messages
-                    source_diagnostics = self._message_source_diagnostics(
-                        indexeddb_messages=[],
-                        opened_chat_messages=opened_messages,
-                        merged_messages=recent_messages,
-                        opened_chat_checked=True,
-                        max_messages=max_messages,
-                    )
-                except RuntimeError:
-                    recent_messages = []
+            else:
+                source_diagnostics = {"issues": [{"code": "locked-chat-not-opened"}]}
             latest_raw = self._latest_raw_message(candidate_messages)
             latest_message = recent_messages[0] if recent_messages else None
             last_message_at = (
@@ -1340,15 +1596,26 @@ class WhatsAppCollector:
                 or self._format_timestamp((latest_raw or {}).get("t"))
                 or self._format_timestamp(chat.get("t"))
             )
-            if not last_message_at:
+            empty = confirmed_empty(source_diagnostics or {})
+            if not last_message_at and not empty:
+                self._skipped_recent_threads.append({
+                    "chatTitle": display_name, "threadKey": jid, "sourceView": "indexeddb-recent",
+                    "reason": self._capture_skip_reason(source_diagnostics or {}), "sourceDiagnostics": source_diagnostics or {},
+                })
                 continue
 
             if latest_message:
                 last_direction = str(latest_message.get("direction") or "")
                 last_sender = latest_message.get("sender")
                 last_text = str(latest_message.get("text") or "")
+            elif empty:
+                last_message_at, last_direction, last_sender, last_text = None, "unknown", None, ""
             else:
                 if not latest_raw:
+                    self._skipped_recent_threads.append({
+                        "chatTitle": display_name, "threadKey": jid, "sourceView": "indexeddb-recent",
+                        "reason": self._capture_skip_reason(source_diagnostics or {}), "sourceDiagnostics": source_diagnostics or {},
+                    })
                     continue
                 last_direction = self._message_direction(latest_raw or {}) if latest_raw else "unknown"
                 last_sender = (
@@ -1358,6 +1625,10 @@ class WhatsAppCollector:
                 )
                 last_text = ""
                 if not last_text:
+                    self._skipped_recent_threads.append({
+                        "chatTitle": display_name, "threadKey": jid, "sourceView": "indexeddb-recent",
+                        "reason": self._capture_skip_reason(source_diagnostics or {}), "sourceDiagnostics": source_diagnostics or {},
+                    })
                     continue
 
             labels_raw = raw_labels or ["Unlabeled"]
@@ -1388,6 +1659,73 @@ class WhatsAppCollector:
             seen_titles.add(normalized_display_name)
         return recent_exports
 
+    @staticmethod
+    def _capture_skip_reason(diagnostics: dict[str, Any]) -> str:
+        codes = {issue.get("code") for issue in diagnostics.get("issues", [])}
+        if "locked-chat-not-opened" in codes:
+            return "locked-chat"
+        if "opened-chat-check-failed" in codes:
+            return "chat-open-failed"
+        if any(diagnostics.get("captureState", {}).get(flag) for flag in ("isLoading", "waitTimedOut", "timedOut", "timeout")):
+            return "chat-content-not-ready"
+        return "empty-unconfirmed"
+
+    def _capture_chat_with_recovery(
+        self, chat_name: str, *, thread_key: str, max_messages: int, attachments_dir: Path | None,
+        expected_exportable_timestamp: Any = None,
+    ) -> dict[str, Any]:
+        key = (thread_key, max_messages)
+        cached = (self._run_captures or {}).get(key)
+        if cached is None:
+            cached = next((capture for (_, limit), capture in (self._run_captures or {}).items()
+                           if limit == max_messages and capture["state"].get("resolvedThreadKey") == thread_key), None)
+        if cached is not None:
+            cached["reuseCount"] += 1
+            self._opened_capture_details[thread_key] = deepcopy(cached["state"])
+            return deepcopy(cached)
+        started = time.monotonic()
+        completed = len(self._run_captures or {})
+        result: dict[str, Any] = {"threadKey": thread_key, "messages": [], "state": {}, "error": None,
+                                  "captureAttempts": 0, "reuseCount": 0, "attempts": []}
+        for attempt in range(1, CHAT_CAPTURE_ATTEMPTS + 1):
+            self._export_progress("chat-capture" if attempt == 1 else "chat-retry", completed, None,
+                                  f"attempt-{attempt}")
+            attempt_started = time.monotonic()
+            self._opened_capture_details.pop(thread_key, None)
+            result.update(messages=[], state={}, error=None, captureAttempts=attempt)
+            try:
+                result["messages"] = self._opened_chat_recent_messages_for_chat(
+                    chat_name, thread_key=thread_key, max_messages=max_messages, attachments_dir=attachments_dir,
+                )
+                result["state"] = deepcopy(self._opened_capture_details.get(thread_key, {}))
+            except (RuntimeError, TimeoutError, ValueError) as exc:
+                result["error"] = str(exc)
+            diagnostics = {"openedChatChecked": not result["error"], "captureState": result["state"],
+                           "openedChatMessageCount": len(result["messages"]), "sourcesUsed": ["opened-chat"]}
+            complete = not result["error"] and complete_live_capture(diagnostics, max_messages)
+            state = result["state"]
+            settled = not any(state.get(flag) for flag in ("isLoading", "waitTimedOut", "timedOut", "timeout"))
+            complete = complete and settled
+            latest = self._exported_message_epoch(self._latest_exported_message(result["messages"]) or {})
+            expected = self._whatsapp_timestamp_epoch(expected_exportable_timestamp)
+            stale = not complete and expected is not None and (latest is None or latest + 1 < expected)
+            successful = not result["error"] and settled and not stale and (bool(result["messages"]) or confirmed_empty(diagnostics))
+            result["attempts"].append({"attempt": attempt, "elapsedSeconds": round(time.monotonic() - attempt_started, 3),
+                                       "outcome": "captured" if successful else "open-failed" if result["error"]
+                                       else "coverage-incomplete" if state.get("captureIncomplete") and state.get("activeLoading") is False
+                                       else "loading" if not settled else "stale" if stale else "unconfirmed"})
+            if successful:
+                break
+        result["elapsedSeconds"] = round(time.monotonic() - started, 3)
+        result["recovered"] = successful and result["captureAttempts"] > 1
+        result["complete"] = complete
+        result["usable"] = successful
+        result["incomplete"] = not successful and any(a["outcome"] in {"loading", "stale", "coverage-incomplete"} for a in result["attempts"])
+        if self._run_captures is not None:
+            self._run_captures[key] = deepcopy(result)
+        self._export_progress("chat-capture", completed + 1, None, "captured" if successful else "exhausted")
+        return result
+
     def _refresh_recent_messages_from_opened_chat(
         self,
         chat_name: str,
@@ -1401,39 +1739,65 @@ class WhatsAppCollector:
         force: bool = False,
         return_diagnostics: bool = False,
     ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        previous_messages = self._previous_threads.get(thread_key, {}).get("messages", [])
+        previous_latest = self._exported_message_epoch(self._latest_exported_message(previous_messages) or {})
+        current_latest = self._exported_message_epoch(self._latest_exported_message(recent_messages) or {})
+        if previous_latest is not None and (current_latest is None or previous_latest > current_latest + 1):
+            force = True
         if not force and not self._should_refresh_opened_chat_messages(
             recent_messages,
             expected_latest_timestamp=expected_latest_timestamp,
             preview=preview,
         ):
             return (recent_messages, None) if return_diagnostics else recent_messages
-        try:
-            opened_messages = self._opened_chat_recent_messages_for_chat(
-                chat_name,
-                max_messages=max_messages,
-                attachments_dir=attachments_dir,
-                thread_key=thread_key,
-            )
-        except RuntimeError as exc:
+        # Chat activity may be a call/system event. Only message evidence can prove stale content.
+        expected_exportable_timestamp = self._known_exportable_timestamp(thread_key, recent_messages)
+        capture = self._capture_chat_with_recovery(
+            chat_name, thread_key=thread_key, max_messages=max_messages, attachments_dir=attachments_dir,
+            expected_exportable_timestamp=expected_exportable_timestamp,
+        )
+        opened_messages = capture["messages"]
+        timing = {key: capture[key] for key in ("captureAttempts", "elapsedSeconds", "recovered", "reuseCount", "attempts")}
+        timing["captureIncomplete"] = capture["incomplete"]
+        if capture["error"]:
             diagnostic = self._message_source_diagnostics(
                 indexeddb_messages=recent_messages,
                 opened_chat_messages=[],
                 merged_messages=recent_messages,
                 opened_chat_checked=True,
-                opened_chat_error=str(exc),
+                opened_chat_error=capture["error"],
                 max_messages=max_messages,
             )
+            diagnostic.update(timing)
+            if not recent_messages:
+                diagnostic["issues"].append({"code": "empty-chat-not-confirmed"})
+            self._annotate_stale_cached_history(diagnostic, recent_messages, expected_exportable_timestamp, thread_key)
             return (recent_messages, diagnostic) if return_diagnostics else recent_messages
         if not opened_messages:
+            state = self._opened_capture_details.get(thread_key, {})
+            empty = confirmed_empty({"openedChatChecked": True, "captureState": state})
+            result_messages = [] if empty else recent_messages
             diagnostic = self._message_source_diagnostics(
                 indexeddb_messages=recent_messages,
                 opened_chat_messages=[],
-                merged_messages=recent_messages,
+                merged_messages=result_messages,
                 opened_chat_checked=True,
                 max_messages=max_messages,
             )
-            return (recent_messages, diagnostic) if return_diagnostics else recent_messages
-        merged_messages = self._merge_recent_message_exports(opened_messages, recent_messages, max_messages=max_messages)
+            diagnostic.update(timing)
+            diagnostic["captureState"] = self._opened_capture_details.get(thread_key, {})
+            if empty:
+                diagnostic["sourcesUsed"] = ["opened-chat"]
+                diagnostic["issues"] = [{"code": "confirmed-empty-live-chat"}]
+            else:
+                diagnostic["issues"].append({"code": "empty-chat-not-confirmed"})
+                self._annotate_stale_cached_history(diagnostic, recent_messages, expected_exportable_timestamp, thread_key)
+            return (result_messages, diagnostic) if return_diagnostics else result_messages
+        state = self._opened_capture_details.get(thread_key, {})
+        complete = bool(state) and complete_live_capture({"openedChatMessageCount": len(opened_messages),
+                                          "sourcesUsed": ["opened-chat"], "captureState": state}, max_messages)
+        fallback = [m for m in recent_messages if m.get("messageId") in {item.get("messageId") for item in opened_messages}] if complete else recent_messages
+        merged_messages = self._merge_recent_message_exports(opened_messages, fallback, max_messages=max_messages)
         diagnostic = self._message_source_diagnostics(
             indexeddb_messages=recent_messages,
             opened_chat_messages=opened_messages,
@@ -1441,12 +1805,201 @@ class WhatsAppCollector:
             opened_chat_checked=True,
             max_messages=max_messages,
         )
+        diagnostic.update(timing)
+        diagnostic["captureState"] = self._opened_capture_details.get(thread_key, {})
+        if not complete:
+            self._annotate_stale_cached_history(diagnostic, opened_messages, expected_exportable_timestamp, thread_key)
         return (merged_messages, diagnostic) if return_diagnostics else merged_messages
 
-    @classmethod
-    def _attach_source_diagnostics(cls, export_thread: dict[str, Any], diagnostics: dict[str, Any] | None) -> None:
-        if diagnostics and diagnostics.get("issues"):
+    def _known_exportable_timestamp(self, thread_key: str, messages: list[dict[str, Any]]) -> float | None:
+        now = datetime.now(timezone.utc).isoformat()
+        evidence = [*messages, *self._previous_threads.get(thread_key, {}).get("messages", [])]
+        return max((timestamp for message in evidence
+                    if (message.get("text") or message.get("attachments")) and not expected_expired(message, now)
+                    if (timestamp := self._exported_message_epoch(message)) is not None), default=None)
+
+    def _annotate_stale_cached_history(self, diagnostics: dict[str, Any], messages: list[dict[str, Any]], expected_timestamp: Any, thread_key: str) -> None:
+        latest = self._exported_message_epoch(self._latest_exported_message(messages) or {})
+        expected = self._whatsapp_timestamp_epoch(expected_timestamp)
+        previous_latest = self._known_exportable_timestamp(thread_key, [])
+        known = max((value for value in (expected, previous_latest) if value is not None), default=None)
+        if messages and known is not None and (latest is None or known > latest + 1):
+            diagnostics["issues"].append({
+                "code": "cached-history-still-stale", "expectedLatestAt": self._format_timestamp(known),
+                "capturedLatestAt": (self._latest_exported_message(messages) or {}).get("timestamp"),
+            })
+
+    def _attach_source_diagnostics(self, export_thread: dict[str, Any], diagnostics: dict[str, Any] | None) -> None:
+        if diagnostics and (diagnostics.get("openedChatChecked") or diagnostics.get("issues")):
             export_thread["sourceDiagnostics"] = diagnostics
+        setting = (diagnostics or {}).get("captureState", {}).get("expirySetting") or self._chat_expiry_settings.get(export_thread.get("threadKey"))
+        if setting:
+            export_thread["expirySetting"] = setting
+
+    def _record_chat_expiry(self, jid: str, chat: dict[str, Any] | None) -> None:
+        if chat and "ephemeralDuration" in chat:
+            self._chat_expiry_settings[jid] = {
+                "durationSeconds": chat.get("ephemeralDuration"),
+                "settingChangedAt": self._format_timestamp(chat.get("ephemeralSettingTimestamp")),
+                "observedAt": datetime.now(timezone.utc).isoformat(), "source": "indexeddb-chat",
+                "appliesRetroactively": False,
+            }
+
+    @classmethod
+    def _consolidate_threads(cls, threads: list[dict[str, Any]], *, max_messages: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        by_id: dict[str, dict[str, Any]] = {}
+        unresolved: list[dict[str, Any]] = []
+        findings: list[dict[str, Any]] = []
+        for thread in threads:
+            if not isinstance(thread, dict):
+                continue
+            if not thread.get("threadKey"):
+                unresolved.append(dict(thread))
+                continue
+            key = str(thread["threadKey"]).strip()
+            incoming = dict(thread)
+            incoming["threadKey"] = key
+            if key not in by_id:
+                by_id[key] = incoming
+                continue
+            existing = by_id[key]
+            old_messages = existing.get("messages") or existing.get("recentMessages") or []
+            new_messages = incoming.get("messages") or incoming.get("recentMessages") or []
+            old_diag, new_diag = existing.get("sourceDiagnostics") or {}, incoming.get("sourceDiagnostics") or {}
+            old_complete = bool(old_diag.get("captureState")) and complete_live_capture(old_diag, max_messages)
+            new_complete = bool(new_diag.get("captureState")) and complete_live_capture(new_diag, max_messages)
+            old_at = cls._iso_timestamp_epoch(old_diag.get("captureState", {}).get("capturedAt")) or 0
+            new_at = cls._iso_timestamp_epoch(new_diag.get("captureState", {}).get("capturedAt")) or 0
+            use_new = (new_complete and (not old_complete or new_at >= old_at)) or (not old_complete and not new_complete and new_at >= old_at)
+            preferred, fallback = (incoming, existing) if use_new else (existing, incoming)
+            preferred_messages = preferred.get("messages") or preferred.get("recentMessages") or []
+            fallback_messages = fallback.get("messages") or fallback.get("recentMessages") or []
+            if old_complete or new_complete:
+                authoritative_ids = {m.get("messageId") for m in preferred_messages}
+                fallback_messages = [m for m in fallback_messages if m.get("messageId") in authoritative_ids]
+            messages = cls._merge_recent_message_exports(
+                preferred_messages, fallback_messages, max_messages=max_messages,
+            )
+            conflicts = cls._matching_message_conflicts(old_messages, new_messages)
+            if old_complete or new_complete:
+                preferred_latest = cls._exported_message_epoch(cls._latest_exported_message(messages) or {}) or 0
+                for message in fallback.get("messages") or fallback.get("recentMessages") or []:
+                    if message.get("messageId") not in authoritative_ids and (cls._exported_message_epoch(message) or 0) > preferred_latest:
+                        # Evidence observed before the complete capture is allowed to expire.
+                        fallback_at = cls._iso_timestamp_epoch((fallback.get("sourceDiagnostics") or {}).get("captureState", {}).get("capturedAt")) or 0
+                        preferred_at = cls._iso_timestamp_epoch((preferred.get("sourceDiagnostics") or {}).get("captureState", {}).get("capturedAt")) or 0
+                        if fallback_at > preferred_at:
+                            conflicts.append({"code": "newer-evidence-outside-complete-capture", "messageId": message.get("messageId")})
+            merged = {**fallback, **preferred}
+            # Prefer a meaningful contact name over a formatted telephone alias.
+            titles = [str(t.get("chatTitle") or "") for t in (preferred, fallback)]
+            merged["chatTitle"] = next((title for title in titles if any(c.isalpha() for c in title) and '@' not in title), titles[0])
+            for field in ("labelsRaw", "labelsNormalized"):
+                values = sorted(set(existing.get(field, [])) | set(incoming.get(field, [])))
+                merged[field] = [value for value in values if str(value).casefold() != "unlabeled"] or values
+            participants = existing.get("participants", []) + incoming.get("participants", [])
+            participant_map: dict[str, dict[str, Any]] = {}
+            for participant in participants:
+                identity = str(participant.get("phone") or participant.get("name") or "")
+                current = participant_map.get(identity)
+                if not current or not any(c.isalpha() for c in str(current.get("name") or "")):
+                    participant_map[identity] = participant
+            merged["participants"] = list(participant_map.values())
+            for field in ("unread", "starred", "requiresResponse"):
+                merged[field] = bool(existing.get(field) or incoming.get(field))
+            sources = set(existing.get("sourceViews", [existing.get("sourceView") or "labeled/forced"]))
+            sources.update(incoming.get("sourceViews", [incoming.get("sourceView") or "labeled/forced"]))
+            merged["sourceViews"] = sorted(sources)
+            if "all" in sources:
+                merged["sourceView"] = "all"
+            merged["messages"], merged["recentMessages"] = messages, list(messages)
+            latest = messages[0] if messages else {}
+            merged.update(lastMessageAt=latest.get("timestamp"), lastMessageText=latest.get("text") or "",
+                          lastMessageDirection=latest.get("direction", "unknown"), lastMessageSender=latest.get("sender"))
+            findings.append({"threadKey": key, "aliases": list(dict.fromkeys(titles)), "policy": "newest-complete-live-capture" if old_complete or new_complete else "message-id-union",
+                             "previousMessageCount": len(old_messages), "incomingMessageCount": len(new_messages),
+                             "mergedMessageCount": len(messages), "conflicts": conflicts})
+            merged.setdefault("sourceDiagnostics", {})
+            merged["sourceDiagnostics"] = {**merged["sourceDiagnostics"], "identityAliases": list(dict.fromkeys(titles)),
+                                           "identityMergeConflicts": conflicts}
+            by_id[key] = merged
+        return list(by_id.values()) + unresolved, findings
+
+    def _recover_missing_media(self, threads: list[dict[str, Any]], *, max_messages: int, attachments_dir: Path | None) -> list[dict[str, Any]]:
+        if not self._attachment_policy.enabled or attachments_dir is None:
+            return []
+        results: list[dict[str, Any]] = []
+        for thread in threads:
+            messages = thread.get("messages", [])
+            retryable = [attachment for message in messages for attachment in message.get("attachments", [])
+                         if attachment.get("status") != "downloaded"
+                         and attachment.get("skippedReason") == "download-retry-exhausted"]
+            if not retryable or self._is_locked_chat(str(thread["threadKey"])):
+                continue
+            result: dict[str, Any] = {"chatTitle": thread["chatTitle"], "threadKey": thread["threadKey"],
+                                      "missingBefore": len(retryable), "attempts": 1}
+            started = time.monotonic()
+            diagnostics = deepcopy(thread.get("sourceDiagnostics") or {})
+            diagnostics["mediaRecoveryAttempted"] = True
+            recovery_diagnostics: dict[str, Any] = {}
+            self._opened_capture_details.pop(thread["threadKey"], None)
+            try:
+                opened = self._opened_chat_recent_messages_for_chat(
+                    thread["chatTitle"], max_messages=max_messages,
+                    attachments_dir=attachments_dir, thread_key=thread["threadKey"],
+                )
+                state = deepcopy(self._opened_capture_details.get(thread["threadKey"], {}))
+                recovery_diagnostics = {"openedChatChecked": True, "captureState": state,
+                                        "openedChatMessageCount": len(opened), "sourcesUsed": ["opened-chat"]}
+                settled = state.get("isLoading") is False and not any(
+                    state.get(flag) for flag in ("waitTimedOut", "timedOut", "timeout")
+                )
+                verified = state.get("identityVerified") is True
+                unresolved = (state.get("domModelsResolved") is False
+                              or (state.get("emptyEvidence") or {}).get("domModelsResolved") is False)
+                recovery_incomplete = bool(state.get("captureIncomplete")) or not settled or not verified or unresolved or not opened
+                diagnostics["captureIncomplete"] = bool(diagnostics.get("captureIncomplete") or recovery_incomplete)
+                if recovery_incomplete:
+                    diagnostics.setdefault("issues", []).append({"code": "media-recovery-capture-incomplete"})
+                # This pass repairs bytes only; it cannot establish new history membership or clear content failures.
+                opened_by_id = {message.get("messageId"): message for message in opened if message.get("messageId")}
+                repaired = []
+                for message in messages:
+                    incoming = opened_by_id.get(message.get("messageId"), {})
+                    repaired_message = dict(message)
+                    if message.get("attachments"):
+                        expected_ids = {attachment.get("attachmentId") for attachment in message["attachments"]}
+                        repaired_message["attachments"] = self._merge_attachment_exports(
+                            message["attachments"],
+                            [attachment for attachment in incoming.get("attachments", [])
+                             if attachment.get("attachmentId") in expected_ids],
+                        )
+                    repaired.append(repaired_message)
+                thread["messages"] = repaired
+                thread["recentMessages"] = list(repaired)
+                if not opened:
+                    result["error"] = "No exportable messages were loaded during media recovery."
+            except (RuntimeError, TimeoutError, ValueError) as exc:
+                result["error"] = str(exc)[:2000]
+                state = deepcopy(self._opened_capture_details.get(thread["threadKey"], {}))
+                recovery_diagnostics = {"openedChatChecked": False, "captureState": state,
+                                        "errorType": type(exc).__name__}
+                if isinstance(exc, (TimeoutError, ValueError)) or any(
+                    state.get(flag) for flag in ("isLoading", "waitTimedOut", "timedOut", "timeout")
+                ):
+                    diagnostics["captureIncomplete"] = True
+                diagnostics.setdefault("issues", []).append({"code": "media-recovery-open-failed"})
+            result["elapsedSeconds"] = round(time.monotonic() - started, 3)
+            recovery_diagnostics["elapsedSeconds"] = result["elapsedSeconds"]
+            diagnostics["mediaRecoveryCapture"] = recovery_diagnostics
+            thread["sourceDiagnostics"] = diagnostics
+            recovered_ids = {attachment.get("attachmentId")
+                             for message in thread["messages"] for attachment in message.get("attachments", [])
+                             if attachment.get("status") == "downloaded"}
+            result["recovered"] = sum(attachment.get("attachmentId") in recovered_ids for attachment in retryable)
+            result["remaining"] = len(retryable) - result["recovered"]
+            results.append(result)
+        return results
 
     @classmethod
     def _message_source_diagnostics(
@@ -1490,15 +2043,13 @@ class WhatsAppCollector:
 
         issues.extend(cls._matching_message_conflicts(indexeddb_messages, opened_chat_messages))
 
-        if not issues:
-            return None
         sources: list[str] = []
         if indexeddb_messages:
             sources.append("indexeddb")
         if opened_chat_messages:
             sources.append("opened-chat")
         return {
-            "openedChatChecked": opened_chat_checked,
+            "openedChatChecked": opened_chat_checked and "requires a DevTools-backed Chrome session" not in (opened_chat_error or ""),
             "sourcesUsed": sources,
             "indexedDbMessageCount": len(indexeddb_messages),
             "openedChatMessageCount": len(opened_chat_messages),
@@ -1537,6 +2088,10 @@ class WhatsAppCollector:
                 )
             indexed_text_available = bool(str(indexed.get("text") or "").strip())
             opened_text_available = bool(str(opened.get("text") or "").strip())
+            if indexed_text_available and opened_text_available and indexed.get("text") != opened.get("text"):
+                issues.append({"code": "matching-message-text-conflict", "messageId": message_id,
+                               "indexedDbTextSHA256": hashlib.sha256(str(indexed["text"]).encode()).hexdigest(),
+                               "openedChatTextSHA256": hashlib.sha256(str(opened["text"]).encode()).hexdigest()})
             if indexed_text_available != opened_text_available:
                 issues.append(
                     {
@@ -1599,6 +2154,10 @@ class WhatsAppCollector:
                 merged[key] = WhatsAppCollector._merge_attachment_exports(merged.get(key), value)
                 continue
             merged[key] = value
+        if "textAvailable" in merged:
+            merged["textAvailable"] = bool(str(merged.get("text") or "").strip())
+        if "contentAvailable" in merged:
+            merged["contentAvailable"] = bool(str(merged.get("text") or "").strip() or merged.get("attachments"))
         return merged
 
     @staticmethod
@@ -1631,6 +2190,10 @@ class WhatsAppCollector:
             else:
                 preferred, fallback = current, attachment
             combined[key] = {**fallback, **{field: value for field, value in preferred.items() if value not in (None, "")}}
+        for attachment in combined.values():
+            if attachment.get("status") == "downloaded":
+                attachment.pop("skippedReason", None)
+                attachment.pop("note", None)
         return list(combined.values())
 
     @classmethod
@@ -1678,6 +2241,8 @@ class WhatsAppCollector:
             }
             if message.attachments:
                 item["attachments"] = [self._serialize_attachment(attachment) for attachment in message.attachments]
+            if message.expiry:
+                item["expiry"] = message.expiry
             serialized.append(item)
         return serialized
 
@@ -1796,6 +2361,8 @@ class WhatsAppCollector:
         }
         if message_jids and expected_jids:
             return message_jids.issubset(set(expected_jids))
+        if message_jids and opened_jid and not message_jids.issubset(set(self._message_jid_aliases(opened_jid))):
+            return False
         if opened_jid and expected_jids:
             return True
         opened_title = self._chat_lookup_name(str(payload.get("openedChatTitle") or ""))
@@ -1827,7 +2394,16 @@ class WhatsAppCollector:
                             self.session.open_chat_via_search(candidate)
                     else:
                         self.session.click_point(self._chat_row_click_point_expression(candidate))
-                    captured = self.session.run_json(self._opened_chat_recent_messages_js(max_messages=max_messages))
+                    store = self._attachment_store
+                    if store is None and attachments_dir is not None:
+                        store = AttachmentStore(attachments_dir, policy=self._attachment_policy)
+                    hint_ids = getattr(self, "_attachment_hint_message_ids", {}).get(thread_key or chat_name, [])
+                    verified_media = store.verified_media(
+                        thread_key=thread_key or chat_name, message_ids=hint_ids,
+                    ) if store else []
+                    captured = self.session.run_json(self._opened_chat_recent_messages_js(
+                        max_messages=max_messages, verified_media=verified_media, expected_jids=expected_jids,
+                    ))
                     if not self._opened_chat_matches_identity(captured, candidates=candidates, expected_jids=expected_jids):
                         raise RuntimeError(f"Opened chat identity did not match {chat_name!r} (opened title: {captured.get('openedChatTitle')!r})")
                     payload = captured
@@ -1840,6 +2416,18 @@ class WhatsAppCollector:
         if payload is None:
             detail = "; ".join(errors) or "No usable contact name or full phone number was available."
             raise RuntimeError(f"Could not capture WhatsApp chat {chat_name!r}. {detail}")
+        state = dict(payload.get("captureState") or {})
+        self._normalize_capture_timing(state)
+        resolved_jid = payload.get("openedChatJid")
+        message_jids = {self._message_jid_from_storage_key(item.get("id"))
+                        for item in payload.get("messages", []) if isinstance(item, dict)}
+        observed_identity = bool(resolved_jid and message_jids and None not in message_jids
+                                 and message_jids.issubset(set(self._message_jid_aliases(resolved_jid)))
+                                 and state.get("emptyEvidence", {}).get("identityStable")
+                                 and state.get("emptyEvidence", {}).get("modelAvailable"))
+        state["identityVerified"] = bool(resolved_jid and (expected_jids or observed_identity))
+        state["resolvedThreadKey"] = payload.get("openedChatJid")
+        self._opened_capture_details[thread_key or chat_name] = state
         messages = payload.get("messages")
         if not isinstance(messages, list):
             return []
@@ -1875,28 +2463,87 @@ class WhatsAppCollector:
             }
             if attachments:
                 opened_message["attachments"] = [self._serialize_attachment(attachment) for attachment in attachments]
+            expiry = expiry_metadata(item.get("expiryEvidence") or item, source="live-message-model")
+            if expiry:
+                opened_message["expiry"] = expiry
             opened_messages.append(opened_message)
         return opened_messages
+
+    @staticmethod
+    def _normalize_capture_timing(state: dict[str, Any]) -> None:
+        # JavaScript JSON drops the decimal for whole durations; keep the Python export contract stable.
+        if type(state.get("identityWaitMs")) in (int, float):
+            state["identityWaitMs"] = float(state["identityWaitMs"])
+        for wait in state.get("stateWaits") or []:
+            if isinstance(wait, dict) and type(wait.get("elapsedMs")) in (int, float):
+                wait["elapsedMs"] = float(wait["elapsedMs"])
 
     @staticmethod
     def _chat_row_click_point_expression(chat_name: str) -> str:
         return f'''(()=>{{const targetTitle={json.dumps(chat_name)}; const titleEl=[...document.querySelectorAll('#pane-side [data-testid="cell-frame-title"] [title], #pane-side [data-testid^="list-item-"] [title]')].find(el => ((el.getAttribute('title')||'').trim()===targetTitle)); if(!titleEl) return null; const clickable=titleEl.closest('[data-testid^="list-item-"]')||titleEl.closest('[data-testid="cell-frame-container"]')||titleEl.closest('[role="row"]')||titleEl; clickable.scrollIntoView({{block:'center'}}); const rect=clickable.getBoundingClientRect(); return {{x: rect.left + rect.width/2, y: rect.top + rect.height/2}};}})()'''
 
     @staticmethod
-    def _opened_chat_recent_messages_js(*, max_messages: int) -> str:
+    def _opened_chat_recent_messages_js(
+        *, max_messages: int, verified_media: list[dict[str, Any]] | None = None,
+        expected_jids: list[str] | None = None,
+    ) -> str:
         return f'''(async () => {{
             {CHAT_IDENTITY_HELPERS_JS}
+            {MESSAGE_EXPIRY_HELPERS_JS}
             const maxMessages = {int(max_messages)};
             const maxInlineBytes = 8000000;
-            const maxPasses = Math.max(4, Math.min(40, Math.ceil(maxMessages / 8) + 6));
+            const verifiedMedia = {json.dumps(verified_media or [])};
+            const maxPasses = Math.max(12, Math.min(160, maxMessages * 4 + 8));
+            const captureDeadline = performance.now() + 45000;
             const mediaTypes = new Set(['image', 'document', 'video', 'ptt', 'audio', 'sticker']);
             const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-            await wait(1200);
+            const expectedJids = new Set({json.dumps(list(expected_jids or []))});
+            let identityWaitMs = 0;
+            if (expectedJids.size) {{
+                const started = performance.now();
+                const deadline = started + 3000;
+                let matched = false;
+                for (let poll = 0; poll <= 30; poll += 1) {{
+                    if (performance.now() >= deadline) break;
+                    if (expectedJids.has(waCollectorChatId(document.querySelector('#main header')))) {{ matched = true; break; }}
+                    if (poll < 30) await wait(Math.min(100, Math.max(0, deadline - performance.now())));
+                }}
+                identityWaitMs = performance.now() - started;
+                if (!matched) {{
+                    throw new Error(`The expected opened chat did not become ready before capture (${{identityWaitMs}} ms).`);
+                }}
+            }}
             const titleCandidates = [...document.querySelectorAll('header [title], #main header [title], #main header span[dir="auto"], #main header div[dir="auto"]')]
                 .map(el => (el.getAttribute('title') || (el.textContent || '').trim()))
                 .filter(Boolean);
             const openedChatTitle = titleCandidates.find(title => !['Profile details', 'click here for contact info'].includes(title)) || '';
             const openedChatJid = waCollectorChatId(document.querySelector('#main header'));
+            if (expectedJids.size && !expectedJids.has(openedChatJid)) {{
+                throw new Error('The opened chat changed during message capture.');
+            }}
+            let chatModel = null;
+            const refreshChatModel = () => {{
+                const previousModel = chatModel;
+                chatModel = null;
+                const header = document.querySelector('#main header');
+                if (waCollectorChatId(header) !== openedChatJid) {{
+                    throw new Error('The opened chat changed during message capture.');
+                }}
+                const headerFiber = header && Object.keys(header).find(key => key.startsWith('__reactFiber$'));
+                for (let fiber = headerFiber ? header[headerFiber] : null, depth = 0; fiber && depth < 32; fiber = fiber.return, depth++) {{
+                    const candidate = fiber.memoizedProps?.chat || fiber.memoizedProps?.chatModel;
+                    const id = candidate?.id?._serialized || candidate?.id;
+                    if (candidate?.msgs && id === openedChatJid) {{ chatModel = candidate; break; }}
+                }}
+                if (!chatModel && openedChatJid) {{
+                    try {{
+                        const module = window.require('WAWebChatCollection');
+                        const candidate = (module.ChatCollection || module.Chat)?.get(openedChatJid) || null;
+                        if ((candidate?.id?._serialized || candidate?.id) === openedChatJid) chatModel = candidate;
+                    }} catch (_) {{}}
+                }}
+                return previousModel === chatModel;
+            }};
             const normalizeJid = (value) => {{
                 if (!value) return null;
                 if (typeof value === 'string') return value;
@@ -1909,12 +2556,33 @@ class WhatsAppCollector:
                 if (typeof value === 'string') return value;
                 return value._serialized || value.$1 || String(value);
             }};
+            const readableText = value => {{
+                if (typeof value !== 'string' || !value.trim()) return false;
+                const text = value.trim();
+                if (/^data:(image|video|application)\\//.test(text)) return false;
+                if (text.length < 160) return true;
+                if (/^(\\/9j\\/|iVBORw0KGgo|R0lGOD|UklGR|AAAAIGZ0eXB|JVBERi0)/.test(text)) return false;
+                const compact = text.replace(/\\s/g, '');
+                if (compact.length >= 160 && compact.length % 4 === 0 && /^[A-Za-z0-9+/]+={{0,2}}$/.test(compact)) {{
+                    try {{
+                        const decoded = atob(compact.slice(0, 512));
+                        if (/^(\\xFF\\xD8\\xFF|\\x89PNG|GIF8|RIFF|%PDF|\\x00\\x00\\x00)/.test(decoded)) return false;
+                    }} catch (_) {{}}
+                }}
+                return true;
+            }};
+            const locationText = msg => msg?.type === 'location'
+                && typeof msg.lat === 'number' && Number.isFinite(msg.lat) && Math.abs(msg.lat) <= 90
+                && typeof msg.lng === 'number' && Number.isFinite(msg.lng) && Math.abs(msg.lng) <= 180
+                ? `Location: ${{msg.lat}}, ${{msg.lng}} (https://maps.google.com/?q=${{msg.lat}},${{msg.lng}})` : null;
             const hasExportableContent = (msg) => {{
                 if (!msg || typeof msg !== 'object') return false;
-                const type = String(msg.type || '').toLowerCase();
+                const type = String(msg.type || '').trim().toLowerCase();
+                const subtype = String(msg.subtype || '').trim().toLowerCase();
+                if ({json.dumps(sorted([list(kind) for kind in NONCONTENT_CONTROL_MESSAGE_KINDS]))}
+                    .some(([controlType, controlSubtype]) => type === controlType && subtype === controlSubtype)) return false;
                 if (mediaTypes.has(type) || type === 'album') return true;
-                return [msg.body, msg.caption, msg.text, msg.matchedText]
-                    .some(value => typeof value === 'string' && value.trim());
+                return Boolean(locationText(msg)) || [msg.body, msg.caption, msg.text, msg.matchedText].some(readableText);
             }};
             const bestFileName = (msg, kind, index) => {{
                 const raw = msg && typeof msg === 'object' ? (msg.filename || msg.fileName || msg.documentTitle || msg.title) : null;
@@ -1937,6 +2605,14 @@ class WhatsAppCollector:
                 }} catch (error) {{
                     return {{status: 'notDownloaded', skippedReason: 'browser-fetch-failed', note: String(error)}};
                 }}
+            }};
+            const fetchMessageAttachment = (src, msg) => {{
+                const size = Number(msg.size || msg.fileSize);
+                const verified = Number.isSafeInteger(size) && size > 0 && typeof msg.filehash === 'string'
+                    && /^[A-Za-z0-9+/]{{43}}=$/.test(msg.filehash) && verifiedMedia.some(item =>
+                        item.sourceMessageId === messageId(msg) && item.filehash === msg.filehash && item.sizeBytes === size);
+                if (verified) return {{status: 'notDownloaded', skippedReason: 'verified-local-media'}};
+                return src ? fetchAttachment(src) : {{status: 'notDownloaded', skippedReason: 'no-full-media-dom-source'}};
             }};
             const albumChildren = (msg) => {{
                 if (!msg || String(msg.type || '').toLowerCase() !== 'album') return [];
@@ -1966,7 +2642,7 @@ class WhatsAppCollector:
                     if (msgType === 'video') nodes = [...container.querySelectorAll('video[src^="blob:"], video[src^="data:"]')];
                     const node = nodes[0] || null;
                     const src = node ? (node.getAttribute('src') || '') : '';
-                    const fetched = src ? await fetchAttachment(src) : {{status:'notDownloaded',skippedReason:'no-full-media-dom-source'}};
+                    const fetched = await fetchMessageAttachment(src, msg);
                     return [{{
                         kind,
                         mimeType: (typeof msg.mimetype === 'string' && msg.mimetype) || fetched.mimeType || null,
@@ -1993,9 +2669,7 @@ class WhatsAppCollector:
                         const albumKind = childType === 'ptt' ? 'audio' : childType;
                         const node = nodes[index] || null;
                         const src = node ? (node.getAttribute('src') || '') : '';
-                        const fetched = src
-                            ? await fetchAttachment(src)
-                            : {{status:'notDownloaded',skippedReason:'no-full-media-dom-source'}};
+                        const fetched = await fetchMessageAttachment(src, child);
                         items.push({{
                             kind: albumKind,
                             mimeType: (typeof child.mimetype === 'string' && child.mimetype) || fetched.mimeType || null,
@@ -2044,7 +2718,9 @@ class WhatsAppCollector:
                     subtype: msg.subtype || null,
                     body: typeof msg.body === 'string' ? msg.body : null,
                     caption: typeof msg.caption === 'string' ? msg.caption : null,
-                    text: typeof msg.text === 'string' ? msg.text : null,
+                    text: locationText(msg) || (typeof msg.text === 'string' ? msg.text : null),
+                    lat: msg.type === 'location' ? msg.lat : null,
+                    lng: msg.type === 'location' ? msg.lng : null,
                     matchedText: typeof msg.matchedText === 'string' ? msg.matchedText : null,
                     mimetype: typeof msg.mimetype === 'string' ? msg.mimetype : null,
                     fileName: typeof msg.fileName === 'string' ? msg.fileName : (typeof msg.filename === 'string' ? msg.filename : null),
@@ -2055,6 +2731,7 @@ class WhatsAppCollector:
                     from: normalizeJid(msg.from),
                     to: normalizeJid(msg.to),
                     notifyName: typeof msg.notifyName === 'string' ? msg.notifyName : null,
+                    expiryEvidence: {{...waCollectorExpiry(msg), t: msg.t}},
                     attachments
                 }};
             }};
@@ -2077,13 +2754,122 @@ class WhatsAppCollector:
             const scroller = () => document.querySelector('#main [data-testid="conversation-panel-messages"]')
                 || [...document.querySelectorAll('#main *')].find(el => el.scrollHeight > el.clientHeight + 40)
                 || null;
+            const pollMs = 100;
+            const stableEmptyMs = 2500;
+            let emptySince = null;
+            let emptySamples = 0;
+            let emptyResets = 0;
+            let observedContent = false;
+            let waitTimedOut = false;
+            let stableEmptyProof = false;
+            let previousCollection = null;
+            let previousLoadState = null;
+            let disconnectedObserved = false;
+            const unresolvedContainers = new Set();
+            const connectionState = () => {{
+                const signals = [];
+                const online = typeof navigator !== 'undefined' && navigator.onLine === true;
+                if (!online) signals.push('browser-offline-or-unknown');
+                const alerts = document.querySelectorAll('[role="alert"], [data-testid="alert-computer"], [data-testid="alert-phone"], [data-testid="connection-status"]');
+                for (const alert of alerts) {{
+                    if (/offline|disconnected|connecting|reconnecting|not connected|no internet|waiting for network|trying to reach/i.test(alert.textContent || ''))
+                        signals.push('connection-alert');
+                }}
+                for (const [name, key, ready] of [['WAWebSocketModel', 'Socket', 'CONNECTED'], ['WAWebStreamModel', 'Stream', 'CONNECTED']]) {{
+                    try {{
+                        const module = window.require(name);
+                        const state = module?.[key]?.state;
+                        if (typeof state === 'string' && state.toUpperCase() !== ready) signals.push(`${{key}}:${{state}}`);
+                    }} catch (_) {{}}
+                }}
+                if (signals.length) disconnectedObserved = true;
+                return {{online, connected: signals.length === 0, signals}};
+            }};
+            const sampleState = () => {{
+                const sameModel = refreshChatModel();
+                const connection = connectionState();
+                const loadState = chatModel?.msgs?.msgLoadState;
+                const sameContext = previousCollection === chatModel?.msgs && previousLoadState === loadState;
+                previousCollection = chatModel?.msgs;
+                previousLoadState = loadState;
+                const models = chatModel?.msgs?.getModelsArray?.() || chatModel?.msgs?.models || chatModel?.msgs?._models;
+                const modelExportableCount = Array.isArray(models) ? models.filter(hasExportableContent).length : null;
+                const visible = visibleMessages();
+                const containers = [...document.querySelectorAll('#main [data-testid="msg-container"]')];
+                const resolvedContainers = new Set(visible.map(item => item.container));
+                for (const container of containers) {{
+                    if (resolvedContainers.has(container)) unresolvedContainers.delete(container);
+                    else unresolvedContainers.add(container);
+                }}
+                const domCount = containers.length;
+                const domExportableCount = visible.filter(item => hasExportableContent(item.msg)).length;
+                const isLoading = Boolean(document.querySelector('#main [role="progressbar"], #main [aria-busy="true"]'))
+                    || Boolean(chatModel?.pendingInitialLoading || loadState?.isLoadingEarlierMsgs
+                        || loadState?.isLoadingRecentMsgs || loadState?.isLoadingAroundMsgs || loadState?.isRepairingMsgHistory);
+                const contextLoaded = loadState?.contextLoaded === true;
+                const explicitHistoryStart = loadState?.noEarlierMsgs === true || chatModel?.noEarlierMsgs === true;
+                observedContent ||= domExportableCount > 0 || modelExportableCount > 0;
+                const eligible = Boolean(openedChatJid && chatModel && scroller() && contextLoaded && !isLoading && connection.connected
+                    && modelExportableCount === 0 && domExportableCount === 0 && domCount === visible.length && !observedContent);
+                if (!eligible || !sameModel || !sameContext) {{
+                    if (emptySince !== null) emptyResets += 1;
+                    emptySince = null;
+                    emptySamples = 0;
+                }}
+                if (eligible) {{
+                    emptySince ??= performance.now();
+                    emptySamples += 1;
+                }}
+                stableEmptyProof = eligible && emptySamples >= 3 && performance.now() - emptySince >= stableEmptyMs;
+                return {{isLoading, connection, contextLoaded, explicitHistoryStart, modelExportableCount, domExportableCount,
+                    domContainerCount: domCount, domResolvedCount: visible.length, domUnresolvedCount: domCount - visible.length,
+                    modelExportableIds: Array.isArray(models) ? models.filter(hasExportableContent).map(messageId) : null,
+                    modelExportableMessages: Array.isArray(models) ? models.filter(hasExportableContent) : null,
+                    domModelsResolved: domCount === visible.length,
+                    signature: JSON.stringify([visible.map(item => messageId(item.msg)), Array.isArray(models) ? models.map(messageId) : null,
+                        scroller()?.scrollHeight, contextLoaded, isLoading, connection.connected])}};
+            }};
+            // Poll for settled state, but never let a quiet DOM override an active loader.
+            const stateWaits = [];
+            const waitForState = async (budgetMs, allowEmptyProof = false) => {{
+                const started = performance.now();
+                const deadline = started + budgetMs;
+                let signature = null;
+                let quietSince = started;
+                // The iteration limit is only a fail-closed guard for a frozen clock.
+                for (let poll = 0; poll <= Math.ceil(budgetMs / pollMs); poll += 1) {{
+                    if (performance.now() >= deadline) break;
+                    const state = sampleState();
+                    if (performance.now() >= deadline) break;
+                    if (state.signature !== signature || state.isLoading) {{
+                        signature = state.signature;
+                        quietSince = performance.now();
+                    }}
+                    const settled = !state.isLoading && state.connection.connected && performance.now() - quietSince >= 300;
+                    if (settled && ((!allowEmptyProof && state.contextLoaded)
+                        || state.domExportableCount > 0 || (state.contextLoaded && state.explicitHistoryStart)
+                        || stableEmptyProof)) {{
+                        stateWaits.push({{budgetMs, elapsedMs: performance.now() - started, timedOut: false}});
+                        return true;
+                    }}
+                    if (poll < Math.ceil(budgetMs / pollMs)) await wait(Math.min(pollMs, Math.max(0, deadline - performance.now())));
+                }}
+                stateWaits.push({{budgetMs, elapsedMs: performance.now() - started, timedOut: true}});
+                waitTimedOut = true;
+                return false;
+            }};
+            await waitForState(6000, true);
             const initialPanel = scroller();
             if (initialPanel) {{
+                const beforeBottom = initialPanel.scrollTop;
                 initialPanel.scrollTop = initialPanel.scrollHeight;
-                await wait(700);
+                if (initialPanel.scrollTop !== beforeBottom) await waitForState(3000);
             }}
             const seen = new Map();
+            let stableTopPasses = 0;
+            let historyStartReached = false;
             for (let pass = 0; pass < maxPasses; pass += 1) {{
+                if (performance.now() >= captureDeadline) {{ waitTimedOut = true; break; }}
                 for (const item of visibleMessages()) {{
                     const key = messageId(item.msg);
                     if (!key) continue;
@@ -2091,14 +2877,32 @@ class WhatsAppCollector:
                 }}
                 const exportableSeen = [...seen.values()].filter(item => hasExportableContent(item.msg)).length;
                 if (exportableSeen >= maxMessages) break;
+                if (stableEmptyProof && !waitTimedOut) break;
+                const state = sampleState();
+                // Exhausted model history is sufficient only when every exportable ID was captured.
+                // Matching counts cannot establish coverage of a virtualized conversation.
+                if (openedChatJid && state.explicitHistoryStart && state.contextLoaded && !state.isLoading
+                    && state.connection.connected && !waitTimedOut && state.domModelsResolved
+                    && state.modelExportableIds !== null
+                    && state.modelExportableIds.every(id => id && seen.has(id) && hasExportableContent(seen.get(id).msg))
+                    && (state.modelExportableIds.length > 0 || (!observedContent && exportableSeen === 0 && state.domExportableCount === 0))) {{
+                    historyStartReached = true;
+                    break;
+                }}
                 const panel = scroller();
                 if (!panel) break;
                 const beforeTop = panel.scrollTop;
                 const beforeHeight = panel.scrollHeight;
-                panel.scrollTop = Math.max(0, beforeTop - Math.max(420, panel.clientHeight * 0.9));
-                await wait(700);
-                if (Math.abs(panel.scrollTop - beforeTop) < 2 && panel.scrollHeight === beforeHeight) break;
+                panel.scrollTop = Math.max(0, beforeTop - Math.max(1, panel.clientHeight * 0.8));
+                const settled = await waitForState(3000);
+                if (!settled) break;
+                if (Math.abs(panel.scrollTop - beforeTop) < 2 && panel.scrollHeight === beforeHeight) {{
+                    stableTopPasses += 1;
+                    if (stableTopPasses >= 3) {{ historyStartReached = panel.scrollTop < 2; break; }}
+                }} else stableTopPasses = 0;
             }}
+            // Include content delivered by the final scroll, including a timed-out wait.
+            for (const item of visibleMessages()) seen.set(messageId(item.msg), item);
             const selected = [...seen.values()]
                 .filter(item => item && item.msg && messageId(item.msg) && hasExportableContent(item.msg))
                 .sort((a, b) => (Number(b.msg.t) || 0) - (Number(a.msg.t) || 0))
@@ -2109,11 +2913,72 @@ class WhatsAppCollector:
                 for (const child of albumChildren(item.msg)) selectedMediaMessages.set(messageId(child), child);
             }}
             window.__waCollectorSelectedMediaMessages = selectedMediaMessages;
+            window.__waCollectorSelectedMediaChatJid = openedChatJid;
             const messages = (await Promise.all(selected.map(item => summarizeMsg(item.msg, item.container)))).filter(Boolean);
             if (openedChatJid && waCollectorChatId(document.querySelector('#main header')) !== openedChatJid) {{
                 throw new Error('The opened chat changed during message capture.');
             }}
-            return JSON.stringify({{OPENED_CHAT_RECENT_MESSAGES: true, openedChatTitle, openedChatJid, messages}});
+            const finalState = sampleState();
+            const {{contextLoaded, explicitHistoryStart, modelExportableCount, connection}} = finalState;
+            const capturedIds = new Set(messages.map(msg => msg.id));
+            // Album children are represented by their attachments, not additional chat bubbles.
+            for (const message of messages) {{
+                if (message.type !== 'album') continue;
+                const parent = selected.find(item => messageId(item.msg) === message.id)?.msg;
+                const children = new Set(albumChildren(parent).map(messageId));
+                for (const attachment of message.attachments || []) {{
+                    if (children.has(attachment.sourceMessageId)) capturedIds.add(attachment.sourceMessageId);
+                }}
+            }}
+            const modelExportableMessages = finalState.modelExportableMessages;
+            const missingModelMessages = modelExportableMessages?.filter(msg => !messageId(msg) || !capturedIds.has(messageId(msg))) || [];
+            const modelCoverageComplete = modelExportableMessages !== null && missingModelMessages.length === 0;
+            const capped = maxMessages > 0 && messages.length >= maxMessages;
+            const oldestCapturedTime = Math.min(...messages.map(msg => Number(msg.t) || 0));
+            const missingRequiredMessages = missingModelMessages.filter(msg => !capped || !messageId(msg)
+                || !Number.isFinite(Number(msg.t)) || Number(msg.t) <= 0 || oldestCapturedTime <= 0
+                || Number(msg.t) > oldestCapturedTime);
+            const incompleteReasons = [];
+            if (waitTimedOut) incompleteReasons.push('state-wait-timeout');
+            if (finalState.isLoading) incompleteReasons.push('active-loading');
+            if (!connection.connected) incompleteReasons.push('disconnected');
+            if (!openedChatJid) incompleteReasons.push('missing-chat-identity');
+            if (!contextLoaded) incompleteReasons.push('context-not-loaded');
+            if (unresolvedContainers.size) incompleteReasons.push('unresolved-dom-message-models');
+            if (modelExportableMessages === null) incompleteReasons.push('unknown-model-coverage');
+            if (missingRequiredMessages.length) incompleteReasons.push('missing-required-model-messages');
+            const captureIncomplete = incompleteReasons.length > 0;
+            // Existing consumers use isLoading as the fail-closed incomplete-capture gate.
+            const isLoading = captureIncomplete;
+            const stableEmpty = stableEmptyProof && !waitTimedOut && messages.length === 0 && selected.length === 0;
+            historyStartReached = !captureIncomplete && (stableEmpty || (explicitHistoryStart && modelCoverageComplete));
+            const confirmedEmpty = messages.length === 0 && selected.length === 0 && modelExportableCount === 0
+                && Boolean(openedChatJid) && (explicitHistoryStart || stableEmpty) && contextLoaded && !isLoading
+                && !observedContent && finalState.domModelsResolved;
+            const expirySetting = chatModel && typeof chatModel.ephemeralDuration === 'number' ? {{
+                durationSeconds: chatModel.ephemeralDuration,
+                settingChangedAt: chatModel.ephemeralSettingTimestamp ? new Date(chatModel.ephemeralSettingTimestamp * 1000).toISOString() : null,
+                observedAt: new Date().toISOString(), source: 'live-chat-model', appliesRetroactively: false
+            }} : null;
+            const captureState = {{
+                state: messages.length ? 'content-captured' : confirmedEmpty ? 'confirmed-empty' : isLoading ? 'still-loading'
+                    : seen.size ? 'only-nonexportable-message-models' : 'no-message-models',
+                observedMessageCount: seen.size, exportableMessageCount: selected.length,
+                isLoading, historyStartReached, confirmedEmpty, modelExportableCount,
+                captureIncomplete, incompleteReasons, modelCoverageComplete,
+                missingModelMessageCount: missingModelMessages.length, missingRequiredMessageCount: missingRequiredMessages.length,
+                unresolvedObservedContainerCount: unresolvedContainers.size,
+                domContainerCount: finalState.domContainerCount, domResolvedCount: finalState.domResolvedCount,
+                domUnresolvedCount: finalState.domUnresolvedCount, domExportableCount: finalState.domExportableCount,
+                contextLoaded, explicitHistoryStart, waitTimedOut, connection, disconnectedObserved, identityWaitMs, stateWaits,
+                activeLoading: finalState.isLoading,
+                emptyEvidence: {{proof: confirmedEmpty ? (explicitHistoryStart ? 'explicit-history-exhausted' : 'observed-stable-empty') : null,
+                    stableEmpty, requiredStableMs: stableEmptyMs, observedStableMs: emptySince === null ? 0 : performance.now() - emptySince,
+                    samples: emptySamples, resets: emptyResets, observedContent, identityJid: openedChatJid,
+                    identityStable: Boolean(openedChatJid), modelAvailable: Boolean(chatModel), domModelsResolved: finalState.domModelsResolved}},
+                capturedAt: new Date().toISOString(), expirySetting
+            }};
+            return JSON.stringify({{OPENED_CHAT_RECENT_MESSAGES: true, openedChatTitle, openedChatJid, messages, captureState}});
         }})()'''
 
     @staticmethod
@@ -2465,7 +3330,8 @@ class WhatsAppCollector:
                 )
             merged["attachments"] = child_attachments or existing
             child_timestamps = [int(child.get("t") or 0) for child in children]
-            merged["t"] = max([int(merged.get("t") or 0), *child_timestamps])
+            if not epoch(merged.get("t")):
+                merged["t"] = max(child_timestamps, default=0)
             if not self._extract_message_text(merged):
                 child_text = next((self._extract_message_text(child) for child in children if self._extract_message_text(child)), None)
                 if child_text:
@@ -2500,6 +3366,7 @@ class WhatsAppCollector:
         normalized_messages = self._coalesce_album_messages(messages)
         sorted_messages = sorted(normalized_messages, key=lambda item: item.get("t") or 0, reverse=True)
         recent_messages: list[RecentMessage] = []
+        hint_ids: list[str] = []
         for message in sorted_messages:
             message_id = self._message_id_string(message.get("id")) or f"{jid}:{message.get('t') or 0}"
             message_text = self._extract_message_text(message)
@@ -2512,6 +3379,7 @@ class WhatsAppCollector:
             )
             if not message_text and not attachments:
                 continue
+            hint_ids.extend(attachment.source_message_id or str(message_id) for attachment in attachments)
             direction = self._message_direction(message)
             sender = self._message_sender(message, display_name=display_name, direction=direction)
             recent_messages.append(
@@ -2526,10 +3394,14 @@ class WhatsAppCollector:
                     message_type=message.get("type") or "unknown",
                     subtype=message.get("subtype"),
                     attachments=attachments,
+                    expiry=expiry_metadata(message, source="indexeddb-message"),
                 )
             )
             if len(recent_messages) >= max_messages:
                 break
+        if not hasattr(self, "_attachment_hint_message_ids"):
+            self._attachment_hint_message_ids: dict[str, list[str]] = {}
+        self._attachment_hint_message_ids[thread_key or jid] = list(dict.fromkeys(hint_ids))
         return recent_messages
 
     def _message_attachments(
@@ -2563,6 +3435,8 @@ class WhatsAppCollector:
         return bool(self._extract_message_text(message) or self._attachment_candidates(message))
 
     def _attachment_candidates(self, message: dict[str, Any]) -> list[dict[str, Any]]:
+        if self._is_noncontent_control_message(message):
+            return []
         explicit = message.get("attachments")
         if isinstance(explicit, list) and explicit:
             candidates = [dict(item) for item in explicit if isinstance(item, dict)]
@@ -2905,7 +3779,14 @@ class WhatsAppCollector:
         return None
 
     @staticmethod
+    def _is_noncontent_control_message(message: dict[str, Any]) -> bool:
+        kind = (str(message.get("type") or "").strip().lower(), str(message.get("subtype") or "").strip().lower())
+        return kind in NONCONTENT_CONTROL_MESSAGE_KINDS
+
+    @staticmethod
     def _extract_message_text(message: dict[str, Any]) -> str | None:
+        if WhatsAppCollector._is_noncontent_control_message(message):
+            return None
         candidates = [
             message.get("body"),
             message.get("caption"),
@@ -2915,6 +3796,11 @@ class WhatsAppCollector:
         for candidate in candidates:
             if isinstance(candidate, str) and candidate.strip() and not WhatsAppCollector._looks_like_inline_media_payload(candidate):
                 return candidate.strip()
+        if message.get("type") == "location":
+            lat, lng = message.get("lat"), message.get("lng")
+            if (isinstance(lat, (int, float)) and not isinstance(lat, bool) and -90 <= lat <= 90
+                    and isinstance(lng, (int, float)) and not isinstance(lng, bool) and -180 <= lng <= 180):
+                return f"Location: {lat}, {lng} (https://maps.google.com/?q={lat},{lng})"
         return None
 
     @staticmethod
@@ -2988,10 +3874,14 @@ class WhatsAppCollector:
         return (last_message_at, last_direction, last_sender, thread.preview)
 
     @staticmethod
-    def _format_timestamp(timestamp: int | None) -> str | None:
-        if not timestamp:
+    def _format_timestamp(timestamp: Any) -> str | None:
+        normalized = epoch(timestamp)
+        if normalized is None:
             return None
-        return datetime.fromtimestamp(timestamp, tz=timezone.utc).replace(microsecond=0).isoformat()
+        try:
+            return datetime.fromtimestamp(normalized, tz=timezone.utc).replace(microsecond=0).isoformat()
+        except (ValueError, OverflowError, OSError):
+            return None
 
     @staticmethod
     def _infer_direction(preview: str, unread_count: int) -> str:
