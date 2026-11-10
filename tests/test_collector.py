@@ -564,7 +564,7 @@ def test_large_video_attachment_gets_placeholder_without_download(tmp_path: Path
                 "from": "thread@lid",
                 "mimetype": "video/mp4",
                 "fileName": "long-video.mp4",
-                "size": 50_000_001,
+                "size": 20_000_001,
             }
         ],
         preview="",
@@ -574,9 +574,9 @@ def test_large_video_attachment_gets_placeholder_without_download(tmp_path: Path
     )
 
     attachment = collector._serialize_recent_messages(messages)[0]["attachments"][0]
-    assert attachment["status"] == "notDownloaded"
+    assert attachment["status"] == "notAllowedToDownload"
     assert attachment["skippedReason"] == "file-size-limit"
-    assert "50,000,000-byte" in attachment["note"]
+    assert "20,000,000-byte" in attachment["note"]
 
 
 def test_metadata_only_voice_note_still_exports_attachment_placeholder() -> None:
@@ -613,7 +613,7 @@ def test_whatsapp_media_cache_bytes_are_verified_and_saved(tmp_path: Path) -> No
     class CachedMediaSession(StubSession):
         def read_cached_media(self, requested_hash: str, *, max_bytes: int):
             assert requested_hash == file_hash
-            assert max_bytes == 50_000_000
+            assert max_bytes == 20_000_000
             return {"available": True, "sizeBytes": len(pdf), "mimeType": "application/pdf", "data": pdf}
 
     collector = WhatsAppCollector(session=CachedMediaSession())

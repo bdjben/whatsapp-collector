@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import os
+import re
 import shutil
 import tempfile
 from contextlib import contextmanager
@@ -15,6 +17,7 @@ from whatsapp_collector.export_quality import ExportQualityError, assess_export_
 
 
 FileFingerprint = tuple[int, int, int, int]
+JSON_BACKUP_RETENTION_YEARS = 1
 
 
 class ExportAlreadyRunningError(RuntimeError):
@@ -221,7 +224,46 @@ def write_atomic_json(
     except Exception:
         temporary_path.unlink(missing_ok=True)
         raise
+    prune_json_backups(output_path)
     return output_path
+
+
+def prune_json_backups(output_path: Path, *, now: datetime | None = None) -> list[Path]:
+    """Prune only this export's dated snapshots, after a successful commit."""
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    now = now.astimezone(timezone.utc)
+    try:
+        cutoff = now.replace(year=now.year - JSON_BACKUP_RETENTION_YEARS)
+    except ValueError:
+        cutoff = now.replace(year=now.year - JSON_BACKUP_RETENTION_YEARS, day=28)
+    backup_dir = output_path.expanduser().parent / "backup"
+    if not backup_dir.is_dir() or backup_dir.is_symlink():
+        return []
+    pattern = re.compile(rf"{re.escape(output_path.stem)}\.(\d{{8}}-\d{{6}})(?:-\d+)?{re.escape(output_path.suffix)}")
+    deleted = []
+    try:
+        candidates = list(backup_dir.iterdir())
+    except OSError as exc:
+        logging.warning("Could not inspect JSON backups for one-year retention: %s", exc)
+        return deleted
+    for path in candidates:
+        match = pattern.fullmatch(path.name)
+        if match is None or path.is_symlink() or not path.is_file():
+            continue
+        try:
+            created = datetime.strptime(match[1], "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        if created >= cutoff:
+            continue
+        try:
+            path.unlink()
+            deleted.append(path)
+        except OSError as exc:
+            logging.warning("Could not remove expired JSON backup %s: %s", path, exc)
+    return deleted
 
 
 @contextmanager

@@ -15,6 +15,11 @@ from typing import Any, Callable
 _WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _DEFAULT_TIMEOUT_SECONDS = 120.0
 
+
+class WhatsAppLoginRequiredError(RuntimeError):
+    pass
+
+
 CHAT_IDENTITY_HELPERS_JS = '''
     const waCollectorChatTitle = () => {
         const title = document.querySelector('#main header [data-testid="conversation-info-header-chat-title"]')
@@ -308,6 +313,15 @@ class ChromeDevToolsBridge:
 
         return dict(self._run_action("activate-target", run))
 
+    def create_background_target_window(self, url: str) -> dict[str, Any]:
+        def run() -> dict[str, Any]:
+            version = self.version()
+            return _CDPClient(version["webSocketDebuggerUrl"]).send(
+                "Target.createTarget", {"url": url, "newWindow": True, "background": True}
+            )
+
+        return dict(self._run_action("create-background-window", run))
+
     def inspect_whatsapp_readiness(self) -> dict[str, Any]:
         expression = r'''(() => {
             const bodyText = (document.body && document.body.innerText || '').replace(/\s+/g, ' ').trim();
@@ -343,7 +357,6 @@ class ChromeDevToolsBridge:
         last_error: Exception | None = None
         for _ in range(attempts):
             try:
-                self.activate_target_url()
                 state = self.inspect_whatsapp_readiness()
                 last_state = state
                 if state.get("ready") is True:
@@ -357,7 +370,7 @@ class ChromeDevToolsBridge:
             if last_state:
                 preview = str(last_state.get("bodyPreview") or "").strip()
                 if last_state.get("loginRequired") is True:
-                    raise RuntimeError("WhatsApp Web is not logged in; scan the QR code in the dedicated Chrome profile before exporting.")
+                    raise WhatsAppLoginRequiredError("WhatsApp Web is not logged in. Choose Show WhatsApp or Launch / Login, then scan the QR code before retrying the export.")
                 detail = f"; page preview: {preview}" if preview else ""
                 raise RuntimeError(f"WhatsApp Web did not finish rendering the chat list before export{detail}")
             if last_error is not None:
@@ -632,31 +645,32 @@ class ChromeDevToolsBridge:
 
         self._run_action("dismiss-transient-ui", run)
 
-    def place_window(self, *, left: int, top: int, width: int, height: int) -> dict[str, Any]:
+    def place_window(self, *, left: int, top: int, width: int, height: int, restore: bool = False) -> dict[str, Any]:
         def run() -> dict[str, Any]:
             target = self._choose_target(require_target_url=False, prefer_marker_window=False)
             window_result = self._send(target, "Browser.getWindowForTarget", {"targetId": target["id"]})
             window_id = window_result["windowId"]
-            self._send(
-                target,
-                "Browser.setWindowBounds",
-                {
-                    "windowId": window_id,
-                    "bounds": {
-                        "left": int(left),
-                        "top": int(top),
-                        "width": int(width),
-                        "height": int(height),
-                        "windowState": "normal",
+            window_state = (window_result.get("bounds") or {}).get("windowState", "normal")
+            # Background work must not unminimize or exit a user's full-screen window.
+            if restore or window_state == "normal":
+                self._send(
+                    target,
+                    "Browser.setWindowBounds",
+                    {
+                        "windowId": window_id,
+                        "bounds": {
+                            "left": int(left),
+                            "top": int(top),
+                            "width": int(width),
+                            "height": int(height),
+                            "windowState": "normal",
+                        },
                     },
-                },
-            )
+                )
             target_tab = None
             if self.target_url_substring:
                 target_tab = next((item for item in self._page_targets() if self._matches_url_target(item)), None)
             selected = target_tab or target
-            if target_tab is not None:
-                self._send(target_tab, "Target.activateTarget", {"targetId": target_tab["id"]})
             return {
                 "windowId": window_id,
                 "targetId": selected.get("id"),

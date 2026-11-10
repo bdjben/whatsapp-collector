@@ -35,8 +35,9 @@ from whatsapp_collector.collector import (  # noqa: E402
     MAX_MESSAGE_LOOKBACK_HARD_LIMIT,
     WhatsAppCollector,
 )
-from whatsapp_collector.attachment_store import DEFAULT_MAX_ATTACHMENT_TOTAL_BYTES  # noqa: E402
-from whatsapp_collector.devtools_bridge import ChromeDevToolsBridge  # noqa: E402
+from whatsapp_collector.attachment_store import AttachmentPolicy  # noqa: E402
+from whatsapp_collector.attachment_retention import AttachmentStorageError  # noqa: E402
+from whatsapp_collector.devtools_bridge import ChromeDevToolsBridge, WhatsAppLoginRequiredError  # noqa: E402
 from whatsapp_collector.export_quality import (  # noqa: E402
     ExportQualityError,
     validate_export_quality,
@@ -166,6 +167,11 @@ def _group_include(value: Any) -> str:
 
 
 def _config(payload: dict[str, Any]) -> dict[str, Any]:
+    attachment_policy = AttachmentPolicy.from_settings(
+        max_file_bytes=payload.get("attachmentFileLimitBytes"),
+        max_thread_bytes=payload.get("attachmentChatLimitBytes"),
+        max_total_bytes=payload.get("attachmentStorageLimitBytes"),
+    )
     return {
         "output_path": _path(payload.get("outputPath"), DEFAULT_UI_OUTPUT_PATH),
         "profile_dir": _path(payload.get("profileDir"), DEFAULT_PROFILE_DIR),
@@ -181,10 +187,9 @@ def _config(payload: dict[str, Any]) -> dict[str, Any]:
         "exclude_labels": _normalize_label_list(payload.get("excludeLabels")),
         "include_groups": _group_include(payload.get("includeGroups")),
         "download_attachments": _bool(payload.get("downloadAttachments"), True),
-        "attachment_storage_limit_bytes": max(
-            100_000_000,
-            min(_int(payload.get("attachmentStorageLimitBytes"), DEFAULT_MAX_ATTACHMENT_TOTAL_BYTES), 100_000_000_000),
-        ),
+        "attachment_file_limit_bytes": attachment_policy.max_file_bytes,
+        "attachment_chat_limit_bytes": attachment_policy.max_thread_bytes,
+        "attachment_storage_limit_bytes": attachment_policy.max_total_bytes,
     }
 
 
@@ -204,6 +209,8 @@ def _schedule_payload(cfg: dict[str, Any]) -> dict[str, Any]:
         "profileDir": str(cfg["profile_dir"]),
         "outputPath": str(cfg["output_path"]),
         "downloadAttachments": cfg["download_attachments"],
+        "attachmentFileLimitBytes": cfg["attachment_file_limit_bytes"],
+        "attachmentChatLimitBytes": cfg["attachment_chat_limit_bytes"],
         "attachmentStorageLimitBytes": cfg["attachment_storage_limit_bytes"],
     }
 
@@ -230,8 +237,9 @@ def _status(cfg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _ensure_window(cfg: dict[str, Any]) -> dict[str, Any]:
+def _ensure_window(cfg: dict[str, Any], *, foreground: bool = False) -> dict[str, Any]:
     result = ensure_dedicated_whatsapp_window(
+        foreground=foreground,
         profile_dir=cfg["profile_dir"],
         display_name=cfg["display_name"],
         placement_mode="visible",
@@ -333,6 +341,8 @@ def _run_export(cfg: dict[str, Any]) -> dict[str, Any]:
             include_groups=cfg["include_groups"],
             attachments_dir=cfg["output_path"].parent / "Attachments",
             download_attachments=cfg["download_attachments"],
+            max_file_attachment_bytes=cfg["attachment_file_limit_bytes"],
+            max_thread_attachment_bytes=cfg["attachment_chat_limit_bytes"],
             max_total_attachment_bytes=cfg["attachment_storage_limit_bytes"],
             previous_export=current_export.payload,
             resume_captures=resumable,
@@ -472,7 +482,7 @@ def dispatch(command: str, payload: dict[str, Any]) -> dict[str, Any]:
     if command == "status":
         return _status(cfg)
     if command == "ensure-window":
-        return _ensure_window(cfg)
+        return _ensure_window(cfg, foreground=True)
     if command == "run-export":
         return _run_export(cfg)
     if command == "close-window":
@@ -502,6 +512,10 @@ def main(argv: list[str]) -> int:
             "error": str(exc),
             "errorType": type(exc).__name__,
         }
+        if isinstance(exc, AttachmentStorageError):
+            error_payload["storageProblem"] = exc.storage_diagnostics
+        if isinstance(exc, WhatsAppLoginRequiredError):
+            error_payload["loginRequired"] = True
         if isinstance(exc, ExportQualityError):
             error_payload["exportQuality"] = exc.report
             error_payload["rejectedCandidatePath"] = getattr(exc, "rejected_candidate_path", None)

@@ -250,29 +250,17 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Toggle("Download attachments automatically", isOn: $store.draftConfiguration.downloadAttachments)
 
-                HStack(spacing: 10) {
-                    Text("Total attachment storage limit")
-                        .foregroundStyle(.secondary)
-                    TextField(
-                        "GB",
-                        value: $store.draftConfiguration.attachmentStorageLimitGB,
-                        format: .number.precision(.fractionLength(1))
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 90)
-                    Stepper(
-                        "",
-                        value: $store.draftConfiguration.attachmentStorageLimitGB,
-                        in: 0.1...100,
-                        step: 0.1
-                    )
-                    .labelsHidden()
-                    Text("GB")
-                        .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 10) {
+                    attachmentLimitRow("Single attachment limit", value: $store.draftConfiguration.attachmentFileLimitMB,
+                                       unit: "MB", range: 10...1_000, step: 10)
+                    attachmentLimitRow("Per-chat storage limit", value: $store.draftConfiguration.attachmentChatLimitMB,
+                                       unit: "MB", range: 10...5_000, step: 50)
+                    attachmentLimitRow("Total attachment storage limit", value: $store.draftConfiguration.attachmentStorageLimitGB,
+                                       unit: "GB", range: 2...25, step: 0.1)
                 }
                 .disabled(store.draftConfiguration.downloadAttachments == false)
 
-                Text("Attachments for exported messages are stored beside the JSON. Downloads are limited to 50 MB per file and 150 MB per thread, and existing files count toward the total limit. If downloading is off or a limit is reached, the JSON still records the attachment and the reason it was not downloaded. WhatsApp Collector does not delete retained attachments automatically.")
+                Text("Automatic cleanup: oldest local files first, below 75% of the chat or total limit. Current-export attachments are protected. JSON backups are kept for one year.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -282,9 +270,31 @@ struct DashboardView: View {
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
+                if let cleanup = store.export?.exportDiagnostics?.attachmentCleanup, (cleanup.deletedFileCount ?? 0) > 0 {
+                    Text("Last export cleanup: \(cleanup.deletedFileCount ?? 0) \(cleanup.deletedFileCount == 1 ? "file" : "files") removed, \(DisplayFormatters.bytes(cleanup.deletedBytes)) reclaimed.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 4)
+        }
+    }
+
+    private func attachmentLimitRow(_ title: String, value: Binding<Double>, unit: String,
+                                    range: ClosedRange<Double>, step: Double) -> some View {
+        HStack(spacing: 10) {
+            Text(title).foregroundStyle(.secondary).frame(width: 235, alignment: .leading)
+            TextField(unit, value: value, format: .number.precision(.fractionLength(0...1)))
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 90)
+                .accessibilityLabel("\(title) in \(unit)")
+            Stepper(title, value: value, in: range, step: step)
+                .labelsHidden()
+                .accessibilityLabel("Adjust \(title.lowercased())")
+            Text(unit).foregroundStyle(.secondary)
+            Text("\(Int(range.lowerBound))-\(Int(range.upperBound)) \(unit)")
+                .font(.caption).foregroundStyle(.secondary)
+            Spacer(minLength: 0)
         }
     }
 

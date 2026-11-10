@@ -349,6 +349,8 @@ final class CollectorStore: ObservableObject {
         defaults.set(configuration.excludeLabels, forKey: DefaultsKey.excludeLabels.rawValue)
         defaults.set(configuration.includeGroups.rawValue, forKey: DefaultsKey.includeGroups.rawValue)
         defaults.set(configuration.downloadAttachments, forKey: DefaultsKey.downloadAttachments.rawValue)
+        defaults.set(configuration.attachmentFileLimitBytes, forKey: DefaultsKey.attachmentFileLimitBytes.rawValue)
+        defaults.set(configuration.attachmentChatLimitBytes, forKey: DefaultsKey.attachmentChatLimitBytes.rawValue)
         defaults.set(configuration.attachmentStorageLimitBytes, forKey: DefaultsKey.attachmentStorageLimitBytes.rawValue)
         defaults.set(configuration.displayName, forKey: DefaultsKey.displayName.rawValue)
         defaults.set(configuration.debugPort, forKey: DefaultsKey.debugPort.rawValue)
@@ -390,10 +392,18 @@ final class CollectorStore: ObservableObject {
     }
 
     func launchLogin() async {
+        guard !isBusy else { return }
+        chromeCleanupTask?.cancel()
         guard let response = await perform(.ensureWindow, busy: .launching) else {
+            schedulePendingChromeCleanupIfNeeded()
             showChromeMissingAlertIfNeeded()
             return
         }
+        // Explicit login hands this window to the user until the next export.
+        let ownershipPath = defaults.string(forKey: AppPreferences.pendingChromeOwnershipPath)
+            ?? pendingChromeOwnershipURL.path
+        try? FileManager.default.removeItem(atPath: ownershipPath)
+        defaults.removeObject(forKey: AppPreferences.pendingChromeOwnershipPath)
         apply(response)
         await refreshStatus()
     }
@@ -1178,6 +1188,12 @@ final class CollectorStore: ObservableObject {
         if let value = defaults.object(forKey: DefaultsKey.attachmentStorageLimitBytes.rawValue) as? NSNumber {
             config.attachmentStorageLimitBytes = value.int64Value
         }
+        if let value = defaults.object(forKey: DefaultsKey.attachmentFileLimitBytes.rawValue) as? NSNumber {
+            config.attachmentFileLimitBytes = value.int64Value
+        }
+        if let value = defaults.object(forKey: DefaultsKey.attachmentChatLimitBytes.rawValue) as? NSNumber {
+            config.attachmentChatLimitBytes = value.int64Value
+        }
         config.displayName = defaults.string(forKey: DefaultsKey.displayName.rawValue) ?? config.displayName
         if defaults.object(forKey: DefaultsKey.debugPort.rawValue) != nil {
             config.debugPort = defaults.integer(forKey: DefaultsKey.debugPort.rawValue)
@@ -1186,6 +1202,7 @@ final class CollectorStore: ObservableObject {
         config.markerUrlSubstring = defaults.string(forKey: DefaultsKey.markerUrlSubstring.rawValue) ?? config.markerUrlSubstring
         config.targetUrl = defaults.string(forKey: DefaultsKey.targetUrl.rawValue) ?? config.targetUrl
         config.cleanLabelLists()
+        config.normalizeAttachmentLimits()
         return config
     }
 
@@ -1200,7 +1217,7 @@ final class CollectorStore: ObservableObject {
         var copy = configuration
         copy.maxMessages = max(1, min(copy.maxMessages, 500))
         copy.maxAllChats = max(1, min(copy.maxAllChats, 500))
-        copy.attachmentStorageLimitBytes = max(100_000_000, min(copy.attachmentStorageLimitBytes, 100_000_000_000))
+        copy.normalizeAttachmentLimits()
         copy.accountLabel = copy.accountLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         copy.displayName = copy.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         copy.outputPath = copy.outputPath.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1242,6 +1259,8 @@ private enum DefaultsKey: String {
     case excludeLabels = "excludeLabels"
     case includeGroups = "includeGroups"
     case downloadAttachments = "downloadAttachments"
+    case attachmentFileLimitBytes = "attachmentFileLimitBytes"
+    case attachmentChatLimitBytes = "attachmentChatLimitBytes"
     case attachmentStorageLimitBytes = "attachmentStorageLimitBytes"
     case displayName = "displayName"
     case debugPort = "debugPort"

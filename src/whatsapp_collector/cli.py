@@ -187,6 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     ensure_window = subparsers.add_parser("ensure-window")
+    ensure_window.add_argument("--foreground", action="store_true", help="Show WhatsApp for interactive login; otherwise prepare it in the background.")
     for window_parser in (ensure_window,):
         window_parser.add_argument("--display-name", default=DEFAULT_DISPLAY_NAME)
         window_parser.add_argument("--placement-mode", choices=["edge-hidden", "visible"], default=DEFAULT_PLACEMENT_MODE)
@@ -303,6 +304,7 @@ def main(argv: Sequence[str] | None = None, *, collector: WhatsAppCollector | No
             return 1
     elif args.command == "ensure-window":
         payload = ensure_dedicated_whatsapp_window(
+            foreground=args.foreground,
             display_name=args.display_name,
             placement_mode=args.placement_mode,
             settle_seconds=args.settle_seconds,

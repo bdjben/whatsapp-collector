@@ -23,6 +23,7 @@ class _FakeDevToolsState:
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
         self.port = 0
+        self.window_state = "normal"
 
 
 class _FakeDevToolsHandler(BaseHTTPRequestHandler):
@@ -33,7 +34,8 @@ class _FakeDevToolsHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/json/version":
-            self._send_json({"Browser": "FakeChrome/1", "Protocol-Version": "1.3"})
+            self._send_json({"Browser": "FakeChrome/1", "Protocol-Version": "1.3",
+                "webSocketDebuggerUrl": f"ws://127.0.0.1:{self.state.port}/devtools/browser/test"})
             return
         if self.path == "/json/list":
             self._send_json(
@@ -55,7 +57,7 @@ class _FakeDevToolsHandler(BaseHTTPRequestHandler):
                 ]
             )
             return
-        if self.path.startswith("/devtools/page/") and self.headers.get("Upgrade", "").lower() == "websocket":
+        if self.path.startswith("/devtools/") and self.headers.get("Upgrade", "").lower() == "websocket":
             self._handle_websocket()
             return
         self.send_error(404)
@@ -92,11 +94,13 @@ class _FakeDevToolsHandler(BaseHTTPRequestHandler):
         method = request.get("method")
         request_id = request["id"]
         if method == "Browser.getWindowForTarget":
-            return {"id": request_id, "result": {"windowId": 17}}
+            return {"id": request_id, "result": {"windowId": 17, "bounds": {"windowState": self.state.window_state}}}
         if method == "Browser.setWindowBounds":
             return {"id": request_id, "result": {}}
         if method == "Target.activateTarget":
             return {"id": request_id, "result": {}}
+        if method == "Target.createTarget":
+            return {"id": request_id, "result": {"targetId": "page-1"}}
         if method == "Runtime.evaluate":
             expression = request.get("params", {}).get("expression")
             if isinstance(expression, str) and "hasChatPane" in expression:
@@ -335,7 +339,15 @@ def test_sidebar_result_matches_formatted_phone_and_prefers_chat_identity(monkey
     assert (value["x"] if value else None) == expected_x
 
 
-def test_devtools_bridge_activates_and_waits_for_whatsapp_readiness(fake_devtools_server, monkeypatch) -> None:
+def test_new_window_is_created_in_background_on_browser_connection(fake_devtools_server):
+    port, state = fake_devtools_server
+    bridge = ChromeDevToolsBridge(port=port)
+    assert bridge.create_background_target_window("https://web.whatsapp.com/")["targetId"] == "page-1"
+    assert [r["method"] for r in state.requests] == ["Target.createTarget"]
+    assert state.requests[0]["params"] == {"url": "https://web.whatsapp.com/", "newWindow": True, "background": True}
+
+
+def test_only_explicit_activation_focuses_target_not_readiness(fake_devtools_server, monkeypatch) -> None:
     port, state = fake_devtools_server
     monkeypatch.setenv("PATH", os.devnull)
     bridge = ChromeDevToolsBridge(port=port, target_url_substring="https://web.whatsapp.com/")
@@ -346,7 +358,7 @@ def test_devtools_bridge_activates_and_waits_for_whatsapp_readiness(fake_devtool
     assert activated["targetId"] == "page-1"
     assert readiness["ready"] is True
     activate_requests = [request for request in state.requests if request["method"] == "Target.activateTarget"]
-    assert activate_requests
+    assert len(activate_requests) == 1
     assert activate_requests[0]["params"] == {"targetId": "page-1"}
 
 
@@ -364,7 +376,42 @@ def test_devtools_bridge_places_window_via_native_websocket_without_node(fake_de
         "windowId": 17,
         "bounds": {"left": 1, "top": 2, "width": 800, "height": 600, "windowState": "normal"},
     }
-    assert any(request["method"] == "Target.activateTarget" for request in state.requests)
+    assert not any(request["method"] == "Target.activateTarget" for request in state.requests)
+
+
+@pytest.mark.parametrize("window_state", ["minimized", "maximized", "fullscreen"])
+@pytest.mark.parametrize("restore", [False, True])
+def test_background_placement_preserves_window_state(fake_devtools_server, window_state, restore):
+    port, state = fake_devtools_server
+    state.window_state = window_state
+    bridge = ChromeDevToolsBridge(port=port, target_url_substring="https://web.whatsapp.com/")
+    result = bridge.place_window(left=1, top=2, width=800, height=600, restore=restore)
+    assert result["windowId"] == 17
+    bounds = [r for r in state.requests if r["method"] == "Browser.setWindowBounds"]
+    assert len(bounds) == (1 if restore else 0)
+    assert not any(r["method"] == "Target.activateTarget" for r in state.requests)
+
+
+@pytest.mark.parametrize("outcome", ["slow-load", "login", "timeout", "probe-error"])
+def test_readiness_retries_never_focus_even_on_failure(monkeypatch, outcome):
+    bridge = ChromeDevToolsBridge(port=19220)
+    calls = []
+    monkeypatch.setattr(bridge, "activate_target_url", lambda: pytest.fail("Readiness must not activate Chrome"))
+
+    def inspect():
+        calls.append(True)
+        if outcome == "probe-error":
+            raise RuntimeError("Temporarily disconnected")
+        return {"ready": outcome == "slow-load" and len(calls) == 3, "loginRequired": outcome == "login"}
+
+    monkeypatch.setattr(bridge, "inspect_whatsapp_readiness", inspect)
+    if outcome == "slow-load":
+        assert bridge.wait_until_whatsapp_ready(attempts=3, delay_seconds=0, require_ready=True)["ready"]
+    else:
+        expected = devtools_bridge.WhatsAppLoginRequiredError if outcome == "login" else RuntimeError
+        with pytest.raises(expected):
+            bridge.wait_until_whatsapp_ready(attempts=3, delay_seconds=0, require_ready=True)
+    assert len(calls) == 3
 
 
 def test_visible_media_download_uses_stable_whatsapp_message_id(fake_devtools_server, monkeypatch) -> None:

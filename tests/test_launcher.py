@@ -54,13 +54,13 @@ def test_launch_dedicated_chrome_window_opens_background_chrome_instance(monkeyp
     assert command[5] == "--args"
     assert f"--user-data-dir={tmp_path}" in command
     assert "--remote-debugging-port=19220" in command
-    assert "--new-window" in command
+    assert "--no-startup-window" in command
+    assert "--new-window" not in command
     assert "--disable-background-timer-throttling" in command
     assert "--disable-backgrounding-occluded-windows" in command
     assert "--disable-renderer-backgrounding" in command
-    assert "https://web.whatsapp.com/" in command
+    assert "https://web.whatsapp.com/" not in command
     assert not any(str(part).startswith("data:text/html,") for part in command)
-    assert command.count("https://web.whatsapp.com/") == 1
 
 
 def test_launch_dedicated_chrome_window_noisily_reports_missing_chrome(monkeypatch, tmp_path: Path) -> None:
@@ -361,9 +361,12 @@ def test_ensure_dedicated_whatsapp_window_launches_when_debug_port_is_not_ready(
         def wait_until_target_url_exists(self, *, attempts, delay_seconds):
             return [{'id': 'page-1', 'type': 'page', 'url': 'https://web.whatsapp.com/'}]
 
-        def place_window(self, *, left, top, width, height):
+        def place_window(self, *, left, top, width, height, restore=False):
             placed.update({'left': left, 'top': top, 'width': width, 'height': height})
             return {'windowId': 4321, 'targetId': 'target-1'}
+
+        def create_background_target_window(self, url):
+            launched['created_url'] = url
 
     def fake_load_display_frames():
         return {"PRIMARY": DisplayFrame(name="PRIMARY", x=-2123, y=1689, width=1920, height=1080)}
@@ -389,6 +392,7 @@ def test_ensure_dedicated_whatsapp_window_launches_when_debug_port_is_not_ready(
     assert payload["displayFallbackUsed"] is False
     assert launched['launch']['profile_dir'] == tmp_path
     assert launched['launch']['debug_port'] == 19220
+    assert launched['created_url'] == 'https://web.whatsapp.com/'
     assert placed == {'left': -251, 'top': 2525, 'width': 420, 'height': 220}
     assert sleeps == [15]
 
@@ -413,8 +417,10 @@ def test_ensure_dedicated_whatsapp_window_restarts_stale_devtools_port_without_p
         def wait_until_target_url_exists(self, *, attempts, delay_seconds):
             return [{'id': 'page-1', 'type': 'page', 'url': 'https://web.whatsapp.com/'}]
 
-        def place_window(self, *, left, top, width, height):
+        def place_window(self, *, left, top, width, height, restore=False):
             return {'windowId': 2026, 'targetId': 'page-1'}
+
+        def create_background_target_window(self, url): pass
 
     monkeypatch.setattr(
         "whatsapp_collector.launcher.load_display_frames",
@@ -462,8 +468,10 @@ def test_ensure_dedicated_whatsapp_window_restarts_stale_devtools_port_without_w
                 raise RuntimeError('port is alive but WhatsApp target is missing')
             return [{'id': 'page-1', 'type': 'page', 'url': 'https://web.whatsapp.com/'}]
 
-        def place_window(self, *, left, top, width, height):
+        def place_window(self, *, left, top, width, height, restore=False):
             return {'windowId': 3030, 'targetId': 'page-1'}
+
+        def create_background_target_window(self, url): pass
 
     monkeypatch.setattr(
         "whatsapp_collector.launcher.load_display_frames",
@@ -507,7 +515,7 @@ def test_ensure_dedicated_whatsapp_window_reuses_existing_debug_port(monkeypatch
         def wait_until_target_url_exists(self, *, attempts, delay_seconds):
             return [{'id': 'page-1', 'type': 'page', 'url': 'https://web.whatsapp.com/'}]
 
-        def place_window(self, *, left, top, width, height):
+        def place_window(self, *, left, top, width, height, restore=False):
             placed.update({'left': left, 'top': top, 'width': width, 'height': height})
             return {'windowId': 777, 'targetId': 'target-777'}
 
@@ -547,7 +555,7 @@ def test_ensure_dedicated_whatsapp_window_supports_visible_placement_mode(monkey
         def wait_until_target_url_exists(self, *, attempts, delay_seconds):
             return [{'id': 'page-1', 'type': 'page', 'url': 'https://web.whatsapp.com/'}]
 
-        def place_window(self, *, left, top, width, height):
+        def place_window(self, *, left, top, width, height, restore=False):
             placed.update({'left': left, 'top': top, 'width': width, 'height': height})
             return {'windowId': 707, 'targetId': 'target-707'}
 
@@ -594,7 +602,7 @@ def test_ensure_dedicated_whatsapp_window_falls_back_when_requested_display_miss
         def wait_until_target_url_exists(self, *, attempts, delay_seconds):
             return [{'id': 'page-1', 'type': 'page', 'url': 'https://web.whatsapp.com/'}]
 
-        def place_window(self, *, left, top, width, height):
+        def place_window(self, *, left, top, width, height, restore=False):
             placed.update({'left': left, 'top': top, 'width': width, 'height': height})
             return {'windowId': 999, 'targetId': 'target-999'}
 

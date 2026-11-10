@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -12,8 +13,56 @@ from whatsapp_collector.export_safety import (
     ExportChangedDuringRunError,
     ensure_last_good_export,
     protected_export,
+    prune_json_backups,
     write_atomic_json,
 )
+
+
+def test_json_backup_retention_is_one_calendar_year_not_a_size_or_count_limit(tmp_path):
+    output = tmp_path / "export.json"
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    old = backup / "export.20251110-115959.json"
+    old_collision = backup / "export.20251109-120000-2.json"
+    boundary = backup / "export.20251110-120000.json"
+    large_recent = backup / "export.20261109-120000.json"
+    unrelated = backup / "another-export.20200101-000000.json"
+    malformed = backup / "export.20259999-000000.json"
+    manual = backup / "export.manual.json"
+    for path in [old, old_collision, boundary, large_recent, unrelated, malformed, manual]:
+        path.write_text("{}")
+    with large_recent.open("r+b") as handle:
+        handle.truncate(30_000_000_000)
+    outside = tmp_path / "outside.json"
+    outside.write_text("keep")
+    linked = backup / "export.20200101-000000.json"
+    linked.symlink_to(outside)
+    deleted = prune_json_backups(output, now=datetime(2026, 11, 10, 12, tzinfo=timezone.utc))
+    assert set(deleted) == {old, old_collision}
+    assert all(path.exists() for path in [boundary, large_recent, unrelated, malformed, manual, linked, outside])
+
+
+def test_json_retention_leap_year_and_successful_commit_trigger(tmp_path, monkeypatch):
+    output = tmp_path / "export.json"
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    old = backup / "export.20230228-115959.json"
+    boundary = backup / "export.20230228-120000.json"
+    old.write_text("{}")
+    boundary.write_text("{}")
+    assert prune_json_backups(output, now=datetime(2024, 2, 29, 12, tzinfo=timezone.utc)) == [old]
+    assert boundary.exists()
+    calls = []
+    monkeypatch.setattr(export_safety, "prune_json_backups", lambda path: calls.append(path))
+    write_atomic_json(_valid_export("new"), output)
+    assert calls == [output]
+    calls.clear()
+    def fail_replace(*args):
+        raise OSError("simulated failed commit")
+    monkeypatch.setattr(export_safety.os, "replace", fail_replace)
+    with pytest.raises(OSError):
+        write_atomic_json(_valid_export("failed"), output)
+    assert calls == []
 
 
 def _valid_export(marker: str) -> dict[str, Any]:

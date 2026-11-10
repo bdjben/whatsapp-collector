@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,24 @@ def _load_native_bridge():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize("category", ["retained-attachment-storage", "incoming-message-attachment"])
+def test_storage_failure_is_reported_to_app_with_affected_message(monkeypatch, capsys, category):
+    from whatsapp_collector.attachment_retention import AttachmentStorageError
+    bridge = _load_native_bridge()
+    def fail(*args):
+        raise AttachmentStorageError("simulated storage invariant failure", category=category,
+                                     threadKey="example-chat", messageId="example-message", actualBytes=123)
+    monkeypatch.setattr(bridge, "dispatch", fail)
+    monkeypatch.setattr(bridge.sys, "stdin", io.StringIO("{}"))
+    assert bridge.main(["native_bridge.py", "run-export"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["errorType"] == "AttachmentStorageError"
+    assert payload["storageProblem"]["category"] == category
+    assert payload["storageProblem"]["threadKey"] == "example-chat"
+    assert payload["storageProblem"]["messageId"] == "example-message"
 
 
 def test_native_schedule_install_persists_browser_control_settings(tmp_path: Path, monkeypatch) -> None:
@@ -42,6 +61,8 @@ def test_native_schedule_install_persists_browser_control_settings(tmp_path: Pat
             "excludeLabels": ["Groups"],
             "includeGroups": "labeledAlways",
             "downloadAttachments": False,
+            "attachmentFileLimitBytes": 200_000_000,
+            "attachmentChatLimitBytes": 750_000_000,
             "attachmentStorageLimitBytes": 2_500_000_000,
             "debugPort": 19300,
             "markerTitle": "Custom Collector",
@@ -57,6 +78,8 @@ def test_native_schedule_install_persists_browser_control_settings(tmp_path: Pat
     assert captured["payload"]["markerUrlSubstring"] == "custom-marker"
     assert captured["payload"]["targetUrl"] == "https://web.whatsapp.com/"
     assert captured["payload"]["downloadAttachments"] is False
+    assert captured["payload"]["attachmentFileLimitBytes"] == 200_000_000
+    assert captured["payload"]["attachmentChatLimitBytes"] == 750_000_000
     assert captured["payload"]["attachmentStorageLimitBytes"] == 2_500_000_000
 
 
@@ -66,7 +89,47 @@ def test_native_bridge_uses_backward_compatible_attachment_defaults() -> None:
     config = bridge._config({})
 
     assert config["download_attachments"] is True
-    assert config["attachment_storage_limit_bytes"] == 1_500_000_000
+    assert config["attachment_file_limit_bytes"] == 20_000_000
+    assert config["attachment_chat_limit_bytes"] == 1_000_000_000
+    assert config["attachment_storage_limit_bytes"] == 5_000_000_000
+
+
+@pytest.mark.parametrize("total,expected", [(0, 2_000_000_000), (5_000_000_000, 5_000_000_000),
+                                           (100_000_000_000, 25_000_000_000)])
+def test_native_limits_are_normalized_and_round_trip_for_schedules(total, expected):
+    bridge = _load_native_bridge()
+    cfg = bridge._config({"attachmentStorageLimitBytes": total,
+                          "attachmentFileLimitBytes": 250_000_000, "attachmentChatLimitBytes": 800_000_000})
+    assert cfg["attachment_storage_limit_bytes"] == expected
+    assert bridge._config(bridge._schedule_payload(cfg)) == cfg
+    assert cfg["attachment_file_limit_bytes"] == 250_000_000
+    assert cfg["attachment_chat_limit_bytes"] == 800_000_000
+
+
+def test_export_is_quiet_but_explicit_login_foregrounds(tmp_path, monkeypatch):
+    bridge = _load_native_bridge()
+    calls = []
+    monkeypatch.setattr(bridge, "ensure_dedicated_whatsapp_window",
+        lambda **kwargs: calls.append(kwargs) or {"chromeProcessIds": [123]})
+    monkeypatch.setattr(bridge, "_record_chrome_ownership", lambda *args: None)
+    payload = {"profileDir": str(tmp_path / "profile")}
+    bridge._ensure_export_window(bridge._config(payload))
+    bridge.dispatch("ensure-window", payload)
+    assert [call["foreground"] for call in calls] == [False, True]
+
+
+def test_login_failure_has_structured_user_action(monkeypatch, capsys):
+    bridge = _load_native_bridge()
+
+    def fail(*args):
+        raise bridge.WhatsAppLoginRequiredError("WhatsApp Web is not logged in")
+
+    monkeypatch.setattr(bridge, "dispatch", fail)
+    monkeypatch.setattr(bridge.sys, "stdin", io.StringIO("{}"))
+    assert bridge.main(["native_bridge.py", "run-export"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["loginRequired"] is True
+    assert report["errorType"] == "WhatsAppLoginRequiredError"
 
 
 @pytest.mark.parametrize("failure_stage", [None, "preparing-browser", "validating", "writing"])
@@ -212,7 +275,8 @@ def _incomplete_labeled_export() -> dict[str, Any]:
     return payload
 
 
-def test_native_run_export_collects_once_then_writes_valid_export(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("custom_limits", [False, True])
+def test_native_run_export_collects_once_then_writes_valid_export(tmp_path: Path, monkeypatch, custom_limits) -> None:
     bridge = _load_native_bridge()
     quality_calls = []
     validate_quality = bridge.validate_export_quality
@@ -268,14 +332,20 @@ def test_native_run_export_collects_once_then_writes_valid_export(tmp_path: Path
     monkeypatch.setattr(bridge, "terminate_profile_processes", fake_terminate)
     monkeypatch.setenv(bridge.CHROME_OWNERSHIP_PATH_ENV, str(ownership_path))
 
-    result = bridge.dispatch("run-export", {"outputPath": str(output), "profileDir": str(tmp_path / "profile")})
+    payload = {"outputPath": str(output), "profileDir": str(tmp_path / "profile")}
+    if custom_limits:
+        payload.update(attachmentFileLimitBytes=250_000_000, attachmentChatLimitBytes=800_000_000,
+                       attachmentStorageLimitBytes=5_000_000_000)
+    result = bridge.dispatch("run-export", payload)
 
     assert result["ok"] is True
     assert result["threadCount"] == 1
     assert calls["count"] == 1
     assert len(quality_calls) == 1
     assert captured_kwargs[-1]["download_attachments"] is True
-    assert captured_kwargs[-1]["max_total_attachment_bytes"] == 1_500_000_000
+    assert captured_kwargs[-1]["max_file_attachment_bytes"] == (250_000_000 if custom_limits else 20_000_000)
+    assert captured_kwargs[-1]["max_thread_attachment_bytes"] == (800_000_000 if custom_limits else 1_000_000_000)
+    assert captured_kwargs[-1]["max_total_attachment_bytes"] == 5_000_000_000
     assert json.loads(output.read_text())["threads"][0]["chatTitle"] == "Good Thread"
     assert ensure_calls[0]["profile_dir"] == tmp_path / "profile"
     assert termination["profileDir"] == tmp_path / "profile"

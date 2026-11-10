@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from whatsapp_collector.cli import main
 from whatsapp_collector.models import ChatRow, IndexedDBThread, LabelStat, NormalizedEvent, RecentMessage, Snapshot
 
@@ -335,7 +337,8 @@ def test_cli_dashboard_export_rejects_degraded_payload_without_writing(capsys, t
     assert "too-many-latest-messages-without-content" in out
 
 
-def test_cli_ensure_window_prints_window_payload(monkeypatch, capsys, tmp_path: Path) -> None:
+@pytest.mark.parametrize("foreground", [False, True])
+def test_cli_ensure_window_prints_window_payload(monkeypatch, capsys, tmp_path: Path, foreground) -> None:
     captured: dict[str, object] = {}
 
     def fake_ensure_dedicated_whatsapp_window(**kwargs):
@@ -368,6 +371,7 @@ def test_cli_ensure_window_prints_window_payload(monkeypatch, capsys, tmp_path: 
             "visible",
             "--settle-seconds",
             "15",
+            *(["--foreground"] if foreground else []),
         ],
         collector=StubCollector(),
     )
@@ -378,6 +382,7 @@ def test_cli_ensure_window_prints_window_payload(monkeypatch, capsys, tmp_path: 
     assert captured["marker_url_substring"] == "whatsapp-collector"
     assert captured["placement_mode"] == "visible"
     assert captured["settle_seconds"] == 15
+    assert captured["foreground"] == foreground
     out = capsys.readouterr().out
     assert '"windowId": 4321' in out
     assert '"placementMode": "visible"' in out

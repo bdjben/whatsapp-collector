@@ -69,8 +69,8 @@ struct HelpView: View {
 
                 GroupBox("Attachments") {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Attachment downloads are optional. Turn them on and choose a total storage limit in the Dashboard. WhatsApp Collector detects media from WhatsApp message metadata, checks WhatsApp Web's local media cache, and retries through the live message download path when verified bytes are missing.")
-                        Text("A single file is limited to 50 MB and one thread is limited to 150 MB. Downloaded files are stored beside the export JSON under Attachments. The JSON records localPath, relativePath, size, verification hash, download method, and any reason a detected attachment could not be retained. The AI Prompt tells an agent to open and analyze those files as part of their parent messages.")
+                        Text("Attachment downloads are optional. Limits for individual files, each chat, and total storage are adjustable in the Dashboard. WhatsApp Collector detects media from WhatsApp message metadata, checks WhatsApp Web's local media cache, and retries through the live message download path when verified bytes are missing.")
+                        Text("Defaults are 20 MB per file, 1 GB per chat, and 5 GB total. Ranges are 10 MB-1 GB per file, 10 MB-5 GB per chat, and 2-25 GB total. Saved choices within these ranges are preserved. During collection, storage pressure automatically removes the oldest local files until usage is below 75% of the affected chat or total limit. Current-export attachments are protected. If they prevent cleanup, incoming attachments are marked Not allowed to download. WhatsApp's own messages and media are never deleted. JSON backups are kept for one year with no size limit.")
                             .foregroundStyle(.secondary)
                     }
                     .font(.callout)

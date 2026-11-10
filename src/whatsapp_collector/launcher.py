@@ -536,8 +536,7 @@ def launch_dedicated_chrome_window(
         "--no-first-run",
         "--no-default-browser-check",
         *BACKGROUND_EXPORT_FLAGS,
-        "--new-window",
-        target_url,
+        "--no-startup-window",
     ]
     subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -546,6 +545,19 @@ def _activate_whatsapp_target(bridge: ChromeDevToolsBridge) -> None:
     activator = getattr(bridge, "activate_target_url", None)
     if callable(activator):
         activator()
+
+
+def _foreground_chrome_profile(profile_dir: Path, debug_port: int) -> None:
+    pids = chrome_profile_process_ids(profile_dir, debug_port=debug_port)
+    if len(pids) != 1:
+        raise RuntimeError("Could not identify one dedicated Chrome process to show; refusing to activate another profile")
+    # CDP selects the tab, but a no-startup-window process also needs macOS activation.
+    script = f'''ObjC.import('AppKit');
+        const app = $.NSRunningApplication.runningApplicationWithProcessIdentifier({int(pids[0])});
+        if (!app.activateWithOptions(2)) throw new Error('Could not show the dedicated Chrome process');
+    '''
+    subprocess.run(["osascript", "-l", "JavaScript"], input=script, text=True,
+                   capture_output=True, check=True)
 
 
 def _marker_targets(bridge: ChromeDevToolsBridge) -> list[dict[str, object]]:
@@ -569,6 +581,7 @@ def _wait_whatsapp_readiness(
 
 def ensure_dedicated_whatsapp_window(
     *,
+    foreground: bool = False,
     display_name: str | None = DEFAULT_DISPLAY_NAME,
     placement_mode: str = DEFAULT_PLACEMENT_MODE,
     settle_seconds: float = DEFAULT_SETTLE_SECONDS,
@@ -618,9 +631,9 @@ def ensure_dedicated_whatsapp_window(
         )
         launched = True
         bridge.wait_until_ready(attempts=wait_attempts, delay_seconds=delay_seconds)
+        bridge.create_background_target_window(target_url)
         bridge.wait_until_page_targets_exist(attempts=wait_attempts, delay_seconds=delay_seconds)
         bridge.wait_until_target_url_exists(attempts=wait_attempts, delay_seconds=delay_seconds)
-        _activate_whatsapp_target(bridge)
 
     if debug_port_has_profile_conflict(debug_port, profile_dir):
         raise RuntimeError("DevTools port belongs to another Chrome profile; refusing to restart it")
@@ -635,8 +648,6 @@ def ensure_dedicated_whatsapp_window(
                 background_flags_upgraded = True
             elif _marker_targets(bridge):
                 needs_relaunch = True
-            else:
-                _activate_whatsapp_target(bridge)
         except RuntimeError:
             needs_relaunch = True
         if needs_relaunch:
@@ -648,7 +659,11 @@ def ensure_dedicated_whatsapp_window(
         top=bounds["top"],
         width=bounds["width"],
         height=bounds["height"],
+        restore=foreground,
     )
+    if foreground:
+        _activate_whatsapp_target(bridge)
+        _foreground_chrome_profile(profile_dir, debug_port)
     readiness = _wait_whatsapp_readiness(bridge, attempts=wait_attempts, delay_seconds=delay_seconds)
     if settle_seconds > 0:
         time.sleep(settle_seconds)
@@ -670,6 +685,7 @@ def ensure_dedicated_whatsapp_window(
         "targetUrl": target_url,
         "debugPort": int(debug_port),
         "launched": launched,
+        "foregroundRequested": foreground,
         "backgroundFlagsUpgraded": background_flags_upgraded,
         "backgroundExportFlags": list(BACKGROUND_EXPORT_FLAGS),
         "chromeProcessIds": chrome_process_ids,

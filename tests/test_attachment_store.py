@@ -4,6 +4,8 @@ import base64
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from whatsapp_collector.attachment_store import (
     AttachmentPolicy,
     AttachmentStore,
@@ -18,9 +20,33 @@ def _hash(data: bytes) -> str:
 
 
 def test_default_attachment_limits_match_product_policy() -> None:
-    assert DEFAULT_MAX_ATTACHMENT_FILE_BYTES == 50_000_000
-    assert DEFAULT_MAX_ATTACHMENT_THREAD_BYTES == 150_000_000
-    assert DEFAULT_MAX_ATTACHMENT_TOTAL_BYTES == 1_500_000_000
+    assert DEFAULT_MAX_ATTACHMENT_FILE_BYTES == 20_000_000
+    assert DEFAULT_MAX_ATTACHMENT_THREAD_BYTES == 1_000_000_000
+    assert DEFAULT_MAX_ATTACHMENT_TOTAL_BYTES == 5_000_000_000
+
+
+@pytest.mark.parametrize("value,expected", [
+    (None, 5_000_000_000), (False, 5_000_000_000), ("invalid", 5_000_000_000),
+    (float("nan"), 5_000_000_000), (float("inf"), 5_000_000_000),
+    (0, 2_000_000_000), (999_999_999, 2_000_000_000), (5_000_000_000, 5_000_000_000),
+    (25_000_000_000, 25_000_000_000), (100_000_000_000, 25_000_000_000),
+])
+def test_total_storage_setting_bounds_and_existing_choice(value, expected):
+    assert AttachmentPolicy.from_settings(max_total_bytes=value).max_total_bytes == expected
+
+
+def test_individual_settings_are_independent_and_report_actual_limits(tmp_path):
+    policy = AttachmentPolicy.from_settings(max_file_bytes=200_000_000, max_thread_bytes=250_000_000,
+                                           max_total_bytes=5_000_000_000)
+    assert policy.to_dict() == {"enabled": True, "maxFileBytes": 200_000_000,
+                                "maxThreadBytes": 250_000_000, "maxTotalBytes": 5_000_000_000}
+    store = AttachmentStore(tmp_path, policy=policy)
+    assert store.preflight(thread_key="example", expected_size=200_000_000) is None
+    assert store.preflight(thread_key="example", expected_size=200_000_001).skipped_reason == "file-size-limit"
+    assert AttachmentPolicy.from_settings(max_file_bytes=0).max_file_bytes == 10_000_000
+    assert AttachmentPolicy.from_settings(max_file_bytes=100_000_000_000).max_file_bytes == 1_000_000_000
+    assert AttachmentPolicy.from_settings(max_thread_bytes=0).max_thread_bytes == 10_000_000
+    assert AttachmentPolicy.from_settings(max_thread_bytes=100_000_000_000).max_thread_bytes == 5_000_000_000
 
 
 def test_store_accepts_exact_limits_and_reuses_verified_file(tmp_path: Path) -> None:
@@ -79,8 +105,10 @@ def test_preflight_blocks_file_thread_and_total_boundary_plus_one(tmp_path: Path
     assert first.attachment is not None
     thread_limit = store.preflight(thread_key="a", expected_size=3)
     total_limit = store.preflight(thread_key="b", expected_size=5)
-    assert thread_limit and thread_limit.skipped_reason == "thread-storage-limit"
-    assert total_limit and total_limit.skipped_reason == "total-storage-limit"
+    assert thread_limit and thread_limit.skipped_reason == "thread-storage-protected"
+    assert "10-byte" in thread_limit.note
+    assert "150 MB" not in thread_limit.note
+    assert total_limit and total_limit.skipped_reason == "total-storage-protected"
 
 
 def test_store_rejects_wrong_hash_size_and_signature(tmp_path: Path) -> None:

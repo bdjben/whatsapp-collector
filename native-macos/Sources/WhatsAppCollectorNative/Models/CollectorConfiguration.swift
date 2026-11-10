@@ -1,5 +1,24 @@
 import Foundation
 
+enum AttachmentLimits {
+    static let defaultFileBytes: Int64 = 20_000_000
+    static let defaultChatBytes: Int64 = 1_000_000_000
+    static let defaultTotalBytes: Int64 = 5_000_000_000
+    static let fileBytes: ClosedRange<Int64> = 10_000_000...1_000_000_000
+    static let chatBytes: ClosedRange<Int64> = 10_000_000...5_000_000_000
+    static let totalBytes: ClosedRange<Int64> = 2_000_000_000...25_000_000_000
+
+    static func bounded(_ value: Int64, to range: ClosedRange<Int64>) -> Int64 {
+        min(max(value, range.lowerBound), range.upperBound)
+    }
+
+    static func bytes(from value: Double, unit: Double, range: ClosedRange<Int64>, fallback: Int64) -> Int64 {
+        guard value.isFinite else { return fallback }
+        let bounded = min(max(value, Double(range.lowerBound) / unit), Double(range.upperBound) / unit)
+        return Int64((bounded * unit).rounded())
+    }
+}
+
 struct CollectorConfiguration: Codable, Equatable, Sendable {
     var outputPath: String
     var profileDir: String
@@ -10,6 +29,8 @@ struct CollectorConfiguration: Codable, Equatable, Sendable {
     var excludeLabels: [String]
     var includeGroups: GroupInclusionMode
     var downloadAttachments: Bool
+    var attachmentFileLimitBytes: Int64
+    var attachmentChatLimitBytes: Int64
     var attachmentStorageLimitBytes: Int64
     var displayName: String
     var debugPort: Int
@@ -36,7 +57,9 @@ struct CollectorConfiguration: Codable, Equatable, Sendable {
             excludeLabels: [],
             includeGroups: .standard,
             downloadAttachments: true,
-            attachmentStorageLimitBytes: 1_500_000_000,
+            attachmentFileLimitBytes: AttachmentLimits.defaultFileBytes,
+            attachmentChatLimitBytes: AttachmentLimits.defaultChatBytes,
+            attachmentStorageLimitBytes: AttachmentLimits.defaultTotalBytes,
             displayName: "",
             debugPort: 19220,
             markerTitle: "WhatsApp Collector",
@@ -55,6 +78,8 @@ struct CollectorConfiguration: Codable, Equatable, Sendable {
         copy.excludeLabels = payload.excludeLabels ?? copy.excludeLabels
         copy.includeGroups = payload.includeGroups ?? copy.includeGroups
         copy.downloadAttachments = payload.downloadAttachments ?? copy.downloadAttachments
+        copy.attachmentFileLimitBytes = payload.attachmentFileLimitBytes ?? copy.attachmentFileLimitBytes
+        copy.attachmentChatLimitBytes = payload.attachmentChatLimitBytes ?? copy.attachmentChatLimitBytes
         copy.attachmentStorageLimitBytes = payload.attachmentStorageLimitBytes ?? copy.attachmentStorageLimitBytes
         copy.displayName = payload.displayName ?? copy.displayName
         copy.profileDir = payload.profileDir ?? copy.profileDir
@@ -63,6 +88,7 @@ struct CollectorConfiguration: Codable, Equatable, Sendable {
         copy.markerTitle = payload.markerTitle ?? copy.markerTitle
         copy.markerUrlSubstring = payload.markerUrlSubstring ?? copy.markerUrlSubstring
         copy.targetUrl = payload.targetUrl ?? copy.targetUrl
+        copy.normalizeAttachmentLimits()
         return copy
     }
 
@@ -87,7 +113,57 @@ struct CollectorConfiguration: Codable, Equatable, Sendable {
 
     var attachmentStorageLimitGB: Double {
         get { Double(attachmentStorageLimitBytes) / 1_000_000_000 }
-        set { attachmentStorageLimitBytes = Int64((newValue * 1_000_000_000).rounded()) }
+        set { attachmentStorageLimitBytes = AttachmentLimits.bytes(from: newValue, unit: 1_000_000_000,
+            range: AttachmentLimits.totalBytes, fallback: attachmentStorageLimitBytes) }
+    }
+
+    var attachmentFileLimitMB: Double {
+        get { Double(attachmentFileLimitBytes) / 1_000_000 }
+        set { attachmentFileLimitBytes = AttachmentLimits.bytes(from: newValue, unit: 1_000_000,
+            range: AttachmentLimits.fileBytes, fallback: attachmentFileLimitBytes) }
+    }
+
+    var attachmentChatLimitMB: Double {
+        get { Double(attachmentChatLimitBytes) / 1_000_000 }
+        set { attachmentChatLimitBytes = AttachmentLimits.bytes(from: newValue, unit: 1_000_000,
+            range: AttachmentLimits.chatBytes, fallback: attachmentChatLimitBytes) }
+    }
+
+    mutating func normalizeAttachmentLimits() {
+        attachmentFileLimitBytes = AttachmentLimits.bounded(attachmentFileLimitBytes, to: AttachmentLimits.fileBytes)
+        attachmentChatLimitBytes = AttachmentLimits.bounded(attachmentChatLimitBytes, to: AttachmentLimits.chatBytes)
+        attachmentStorageLimitBytes = AttachmentLimits.bounded(attachmentStorageLimitBytes, to: AttachmentLimits.totalBytes)
+    }
+}
+
+extension CollectorConfiguration {
+    private enum CodingKeys: String, CodingKey {
+        case outputPath, profileDir, accountLabel, maxMessages, maxAllChats, allowLabels, excludeLabels, includeGroups
+        case downloadAttachments, attachmentFileLimitBytes, attachmentChatLimitBytes, attachmentStorageLimitBytes
+        case displayName, debugPort, markerTitle, markerUrlSubstring, targetUrl
+    }
+
+    init(from decoder: Decoder) throws {
+        self = .defaults
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        outputPath = try values.decodeIfPresent(String.self, forKey: .outputPath) ?? outputPath
+        profileDir = try values.decodeIfPresent(String.self, forKey: .profileDir) ?? profileDir
+        accountLabel = try values.decodeIfPresent(String.self, forKey: .accountLabel) ?? accountLabel
+        maxMessages = try values.decodeIfPresent(Int.self, forKey: .maxMessages) ?? maxMessages
+        maxAllChats = try values.decodeIfPresent(Int.self, forKey: .maxAllChats) ?? maxAllChats
+        allowLabels = try values.decodeIfPresent([String].self, forKey: .allowLabels) ?? allowLabels
+        excludeLabels = try values.decodeIfPresent([String].self, forKey: .excludeLabels) ?? excludeLabels
+        includeGroups = try values.decodeIfPresent(GroupInclusionMode.self, forKey: .includeGroups) ?? includeGroups
+        downloadAttachments = try values.decodeIfPresent(Bool.self, forKey: .downloadAttachments) ?? downloadAttachments
+        attachmentFileLimitBytes = try values.decodeIfPresent(Int64.self, forKey: .attachmentFileLimitBytes) ?? attachmentFileLimitBytes
+        attachmentChatLimitBytes = try values.decodeIfPresent(Int64.self, forKey: .attachmentChatLimitBytes) ?? attachmentChatLimitBytes
+        attachmentStorageLimitBytes = try values.decodeIfPresent(Int64.self, forKey: .attachmentStorageLimitBytes) ?? attachmentStorageLimitBytes
+        displayName = try values.decodeIfPresent(String.self, forKey: .displayName) ?? displayName
+        debugPort = try values.decodeIfPresent(Int.self, forKey: .debugPort) ?? debugPort
+        markerTitle = try values.decodeIfPresent(String.self, forKey: .markerTitle) ?? markerTitle
+        markerUrlSubstring = try values.decodeIfPresent(String.self, forKey: .markerUrlSubstring) ?? markerUrlSubstring
+        targetUrl = try values.decodeIfPresent(String.self, forKey: .targetUrl) ?? targetUrl
+        normalizeAttachmentLimits()
     }
 }
 
@@ -124,6 +200,8 @@ struct BridgeRequest: Encodable, Sendable {
     var excludeLabels: [String]
     var includeGroups: String
     var downloadAttachments: Bool
+    var attachmentFileLimitBytes: Int64
+    var attachmentChatLimitBytes: Int64
     var attachmentStorageLimitBytes: Int64
     var displayName: String?
     var debugPort: Int
@@ -142,7 +220,9 @@ struct BridgeRequest: Encodable, Sendable {
         excludeLabels = configuration.excludeLabels
         includeGroups = configuration.includeGroups.rawValue
         downloadAttachments = configuration.downloadAttachments
-        attachmentStorageLimitBytes = configuration.attachmentStorageLimitBytes
+        attachmentFileLimitBytes = AttachmentLimits.bounded(configuration.attachmentFileLimitBytes, to: AttachmentLimits.fileBytes)
+        attachmentChatLimitBytes = AttachmentLimits.bounded(configuration.attachmentChatLimitBytes, to: AttachmentLimits.chatBytes)
+        attachmentStorageLimitBytes = AttachmentLimits.bounded(configuration.attachmentStorageLimitBytes, to: AttachmentLimits.totalBytes)
         displayName = configuration.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : configuration.displayName
         debugPort = configuration.debugPort
         markerTitle = configuration.markerTitle

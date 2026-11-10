@@ -255,7 +255,13 @@ Use **Help** for setup notes, update links, and older-app cleanup.
 | Chrome profile folder | The isolated Chrome profile used by the collector. Most users should leave this alone. |
 | Export data file | The JSON file written by **Run Export** and automatic exports. |
 | Download attachments automatically | Optional. Saves media attached to exported messages after validating WhatsApp's metadata and file hash. |
-| Total attachment storage limit | Maximum retained attachment storage. Each file is also limited to 50 MB and each thread to 150 MB. Existing files count toward the limit. |
+| Single attachment limit | Maximum size of a newly retained file. Adjustable from 10-1,000 MB; defaults to 20 MB. |
+| Per-chat storage limit | Maximum attachment storage for one chat. Adjustable from 10-5,000 MB; defaults to 1 GB. Older local files count toward this limit. |
+| Total attachment storage limit | Maximum retained attachment storage across all chats. Adjustable from 2-25 GB; defaults to 5 GB. Saved choices within these ranges are preserved. |
+
+During collection, each storage limit independently triggers automatic oldest-first cleanup when reached or when it would block a new attachment. Ordering uses the message timestamp where available, falling back to local file age for older files without that metadata. Cleanup stops below 75% of the applicable limit. Files referenced by the current export or already selected for the in-progress export are protected. When protected files prevent reaching the target, the incoming attachment is marked `notAllowedToDownload` with its storage reason. Unexpected storage inconsistencies fail the export with structured `storageProblem` diagnostics. Only Collector-managed local attachment files are eligible; WhatsApp data is never deleted. Cleanup details are recorded in `exportDiagnostics.attachmentCleanup`.
+
+Timestamped JSON backups are retained for one calendar year, with no size or count limit. Only expired backups for the same export are pruned, after a successful export commit. Backups share attachment files, so an old JSON backup may refer to local media that was subsequently removed by storage cleanup.
 
 ## Using The Export With AI Agents
 
@@ -405,7 +411,7 @@ chat is included by your recency, group, and label-rule settings.
 ### An attachment was not downloaded
 
 Inspect `skippedReason` and `note` in that attachment's JSON entry. Downloads
-may be disabled, a 50 MB file / 150 MB thread / configured total limit may have
+may be disabled, a configured per-file, per-chat, or total storage limit may have
 been reached, or WhatsApp Web may not have made verified bytes available after
 the automatic retry. The message remains in the export as an attachment
 placeholder rather than being silently discarded.

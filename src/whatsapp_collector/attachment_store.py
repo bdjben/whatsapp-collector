@@ -13,10 +13,26 @@ import re
 import tempfile
 from typing import Iterator
 
+from whatsapp_collector.attachment_retention import AttachmentRetention, AttachmentStorageError
+from whatsapp_collector.message_expiry import epoch
 
-DEFAULT_MAX_ATTACHMENT_FILE_BYTES = 50_000_000
-DEFAULT_MAX_ATTACHMENT_THREAD_BYTES = 150_000_000
-DEFAULT_MAX_ATTACHMENT_TOTAL_BYTES = 1_500_000_000
+
+DEFAULT_MAX_ATTACHMENT_FILE_BYTES = 20_000_000
+DEFAULT_MAX_ATTACHMENT_THREAD_BYTES = 1_000_000_000
+DEFAULT_MAX_ATTACHMENT_TOTAL_BYTES = 5_000_000_000
+MIN_ATTACHMENT_LIMIT_BYTES = 10_000_000
+MIN_ATTACHMENT_TOTAL_BYTES = 2_000_000_000
+MAX_ATTACHMENT_FILE_BYTES = 1_000_000_000
+MAX_ATTACHMENT_THREAD_BYTES = 5_000_000_000
+MAX_ATTACHMENT_STORAGE_BYTES = 25_000_000_000
+
+
+def _bounded_limit(value: object, default: int, minimum: int, maximum: int) -> int:
+    try:
+        amount = int(value) if not isinstance(value, bool) else default
+    except (TypeError, ValueError, OverflowError):
+        amount = default
+    return max(minimum, min(amount, maximum))
 
 
 @dataclass(frozen=True)
@@ -25,6 +41,16 @@ class AttachmentPolicy:
     max_file_bytes: int = DEFAULT_MAX_ATTACHMENT_FILE_BYTES
     max_thread_bytes: int = DEFAULT_MAX_ATTACHMENT_THREAD_BYTES
     max_total_bytes: int = DEFAULT_MAX_ATTACHMENT_TOTAL_BYTES
+
+    @classmethod
+    def from_settings(cls, *, enabled: bool = True, max_file_bytes: object = None,
+                      max_thread_bytes: object = None, max_total_bytes: object = None) -> AttachmentPolicy:
+        return cls(
+            enabled=enabled,
+            max_file_bytes=_bounded_limit(max_file_bytes, DEFAULT_MAX_ATTACHMENT_FILE_BYTES, MIN_ATTACHMENT_LIMIT_BYTES, MAX_ATTACHMENT_FILE_BYTES),
+            max_thread_bytes=_bounded_limit(max_thread_bytes, DEFAULT_MAX_ATTACHMENT_THREAD_BYTES, MIN_ATTACHMENT_LIMIT_BYTES, MAX_ATTACHMENT_THREAD_BYTES),
+            max_total_bytes=_bounded_limit(max_total_bytes, DEFAULT_MAX_ATTACHMENT_TOTAL_BYTES, MIN_ATTACHMENT_TOTAL_BYTES, MAX_ATTACHMENT_STORAGE_BYTES),
+        )
 
     def to_dict(self) -> dict[str, int | bool]:
         return {
@@ -58,9 +84,22 @@ class AttachmentStore:
     """Validates and atomically retains attachment files within collection budgets."""
 
     def __init__(self, root: Path, *, policy: AttachmentPolicy) -> None:
-        self.root = root.expanduser()
+        self.root = root.expanduser().absolute()
         self.policy = policy
+        self.retention = AttachmentRetention(self.root, chat_limit=policy.max_thread_bytes, total_limit=policy.max_total_bytes)
         self.initial_bytes = self._tree_size(self.root)
+
+    def protect_export(self, payload: dict | None) -> None:
+        self.retention.protect_export(payload)
+
+    def enforce_limits(self) -> None:
+        if self.policy.enabled:
+            with self._locked():
+                self.retention.enforce(all_chats=True)
+
+    def validate_export(self, payload: dict) -> None:
+        with self._locked():
+            self.retention.validate_export(payload)
 
     def existing(
         self,
@@ -72,6 +111,7 @@ class AttachmentStore:
         expected_filehash: str | None,
         mime_type: str | None,
         file_name: str,
+        message_timestamp: float | None = None,
     ) -> StoredAttachment | None:
         directory = self._attachment_directory(thread_key, message_id, attachment_id)
         if not directory.exists():
@@ -85,7 +125,8 @@ class AttachmentStore:
                 file_name=file_name,
             )
             if attachment:
-                self._record_identity(directory, message_id, attachment, expected_filehash)
+                self._record_identity(directory, message_id, attachment, expected_filehash, message_timestamp)
+                self.retention.protected.add(attachment.path)
             return attachment
 
     def verified_media(self, *, thread_key: str, message_ids: list[str]) -> list[dict[str, str | int]]:
@@ -124,20 +165,30 @@ class AttachmentStore:
                 except (OSError, ValueError, KeyError, TypeError):
                     continue
                 verified.append({"sourceMessageId": message_id, "filehash": filehash, "sizeBytes": size})
+                self.retention.protected.add(record.parent / file_name)
         return verified
 
     @staticmethod
     def _record_identity(
         directory: Path, message_id: str, attachment: StoredAttachment, filehash: str | None,
+        message_timestamp: float | None = None,
     ) -> None:
-        if not filehash or AttachmentStore.expected_sha256(filehash) != attachment.sha256:
-            return
+        record = directory / ".verified-media.json"
+        if AttachmentStore.expected_sha256(filehash) != attachment.sha256:
+            filehash = None
+        message_timestamp = epoch(message_timestamp)
+        if message_timestamp is None:
+            try:
+                previous = json.loads(record.read_text(encoding="utf-8"))
+                message_timestamp = epoch(previous.get("messageTimestamp")) if isinstance(previous, dict) else None
+            except (OSError, ValueError, TypeError):
+                pass
         metadata = json.dumps({
             "sourceMessageId": message_id, "filehash": filehash,
             "sizeBytes": attachment.size_bytes, "fileName": attachment.file_name,
             "mimeType": attachment.mime_type,
+            "messageTimestamp": message_timestamp,
         }, sort_keys=True)
-        record = directory / ".verified-media.json"
         temporary_path: Path | None = None
         try:
             if record.exists() and record.read_text(encoding="utf-8") == metadata:
@@ -166,28 +217,29 @@ class AttachmentStore:
                 skipped_reason="file-size-limit",
                 note=f"Attachment is larger than the {self.policy.max_file_bytes:,}-byte per-file limit.",
             )
-        with self._locked():
-            total_bytes = self._tree_size(self.root)
-            thread_bytes = self._tree_size(self._thread_directory(thread_key))
-        if total_bytes >= self.policy.max_total_bytes:
-            return StoreResult(
-                skipped_reason="total-storage-limit",
-                note="The configured total attachment storage limit has been reached.",
-            )
-        if thread_bytes >= self.policy.max_thread_bytes:
-            return StoreResult(
-                skipped_reason="thread-storage-limit",
-                note="The 150 MB attachment limit for this thread has been reached.",
-            )
-        if expected_size is not None and total_bytes + expected_size > self.policy.max_total_bytes:
+        if expected_size is not None and expected_size > self.policy.max_total_bytes:
             return StoreResult(
                 skipped_reason="total-storage-limit",
                 note="This attachment would exceed the configured total attachment storage limit.",
             )
-        if expected_size is not None and thread_bytes + expected_size > self.policy.max_thread_bytes:
+        if expected_size is not None and expected_size > self.policy.max_thread_bytes:
             return StoreResult(
                 skipped_reason="thread-storage-limit",
-                note="This attachment would exceed the 150 MB attachment limit for this thread.",
+                note=f"This attachment would exceed the {self.policy.max_thread_bytes:,}-byte attachment limit for this chat.",
+            )
+        with self._locked():
+            return self._make_room_unlocked(thread_key, expected_size or 0)
+
+    def _make_room_unlocked(self, thread_key: str, incoming_bytes: int, replacing: Path | None = None) -> StoreResult | None:
+        blocked = self.retention.enforce(chat=self._thread_directory(thread_key).name,
+                                         incoming_bytes=incoming_bytes, replacing=replacing)
+        if blocked:
+            scope = "thread" if blocked["scope"] == "per-chat" else "total"
+            return StoreResult(
+                skipped_reason=f"{scope}-storage-protected",
+                note=(f"Not allowed to download: {blocked['scope']} storage limit; current-export attachments protected. "
+                      f"Retained {blocked['afterBytes']:,} bytes; cleanup must reach below 75% of the "
+                      f"{blocked['limitBytes']:,}-byte limit. No protected files were removed."),
             )
         return None
 
@@ -203,12 +255,18 @@ class AttachmentStore:
         expected_filehash: str | None,
         mime_type: str | None,
         download_method: str,
+        message_timestamp: float | None = None,
     ) -> StoreResult:
         if not self.policy.enabled:
             return StoreResult(
                 skipped_reason="attachment-downloads-disabled",
                 note="Automatic attachment downloads are turned off; metadata remains in the export.",
             )
+        if expected_size is not None and 0 < expected_size <= self.policy.max_file_bytes < len(data):
+            self.retention.fail("The incoming attachment is larger than both its declared size and the single-attachment limit.",
+                                category="incoming-message-attachment", threadKey=thread_key, messageId=message_id,
+                                attachmentId=attachment_id, expectedBytes=expected_size, actualBytes=len(data),
+                                fileLimitBytes=self.policy.max_file_bytes)
         sha256 = hashlib.sha256(data).hexdigest()
         validation_error = self._validation_error(
             data,
@@ -222,6 +280,9 @@ class AttachmentStore:
             return StoreResult(skipped_reason="attachment-verification-failed", note=validation_error)
 
         directory = self._attachment_directory(thread_key, message_id, attachment_id)
+        if Path(file_name).name != file_name or file_name.startswith("."):
+            self.retention.fail("Invalid attachment filename.", category="incoming-message-attachment",
+                                threadKey=thread_key, messageId=message_id, attachmentId=attachment_id)
         output_path = directory / file_name
         with self._locked():
             existing = self._existing_unlocked(
@@ -232,27 +293,28 @@ class AttachmentStore:
                 file_name=file_name,
             )
             if existing:
-                self._record_identity(directory, message_id, existing, expected_filehash)
+                self._record_identity(directory, message_id, existing, expected_filehash, message_timestamp)
+                self.retention.protected.add(existing.path)
                 return StoreResult(attachment=existing)
 
-            replaced_size = output_path.stat().st_size if output_path.exists() and output_path.is_file() else 0
-            total_bytes = self._tree_size(self.root) - replaced_size
-            thread_bytes = self._tree_size(self._thread_directory(thread_key)) - replaced_size
             if len(data) > self.policy.max_file_bytes:
                 return StoreResult(
                     skipped_reason="file-size-limit",
                     note=f"Attachment is larger than the {self.policy.max_file_bytes:,}-byte per-file limit.",
                 )
-            if thread_bytes + len(data) > self.policy.max_thread_bytes:
+            if len(data) > self.policy.max_thread_bytes:
                 return StoreResult(
                     skipped_reason="thread-storage-limit",
-                    note="This attachment would exceed the 150 MB attachment limit for this thread.",
+                    note=f"This attachment would exceed the {self.policy.max_thread_bytes:,}-byte attachment limit for this chat.",
                 )
-            if total_bytes + len(data) > self.policy.max_total_bytes:
+            if len(data) > self.policy.max_total_bytes:
                 return StoreResult(
                     skipped_reason="total-storage-limit",
                     note="This attachment would exceed the configured total attachment storage limit.",
                 )
+            blocked = self._make_room_unlocked(thread_key, len(data), replacing=output_path)
+            if blocked:
+                return blocked
 
             directory.mkdir(parents=True, exist_ok=True)
             temporary_path: Path | None = None
@@ -276,7 +338,9 @@ class AttachmentStore:
                 file_name=file_name,
                 download_method=download_method,
             )
-            self._record_identity(directory, message_id, attachment, expected_filehash)
+            self._record_identity(directory, message_id, attachment, expected_filehash, message_timestamp)
+            self.retention.protected.add(output_path)
+            self.retention.admitted.add(output_path)
         return StoreResult(attachment=attachment)
 
     def _existing_unlocked(
@@ -339,7 +403,14 @@ class AttachmentStore:
         return digest.hex() if len(digest) == hashlib.sha256().digest_size else None
 
     def _attachment_directory(self, thread_key: str, message_id: str, attachment_id: str) -> Path:
-        return self._thread_directory(thread_key) / self._stable_path_token(message_id) / attachment_id
+        if Path(attachment_id).name != attachment_id or not attachment_id.startswith("att_"):
+            self.retention.fail("Invalid attachment storage identity.", category="incoming-message-attachment",
+                                threadKey=thread_key, messageId=message_id, attachmentId=attachment_id)
+        directory = self._thread_directory(thread_key) / self._stable_path_token(message_id) / attachment_id
+        if not self.retention.safe_path(directory):
+            self.retention.fail("An attachment directory points outside managed storage.",
+                                category="incoming-message-attachment", threadKey=thread_key, messageId=message_id)
+        return directory
 
     def _thread_directory(self, thread_key: str) -> Path:
         return self.root / self._stable_path_token(thread_key)
@@ -366,14 +437,19 @@ class AttachmentStore:
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
-        self.root.mkdir(parents=True, exist_ok=True)
-        lock_path = self.root / ".attachment-store.lock"
-        with lock_path.open("a+b") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        try:
+            if self.root.is_symlink():
+                self.retention.fail("The attachment folder is a symbolic link; storage maintenance was stopped.")
+            self.root.mkdir(parents=True, exist_ok=True)
+            lock_path = self.root / ".attachment-store.lock"
+            with lock_path.open("a+b") as handle:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError as exc:
+            self.retention.fail(f"Could not safely access attachment storage: {exc}")
 
     @classmethod
     def _validate_path(

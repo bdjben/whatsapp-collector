@@ -78,7 +78,7 @@ struct ExportPreviewView: View {
                     Label("Reveal JSON", systemImage: "folder")
                 }
                 Spacer()
-                Text("\(store.export?.threads.count ?? 0) threads")
+                Text("\(store.export?.threads.count ?? 0) \(store.export?.threads.count == 1 ? "thread" : "threads")")
                     .foregroundStyle(.secondary)
             }
         }
@@ -101,6 +101,11 @@ struct ExportPreviewView: View {
                     }
                     Spacer()
                     if failed {
+                        if store.latestExportFailure?.loginRequired == true {
+                            Button { Task { await store.launchLogin() } } label: {
+                                Label("Show WhatsApp", systemImage: "arrow.up.forward.app")
+                            }.disabled(store.isBusy)
+                        }
                         Button { Task { await store.runExport() } } label: {
                             Label("Retry Export", systemImage: "arrow.clockwise")
                         }.disabled(store.isBusy)
@@ -108,6 +113,12 @@ struct ExportPreviewView: View {
                 }
                 if failed {
                     Text("Saved export was not replaced.").font(.callout)
+                    if let storage = store.latestExportFailure?.storageProblem {
+                        Label("Attachment storage problem", systemImage: "externaldrive.badge.exclamationmark")
+                            .font(.callout.weight(.semibold)).foregroundStyle(.red)
+                        Text(storage.detail ?? "The attempted export could not safely retain its attachments.")
+                            .font(.caption).textSelection(.enabled)
+                    }
                     if let report = store.latestExportFailure, !report.chats.isEmpty {
                         ScrollView {
                             VStack(alignment: .leading, spacing: 8) {
@@ -375,7 +386,8 @@ struct ExportPreviewView: View {
     }
 
     private func attachmentLine(_ attachment: ExportAttachment) -> some View {
-        HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
+          HStack(spacing: 6) {
             Image(systemName: attachmentIcon(attachment))
             Text(attachment.kind ?? "attachment")
                 .font(.caption.weight(.semibold))
@@ -390,9 +402,6 @@ struct ExportPreviewView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Text(attachment.status ?? "unknown")
-                .font(.caption)
-                .foregroundStyle(attachment.status == "downloaded" ? .green : .orange)
             if attachment.verified == true {
                 Text("verified")
                     .font(.caption)
@@ -404,11 +413,13 @@ struct ExportPreviewView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            if let reason = attachment.skippedReason {
-                Text(reason)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+          }
+          Text(attachment.statusTitle)
+              .font(.caption).foregroundStyle(attachment.status == "downloaded" ? .green : .orange)
+          if attachment.status != "downloaded", let note = attachment.note ?? attachment.skippedReason {
+              Text(note).font(.caption).foregroundStyle(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
+          }
         }
         .textSelection(.enabled)
     }

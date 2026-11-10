@@ -150,6 +150,8 @@ struct SchedulePayload: Codable, Equatable, Sendable {
     var excludeLabels: [String]?
     var includeGroups: GroupInclusionMode?
     var downloadAttachments: Bool?
+    var attachmentFileLimitBytes: Int64?
+    var attachmentChatLimitBytes: Int64?
     var attachmentStorageLimitBytes: Int64?
     var displayName: String?
     var profileDir: String?
@@ -338,6 +340,15 @@ struct ExportAttachment: Codable, Identifiable, Sendable {
     var note: String?
 
     var id: String { attachmentId ?? localPath ?? relativePath ?? fileName ?? "unknown-attachment" }
+
+    var statusTitle: String {
+        switch status {
+        case "notAllowedToDownload": "Not allowed to download"
+        case "notDownloaded": "Not downloaded"
+        case "downloaded": "Downloaded"
+        default: status ?? "Unknown"
+        }
+    }
 }
 
 extension Array where Element == ExportThread {

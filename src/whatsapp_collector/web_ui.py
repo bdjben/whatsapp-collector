@@ -421,6 +421,7 @@ def create_app_handler(
                 effective = _config_from_payload(config, payload)
                 if self.path == "/api/window/ensure":
                     result = ensure_window(
+                        foreground=True,
                         profile_dir=effective.profile_dir.expanduser(),
                         display_name=effective.display_name,
                         placement_mode="visible",

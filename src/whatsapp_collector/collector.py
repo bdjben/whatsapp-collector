@@ -23,6 +23,7 @@ from whatsapp_collector.attachment_store import (
     DEFAULT_MAX_ATTACHMENT_TOTAL_BYTES,
     StoreResult,
 )
+from whatsapp_collector.attachment_retention import AttachmentStorageError
 from whatsapp_collector.chrome_session import ChromeWhatsAppSession
 from whatsapp_collector.devtools_bridge import CHAT_IDENTITY_HELPERS_JS
 from whatsapp_collector.export_quality import attach_export_quality
@@ -481,6 +482,8 @@ class WhatsAppCollector:
         include_groups: str = GROUP_INCLUDE_STANDARD,
         attachments_dir: Path | str | None = None,
         download_attachments: bool = True,
+        max_file_attachment_bytes: int = DEFAULT_MAX_ATTACHMENT_FILE_BYTES,
+        max_thread_attachment_bytes: int = DEFAULT_MAX_ATTACHMENT_THREAD_BYTES,
         max_total_attachment_bytes: int = DEFAULT_MAX_ATTACHMENT_TOTAL_BYTES,
         previous_export: dict[str, Any] | None = None,
         resume_captures: list[dict[str, Any]] | None = None,
@@ -501,11 +504,11 @@ class WhatsAppCollector:
         self._excluded_thread_keys = set()
         self._chat_expiry_settings = {}
         attachments_root = Path(attachments_dir).expanduser() if attachments_dir else None
-        self._attachment_policy = AttachmentPolicy(
+        self._attachment_policy = AttachmentPolicy.from_settings(
             enabled=bool(download_attachments),
-            max_file_bytes=DEFAULT_MAX_ATTACHMENT_FILE_BYTES,
-            max_thread_bytes=DEFAULT_MAX_ATTACHMENT_THREAD_BYTES,
-            max_total_bytes=max(1, int(max_total_attachment_bytes)),
+            max_file_bytes=max_file_attachment_bytes,
+            max_thread_bytes=max_thread_attachment_bytes,
+            max_total_bytes=max_total_attachment_bytes,
         )
         self._attachment_store = AttachmentStore(attachments_root, policy=self._attachment_policy) if attachments_root else None
         self._run_captures, self._run_timings, self._run_started = {}, [], time.monotonic()
@@ -514,6 +517,11 @@ class WhatsAppCollector:
             if capture.get("complete") and capture.get("fingerprint") and capture.get("threadKey"):
                 self._run_captures[(capture["threadKey"], max_messages)] = {**deepcopy(capture), "needsRevalidation": True}
         try:
+            if self._attachment_store:
+                self._attachment_store.protect_export(previous_export)
+                for capture in resume_captures or []:
+                    self._attachment_store.retention.protect_messages(capture.get("messages", []))
+                self._attachment_store.enforce_limits()
             with self._cached_idb_reads():
                 payload = self._collect_dashboard_export(
                     account_label=account_label,
@@ -524,6 +532,9 @@ class WhatsAppCollector:
                     include_groups=include_groups,
                     attachments_dir=attachments_root,
                 )
+                if self._attachment_store:
+                    self._attachment_store.validate_export(payload)
+                    payload.setdefault("exportDiagnostics", {})["attachmentCleanup"] = self._attachment_store.retention.summary()
                 self._timed_export_call("quality-validation", attach_export_quality, payload, previous_export=previous_export)
                 payload.setdefault("exportDiagnostics", {})["phaseTimings"] = list(self._run_timings)
                 payload["exportDiagnostics"]["chatCaptures"] = [
@@ -534,6 +545,14 @@ class WhatsAppCollector:
                                            if capture.get("complete") and capture.get("fingerprint")]
                 self._export_progress("complete", 1, 1, "candidate-ready" if payload["exportQuality"]["ok"] else "candidate-rejected")
                 return payload
+        except Exception:
+            if self._attachment_store and self._attachment_store.retention.failure is not None:
+                failure = self._attachment_store.retention.failure
+                key = failure.storage_diagnostics.get("threadKey")
+                if key in self._previous_threads:
+                    failure.storage_diagnostics["chatTitle"] = self._previous_threads[key].get("chatTitle")
+                raise failure
+            raise
         finally:
             self._all_view_capture_horizon = previous_horizon
             self._attachment_store = previous_store
@@ -3510,6 +3529,7 @@ class WhatsAppCollector:
                     message_id=message_id,
                     index=index,
                     allow_ui_download=allow_ui_download,
+                    message_timestamp=epoch(message.get("t")) or epoch(message.get("timestamp")),
                 )
             )
         return attachments
@@ -3569,6 +3589,7 @@ class WhatsAppCollector:
         message_id: str,
         index: int,
         allow_ui_download: bool,
+        message_timestamp: float | None = None,
     ) -> RecentAttachment:
         kind = self._attachment_kind(
             str(candidate.get("kind") or candidate.get("type") or "").strip().lower(),
@@ -3586,6 +3607,8 @@ class WhatsAppCollector:
         file_hash = self._first_string(candidate, ["filehash", "fileHash"])
         detection_source = self._first_string(candidate, ["detectionSource"]) or "message-metadata"
         source_message_id = self._first_string(candidate, ["sourceMessageId", "messageId"]) or message_id
+        if source_message_id != message_id:
+            message_timestamp = epoch(candidate.get("timestamp"))
         identity_index = 0 if source_message_id != message_id else index
         attachment_id = self._stable_attachment_id(
             message_id=source_message_id,
@@ -3620,6 +3643,7 @@ class WhatsAppCollector:
             expected_filehash=file_hash,
             mime_type=mime_type,
             file_name=file_name,
+            message_timestamp=message_timestamp,
         )
         if existing:
             return self._downloaded_attachment(
@@ -3640,7 +3664,10 @@ class WhatsAppCollector:
                 mime_type=mime_type,
                 file_name=file_name,
                 size_bytes=size_bytes,
-                status="notDownloaded",
+                status="notAllowedToDownload" if preflight.skipped_reason in {
+                    "file-size-limit", "thread-storage-limit", "total-storage-limit",
+                    "thread-storage-protected", "total-storage-protected",
+                } else "notDownloaded",
                 download_attempts=0,
                 detection_source=detection_source,
                 source_message_id=source_message_id,
@@ -3660,8 +3687,19 @@ class WhatsAppCollector:
                 expected_filehash=file_hash,
                 mime_type=mime_type or actual_mime,
                 download_method=method,
+                message_timestamp=message_timestamp,
             )
             if not last_store_result.attachment:
+                if last_store_result.skipped_reason in {
+                    "file-size-limit", "thread-storage-limit", "total-storage-limit",
+                    "thread-storage-protected", "total-storage-protected",
+                }:
+                    return RecentAttachment(
+                        attachment_id=attachment_id, kind=kind, mime_type=mime_type, file_name=file_name,
+                        size_bytes=size_bytes, status="notAllowedToDownload", download_attempts=download_attempts,
+                        detection_source=detection_source, source_message_id=source_message_id,
+                        skipped_reason=last_store_result.skipped_reason, note=last_store_result.note,
+                    )
                 if last_store_result.note:
                     errors.append(f"{method}:{last_store_result.note}")
                 return None
@@ -3685,6 +3723,8 @@ class WhatsAppCollector:
                         return downloaded
                 elif isinstance(cached, dict) and cached.get("error"):
                     errors.append(f"media-cache:{cached['error']}")
+            except AttachmentStorageError:
+                raise
             except Exception as exc:
                 errors.append(f"media-cache:{exc}")
 
@@ -3716,6 +3756,8 @@ class WhatsAppCollector:
                             if downloaded:
                                 return downloaded
                     errors.append(f"{method}:verified-cache-bytes-unavailable")
+                except AttachmentStorageError:
+                    raise
                 except Exception as exc:
                     errors.append(f"{method}:{exc}")
 
@@ -3740,6 +3782,8 @@ class WhatsAppCollector:
                         return downloaded
                 else:
                     errors.append(f"browser-download:{browser_download.get('error', 'failed') if isinstance(browser_download, dict) else 'failed'}")
+            except AttachmentStorageError:
+                raise
             except Exception as exc:
                 errors.append(f"browser-download:{exc}")
 
@@ -3754,7 +3798,10 @@ class WhatsAppCollector:
             mime_type=mime_type,
             file_name=file_name,
             size_bytes=size_bytes,
-            status="notDownloaded",
+            status="notAllowedToDownload" if skipped_reason in {
+                "file-size-limit", "thread-storage-limit", "total-storage-limit",
+                "thread-storage-protected", "total-storage-protected",
+            } else "notDownloaded",
             verified=False,
             download_attempts=download_attempts,
             detection_source=detection_source,

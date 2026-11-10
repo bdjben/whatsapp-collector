@@ -34,6 +34,7 @@ struct ExportChatProblem: Decodable, Identifiable, Sendable {
         switch reason {
         case "locked-chat": return "Locked in WhatsApp; not collected."
         case "chat-open-failed": return "Could not open and verify this conversation."
+        case "attachment-storage-problem": return "An attachment storage problem stopped the attempted export."
         default: return "Conversation content could not be verified."
         }
     }
@@ -41,13 +42,30 @@ struct ExportChatProblem: Decodable, Identifiable, Sendable {
 
 struct SavedExportDiagnostics: Decodable, Sendable {
     var skippedThreads: [ExportChatProblem]?
+    var attachmentCleanup: AttachmentCleanupSummary?
+}
+
+struct AttachmentCleanupSummary: Decodable, Sendable {
+    var deletedFileCount: Int?
+    var deletedBytes: Int?
+}
+
+struct AttachmentStorageProblem: Decodable, Sendable {
+    var category: String?
+    var detail: String?
+    var threadKey: String?
+    var chatTitle: String?
+    var messageId: String?
+    var attachmentId: String?
 }
 
 struct ExportFailureReport: Decodable, Sendable {
     var checkedAt: String?
     var error: String?
+    var loginRequired: Bool?
     var exportQuality: ExportQualitySummary?
     var rejectedCandidatePath: String?
+    var storageProblem: AttachmentStorageProblem?
 
     // Read the structured bridge response, including diagnostics retained by older apps.
     static func decode(retained text: String) -> Self? {
@@ -65,12 +83,16 @@ struct ExportFailureReport: Decodable, Sendable {
 
     var chats: [ExportChatProblem] {
         var seen = Set<String>()
-        return (exportQuality?.issues ?? []).flatMap(\.affectedChats)
+        let storageChats = storageProblem?.threadKey.map {
+            [ExportChatProblem(threadKey: $0, chatTitle: storageProblem?.chatTitle, reason: "attachment-storage-problem")]
+        } ?? []
+        return ((exportQuality?.issues ?? []).flatMap(\.affectedChats) + storageChats)
             .filter { seen.insert($0.id).inserted }
     }
 
     var summary: String {
-        chats.isEmpty ? (error ?? "Export failed.") : "Export failed: " + chats.map(\.title).joined(separator: ", ")
+        if storageProblem != nil { return error ?? "Export failed because of an attachment storage problem." }
+        return chats.isEmpty ? (error ?? "Export failed.") : "Export failed: " + chats.map(\.title).joined(separator: ", ")
     }
 }
 

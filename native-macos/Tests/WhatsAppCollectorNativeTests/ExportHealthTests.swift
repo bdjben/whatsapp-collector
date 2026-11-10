@@ -3,6 +3,15 @@ import XCTest
 @testable import WhatsAppCollectorNative
 
 final class ExportHealthTests: XCTestCase {
+    func testLoginActionUsesStructuredFailureNotErrorText() throws {
+        let login = try XCTUnwrap(ExportFailureReport.decode(retained:
+            #"{"error":"Sign in required","loginRequired":true}"#))
+        XCTAssertEqual(login.loginRequired, true)
+        let old = try XCTUnwrap(ExportFailureReport.decode(retained:
+            #"{"error":"WhatsApp Web is not logged in"}"#))
+        XCTAssertNil(old.loginRequired)
+    }
+
     func testFailureNamesChatsFromAllQualityReportFormats() throws {
         let report = try XCTUnwrap(ExportFailureReport.decode(retained: """
         {"exportQuality":{"ok":false,"issues":[

@@ -32,6 +32,7 @@ def prepare(monkeypatch, tmp_path, flags=(), conflict=False, remaining=False, la
         def wait_until_page_targets_exist(self, **kwargs): return []
         def wait_until_target_url_exists(self, **kwargs): return []
         def place_window(self, **kwargs): return {'windowId': 1}
+        def create_background_target_window(self, url): pass
     monkeypatch.setattr(launcher, 'ChromeDevToolsBridge', Bridge)
     def terminate(profile, **kwargs):
         calls.append(('terminate', profile, kwargs))
@@ -87,3 +88,74 @@ def test_failed_relaunch_is_not_retried(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match='launch failed'):
         ensure(tmp_path)
     assert [c[0] for c in calls] == ['terminate', 'launch']
+
+
+@pytest.mark.parametrize("foreground", [False, True])
+@pytest.mark.parametrize("scenario", ["cold", "reuse", "stale", "upgrade-flags"])
+def test_foreground_requires_explicit_request_on_every_launch_path(monkeypatch, tmp_path, foreground, scenario):
+    prepare(monkeypatch, tmp_path, flags=() if scenario == "upgrade-flags" else launcher.BACKGROUND_EXPORT_FLAGS)
+    events = []
+
+    class Bridge:
+        def __init__(self, **kwargs):
+            self.probes = 0
+
+        def wait_until_ready(self, **kwargs):
+            self.probes += 1
+            if scenario == "cold" and self.probes == 1:
+                raise RuntimeError("Not running")
+
+        def wait_until_page_targets_exist(self, **kwargs):
+            if scenario == "stale" and self.probes == 1:
+                raise RuntimeError("No pages")
+
+        def wait_until_target_url_exists(self, **kwargs): pass
+
+        def create_background_target_window(self, url):
+            events.append(("create-background", url))
+
+        def place_window(self, **kwargs):
+            events.append(("place", kwargs["restore"]))
+            return {"windowId": 1}
+
+        def activate_target_url(self): events.append(("activate", True))
+
+        def wait_until_whatsapp_ready(self, **kwargs):
+            events.append(("readiness", True))
+            return {"ready": True}
+
+    monkeypatch.setattr(launcher, "ChromeDevToolsBridge", Bridge)
+    monkeypatch.setattr(launcher, "_foreground_chrome_profile",
+        lambda profile, port: events.append(("foreground-process", (profile, port))))
+    result = launcher.ensure_dedicated_whatsapp_window(profile_dir=tmp_path, debug_port=19226,
+        foreground=foreground, delay_seconds=0, settle_seconds=0, wait_attempts=1)
+    assert result["launched"] == (scenario != "reuse")
+    assert result["foregroundRequested"] == foreground
+    expected = [("create-background", launcher.DEFAULT_TARGET_URL)] if scenario != "reuse" else []
+    expected += [("place", foreground)]
+    if foreground:
+        expected += [("activate", True), ("foreground-process", (tmp_path, 19226))]
+    assert events == expected + [("readiness", True)]
+
+
+@pytest.mark.parametrize("pids", [[], [101, 102]])
+def test_explicit_foreground_refuses_ambiguous_process(monkeypatch, tmp_path, pids):
+    monkeypatch.setattr(launcher, "chrome_profile_process_ids", lambda *args, **kwargs: pids)
+    monkeypatch.setattr(launcher.subprocess, "run", lambda *args, **kwargs: pytest.fail("Must not activate"))
+    with pytest.raises(RuntimeError, match="refusing to activate another profile"):
+        launcher._foreground_chrome_profile(tmp_path, 19226)
+
+
+def test_explicit_foreground_uses_only_exact_profile_port_pid(monkeypatch, tmp_path):
+    calls = []
+
+    def pids(profile, *, debug_port):
+        assert profile == tmp_path and debug_port == 19226
+        return [101]
+
+    monkeypatch.setattr(launcher, "chrome_profile_process_ids", pids)
+    monkeypatch.setattr(launcher.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
+    launcher._foreground_chrome_profile(tmp_path, 19226)
+    assert len(calls) == 1
+    assert calls[0][0][0] == ["osascript", "-l", "JavaScript"]
+    assert "runningApplicationWithProcessIdentifier(101)" in calls[0][1]["input"]
