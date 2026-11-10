@@ -269,7 +269,7 @@ def test_devtools_bridge_evaluates_and_clicks_via_native_websocket_without_node(
 
 @pytest.mark.parametrize(
     "remote_value,message",
-    [(None, "No matching visible WhatsApp target"), ({"x": "invalid", "y": 1}, "invalid position")],
+    [(None, "requested WhatsApp interface element was not found"), ({"x": "invalid", "y": 1}, "invalid position")],
 )
 def test_missing_or_invalid_click_target_has_actionable_error(monkeypatch, remote_value, message):
     bridge = ChromeDevToolsBridge(port=19220)

@@ -5,6 +5,7 @@ struct ExportPreviewView: View {
     @Environment(\.appActions) private var appActions
     @State private var searchText = ""
     @State private var warningDetailsExpanded = false
+    @State private var showSourceDetails = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -13,10 +14,15 @@ struct ExportPreviewView: View {
                 .padding(.bottom, 12)
             Divider()
 
+            attemptStatus
+                .padding(.horizontal, 22)
+                .padding(.vertical, 10)
+            Divider()
+
             if let export = store.export {
                 VStack(spacing: 0) {
-                    if let warnings = export.exportWarnings, warnings.isEmpty == false {
-                        warningPanel(warnings)
+                    if (export.exportWarnings?.isEmpty == false) {
+                        warningPanel(export)
                             .padding(.horizontal, 22)
                             .padding(.vertical, 10)
                         Divider()
@@ -42,7 +48,7 @@ struct ExportPreviewView: View {
         VStack(alignment: .leading, spacing: 16) {
             SectionHeader(
                 title: "Export Preview",
-                subtitle: "Inspect the AI-agent-ingestible JSON without changing the export format.",
+                subtitle: "Saved export: \(DisplayFormatters.date(store.export?.exportedAt))",
                 systemImage: "doc.text.magnifyingglass"
             )
 
@@ -78,62 +84,98 @@ struct ExportPreviewView: View {
         }
     }
 
-    private func warningPanel(_ warnings: [String]) -> some View {
-        let skipped = messageSkippedCount(warnings)
-        return Group {
-            if skipped > 0 {
-                VStack(alignment: .leading, spacing: 8) {
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.16)) {
-                            warningDetailsExpanded.toggle()
-                        }
-                    } label: {
-                        HStack(spacing: 8) {
-                            Label("Messages Skipped: \(skipped) - click for details", systemImage: "exclamationmark.triangle")
-                                .font(.callout.weight(.semibold))
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
-                                .rotationEffect(.degrees(warningDetailsExpanded ? 90 : 0))
-                        }
-                        .foregroundStyle(.orange)
+    private var attemptStatus: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let attempt = store.latestExportAttempt {
+                let failed = attempt.outcome == .failed || attempt.outcome == .interrupted
+                HStack(alignment: .top) {
+                    Label("Latest attempt: \(attempt.outcome.rawValue.capitalized)",
+                          systemImage: failed ? "exclamationmark.triangle" : attempt.outcome == .running ? "arrow.triangle.2.circlepath" : "checkmark.circle")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(failed ? Color.red : Color.primary)
+                    Text(DisplayFormatters.date(DisplayFormatters.isoString(from: attempt.completedAt ?? attempt.startedAt)))
+                        .font(.callout).foregroundStyle(.secondary)
+                    if let completed = attempt.completedAt {
+                        let seconds = max(0, Int(completed.timeIntervalSince(attempt.startedAt)))
+                        Text("\(seconds / 60)m \(seconds % 60)s").font(.caption).foregroundStyle(.secondary)
                     }
-                    .buttonStyle(.plain)
-
-                    if warningDetailsExpanded {
-                        Text("WhatsApp Collector skipped \(skipped) chat row\(skipped == 1 ? "" : "s") because it could identify the chat but could not capture any recent message text or attachment metadata for that row during this export.")
-                            .font(.callout)
-                        Text("This can happen when WhatsApp Web has not loaded that conversation, when rows are media-only/system/encrypted in a way the browser does not expose, or when the collector cannot safely open the chat during the current run. The export keeps the last successful file protection behavior and records this warning so downstream agents do not mistake missing rows for new messages.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                        if warnings.count > 1 {
-                            ScrollView {
-                                Text(warningDetailsText(warnings))
-                                    .font(.system(.caption, design: .monospaced))
-                                    .textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .frame(maxHeight: 160)
-                            .padding(8)
-                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        }
+                    Spacer()
+                    if failed {
+                        Button { Task { await store.runExport() } } label: {
+                            Label("Retry Export", systemImage: "arrow.clockwise")
+                        }.disabled(store.isBusy)
                     }
+                }
+                if failed {
+                    Text("Saved export was not replaced.").font(.callout)
+                    if let report = store.latestExportFailure, !report.chats.isEmpty {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(report.chats) { chat in
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Button {
+                                            if let match = store.export?.threads.first(where: { $0.id == chat.id || $0.title == chat.title }) {
+                                                store.selectedThreadID = match.id
+                                            }
+                                        } label: {
+                                            Label(chat.title, systemImage: "bubble.left.and.exclamationmark.bubble.right")
+                                        }
+                                        .buttonStyle(.link)
+                                        .help("Select this chat in the saved export, when available")
+                                        Text(chat.explanation).font(.callout)
+                                        if let detail = chat.sourceDiagnostics?.issues?.compactMap(\.detail).first {
+                                            DisclosureGroup("Technical details") {
+                                                Text(detail).font(.caption).textSelection(.enabled)
+                                            }
+                                        }
+                                    }
+                                }
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                        }.frame(maxHeight: report.chats.count > 1 ? 130 : 80)
+                    } else {
+                        Text(attempt.failureMessage ?? "The attempt was interrupted.")
+                            .font(.caption).textSelection(.enabled)
+                    }
+                }
+                if attempt.outcome == .running, let progress = store.displayedExportProgress {
+                    Text(progress.summary).font(.caption).foregroundStyle(.secondary)
                 }
             } else {
-                Label {
-                    Text(warnings.prefix(3).joined(separator: "  "))
-                        .lineLimit(2)
-                        .textSelection(.enabled)
-                } icon: {
-                    Image(systemName: "exclamationmark.triangle")
-                }
-                .font(.callout)
-                .foregroundStyle(.orange)
+                Text("No recorded export attempt").font(.callout).foregroundStyle(.secondary)
             }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func warningPanel(_ export: WhatsAppExport) -> some View {
+        let skipped = export.exportDiagnostics?.skippedThreads ?? []
+        let missingMedia = export.attachmentSummary?.notDownloaded ?? 0
+        return DisclosureGroup(isExpanded: $warningDetailsExpanded) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(skipped) { chat in
+                        Label("\(chat.title): \(chat.explanation)", systemImage: chat.reason == "locked-chat" ? "lock" : "exclamationmark.triangle")
+                            .font(.callout)
+                    }
+                    if missingMedia > 0 {
+                        ForEach(export.threads.filter { thread in
+                            thread.previewMessages.contains { ($0.attachments ?? []).contains { $0.status != "downloaded" } }
+                        }) { thread in
+                            Button {
+                                store.selectedThreadID = thread.id
+                            } label: {
+                                Label("\(thread.title): attachment downloads incomplete", systemImage: "paperclip")
+                            }.buttonStyle(.link)
+                        }
+                    }
+                    if skipped.isEmpty && missingMedia == 0 {
+                        Text((export.exportWarnings ?? []).joined(separator: "\n")).font(.caption)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+            }.frame(maxHeight: 120)
+        } label: {
+            Text("Saved export notes: \(skipped.count) \(skipped.count == 1 ? "chat" : "chats") not collected, \(missingMedia) \(missingMedia == 1 ? "attachment" : "attachments") not downloaded")
+                .font(.callout).foregroundStyle(.secondary)
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private func threadList(_ threads: [ExportThread]) -> some View {
@@ -144,9 +186,16 @@ struct ExportPreviewView: View {
                         Text(thread.title)
                             .font(.headline)
                             .lineLimit(1)
-                        if thread.requiresResponse == true {
-                            Image(systemName: "exclamationmark.circle.fill")
+                        if let reason = thread.followUpReason {
+                            Image(systemName: "flag")
+                                .foregroundStyle(.secondary)
+                                .help("Follow-up: \(reason). Not an export error.")
+                                .accessibilityLabel("Follow-up: \(reason)")
+                        }
+                        if !thread.sourceWarnings.isEmpty {
+                            Image(systemName: "exclamationmark.triangle")
                                 .foregroundStyle(.orange)
+                                .help("Unresolved source warning in the saved export")
                         }
                     }
                     Text(thread.labelLine)
@@ -183,6 +232,9 @@ struct ExportPreviewView: View {
                             if thread.unread == true {
                                 Label("Unread", systemImage: "circle.fill")
                             }
+                            if let reason = thread.followUpReason {
+                                Label("Follow-up: \(reason)", systemImage: "flag")
+                            }
                         }
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -210,16 +262,28 @@ struct ExportPreviewView: View {
                     if let diagnostics = thread.sourceDiagnostics,
                        let issues = diagnostics.issues,
                        issues.isEmpty == false {
-                        GroupBox("Source Diagnostics") {
+                        GroupBox("Collection Status") {
                             VStack(alignment: .leading, spacing: 8) {
-                                Text(sourceDiagnosticSummary(diagnostics))
-                                    .font(.callout)
-                                    .foregroundStyle(.secondary)
-                                ForEach(issues) { issue in
+                                if thread.confirmedEmpty {
+                                    Label("Confirmed empty: the verified conversation has no exportable messages.", systemImage: "checkmark.circle")
+                                        .font(.callout)
+                                }
+                                ForEach(thread.sourceWarnings) { issue in
                                     Label(sourceDiagnosticIssueText(issue), systemImage: "exclamationmark.triangle")
                                         .font(.caption)
                                         .foregroundStyle(.orange)
                                         .textSelection(.enabled)
+                                }
+                                if issues.contains(where: { thread.sourceIssueIsInformational($0) && $0.code != "confirmed-empty-live-chat" }) {
+                                    Label("Recovered content included in the saved export.", systemImage: "checkmark.circle")
+                                        .font(.callout).foregroundStyle(.secondary)
+                                }
+                                DisclosureGroup("Source details", isExpanded: $showSourceDetails) {
+                                    Text(sourceDiagnosticSummary(diagnostics))
+                                        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                                    ForEach(issues.filter { thread.sourceIssueIsInformational($0) }) { issue in
+                                        Text(sourceDiagnosticIssueText(issue)).font(.caption).foregroundStyle(.secondary)
+                                    }
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -230,7 +294,7 @@ struct ExportPreviewView: View {
                         VStack(alignment: .leading, spacing: 10) {
                             let messages = Array(thread.previewMessages.prefix(20))
                             if messages.isEmpty {
-                                Text("No text messages are available for this thread yet. Media-only, system, or encrypted rows may still appear in WhatsApp without readable text in the export.")
+                                Text(thread.confirmedEmpty ? "No exportable messages remain in this conversation." : "No messages were captured. See collection status for details.")
                                     .foregroundStyle(.secondary)
                                     .textSelection(.enabled)
                             }
@@ -284,12 +348,15 @@ struct ExportPreviewView: View {
         let count = thread.displayMessageCount
         if count == 1 { return "1 recent message" }
         if count > 1 { return "\(count) recent messages" }
-        return "No text messages"
+        return thread.confirmedEmpty ? "Confirmed empty" : "No captured messages"
     }
 
     private func latestMessageText(for thread: ExportThread) -> String {
+        if thread.confirmedEmpty { return "Confirmed empty: no exportable messages remain." }
+        if let latest = thread.previewMessages.first { return latest.previewText }
         let text = thread.lastMessageText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !text.isEmpty { return text }
+        if thread.previewMessages.first?.attachments?.isEmpty == false { return "Attachment message" }
         return "No text message available for the latest row."
     }
 
@@ -299,29 +366,12 @@ struct ExportPreviewView: View {
     }
 
     private func messageText(for message: ExportMessage) -> String {
-        let text = message.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !text.isEmpty { return text }
-        return "Text unavailable for this message."
+        message.previewText
     }
 
     private func messageTextIsAvailable(for message: ExportMessage) -> Bool {
         let text = message.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return !text.isEmpty && message.textAvailable != false
-    }
-
-    private func messageSkippedCount(_ warnings: [String]) -> Int {
-        for warning in warnings {
-            guard warning.hasPrefix("message-capture-skipped:") else { continue }
-            let suffix = warning.split(separator: ":", maxSplits: 1).last
-            if let suffix, let count = Int(suffix) {
-                return count
-            }
-        }
-        return 0
-    }
-
-    private func warningDetailsText(_ warnings: [String]) -> String {
-        warnings.joined(separator: "\n")
     }
 
     private func attachmentLine(_ attachment: ExportAttachment) -> some View {
@@ -380,7 +430,9 @@ struct ExportPreviewView: View {
         case "matching-message-timestamp-conflict":
             return "Matching message \(issue.messageId ?? "") had conflicting timestamps."
         case "matching-message-text-availability-conflict":
-            return "Matching message \(issue.messageId ?? "") had conflicting text availability."
+            return "Message text was available from only one source."
+        case "confirmed-empty-live-chat":
+            return "Live conversation identity and empty history were verified."
         case "opened-chat-check-failed":
             return "Opened-chat verification failed: \(issue.detail ?? "unknown error")"
         default:

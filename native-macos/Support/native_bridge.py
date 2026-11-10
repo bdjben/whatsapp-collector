@@ -42,6 +42,7 @@ from whatsapp_collector.export_quality import (  # noqa: E402
     validate_export_quality,
 )
 from whatsapp_collector.export_safety import protected_export, write_atomic_json  # noqa: E402
+from whatsapp_collector.capture_recovery import load_captures, recovery_key, recovery_path, retain_candidate  # noqa: E402
 from whatsapp_collector.launcher import (  # noqa: E402
     DEFAULT_DEBUG_PORT,
     DEFAULT_MARKER_TITLE,
@@ -315,7 +316,15 @@ def _run_export(cfg: dict[str, Any]) -> dict[str, Any]:
     with protected_export(cfg["output_path"]) as current_export:
         window, expected_pids = _ensure_export_window(cfg)
         window, expected_pids = _wait_for_export_readiness(cfg, window, expected_pids)
-        export = _collector(cfg).collect_dashboard_export(
+        collector = _collector(cfg)
+        try:
+            browser_epoch = collector.session.run_json("JSON.stringify(performance.timeOrigin)")
+        except (AttributeError, RuntimeError, ValueError):
+            browser_epoch = None
+        key = recovery_key(cfg, current_export.payload)
+        retained_path = recovery_path(cfg["output_path"])
+        resumable = load_captures(retained_path, key=key, browser_epoch=browser_epoch)
+        export = collector.collect_dashboard_export(
             account_label=cfg["account_label"],
             max_messages=cfg["max_messages"],
             max_all_chats=cfg["max_all_chats"],
@@ -326,9 +335,19 @@ def _run_export(cfg: dict[str, Any]) -> dict[str, Any]:
             download_attachments=cfg["download_attachments"],
             max_total_attachment_bytes=cfg["attachment_storage_limit_bytes"],
             previous_export=current_export.payload,
+            resume_captures=resumable,
         )
         progress("validating", "Checking the collected candidate against export quality and retained history before saving.")
-        validate_export_quality(export, previous_export=current_export.payload)
+        try:
+            validate_export_quality(export, previous_export=current_export.payload)
+        except ExportQualityError as exc:
+            try:
+                retain_candidate(retained_path, key=key, browser_epoch=browser_epoch,
+                                 candidate=export, captures=getattr(collector, "capture_checkpoint", []))
+                exc.rejected_candidate_path = str(retained_path)
+            except OSError as retention_error:
+                exc.report["candidateRetentionError"] = str(retention_error)
+            raise
         progress("writing", "Saving the validated export atomically; the new export is not committed yet.")
         write_atomic_json(export, cfg["output_path"], known_current=current_export)
         summary = _read_export_summary(cfg["output_path"], parse_json=False)
@@ -485,6 +504,7 @@ def main(argv: list[str]) -> int:
         }
         if isinstance(exc, ExportQualityError):
             error_payload["exportQuality"] = exc.report
+            error_payload["rejectedCandidatePath"] = getattr(exc, "rejected_candidate_path", None)
         export_recovery = getattr(exc, "export_recovery", None)
         if isinstance(export_recovery, dict):
             error_payload["exportRecovery"] = export_recovery

@@ -57,16 +57,16 @@ class StubSession:
         if '"label-association"' in script:
             return [
                 {
-                    "key": ["1", "141394635137028@lid", "jid"],
-                    "value": {"labelId": "1", "associationId": "141394635137028@lid", "type": "jid"},
+                    "key": ["1", "111111111111111@lid", "jid"],
+                    "value": {"labelId": "1", "associationId": "111111111111111@lid", "type": "jid"},
                 },
                 {
-                    "key": ["2", "141394635137028@lid", "jid"],
-                    "value": {"labelId": "2", "associationId": "141394635137028@lid", "type": "jid"},
+                    "key": ["2", "111111111111111@lid", "jid"],
+                    "value": {"labelId": "2", "associationId": "111111111111111@lid", "type": "jid"},
                 },
                 {
-                    "key": ["2", "245530529685647@lid", "jid"],
-                    "value": {"labelId": "2", "associationId": "245530529685647@lid", "type": "jid"},
+                    "key": ["2", "222222222222222@lid", "jid"],
+                    "value": {"labelId": "2", "associationId": "222222222222222@lid", "type": "jid"},
                 },
                 {
                     "key": ["3", "999999@lid", "jid"],
@@ -76,19 +76,19 @@ class StubSession:
         if '"contact"' in script:
             return [
                 {
-                    "key": "141394635137028@lid",
+                    "key": "111111111111111@lid",
                     "value": {
-                        "id": "141394635137028@lid",
+                        "id": "111111111111111@lid",
                         "name": "Example Contact",
-                        "phoneNumber": "12017046817@c.us",
+                        "phoneNumber": "15555550101@c.us",
                     },
                 },
                 {
-                    "key": "245530529685647@lid",
+                    "key": "222222222222222@lid",
                     "value": {
-                        "id": "245530529685647@lid",
+                        "id": "222222222222222@lid",
                         "name": "Example Lead",
-                        "phoneNumber": "16103895325@c.us",
+                        "phoneNumber": "15555550102@c.us",
                     },
                 },
                 {
@@ -113,21 +113,21 @@ class StubSession:
         if '"chat"' in script:
             return [
                 {
-                    "key": "141394635137028@lid",
+                    "key": "111111111111111@lid",
                     "value": {
-                        "id": "141394635137028@lid",
+                        "id": "111111111111111@lid",
                         "t": 1776500000,
                         "unreadCount": 0,
-                        "historyChatId": "12017046817@c.us",
+                        "historyChatId": "15555550101@c.us",
                     },
                 },
                 {
-                    "key": "245530529685647@lid",
+                    "key": "222222222222222@lid",
                     "value": {
-                        "id": "245530529685647@lid",
+                        "id": "222222222222222@lid",
                         "t": 1776400000,
                         "unreadCount": 7,
-                        "historyChatId": "16103895325@c.us",
+                        "historyChatId": "15555550102@c.us",
                     },
                 },
                 {
@@ -152,24 +152,24 @@ class StubSession:
         if '"message"' in script:
             return [
                 {
-                    "key": "false_141394635137028@lid_msg3",
-                    "value": {"id": "false_141394635137028@lid_msg3", "t": 1776500000, "type": "chat", "from": "12017046817@c.us"},
+                    "key": "false_111111111111111@lid_msg3",
+                    "value": {"id": "false_111111111111111@lid_msg3", "t": 1776500000, "type": "chat", "from": "15555550101@c.us"},
                 },
                 {
-                    "key": "true_141394635137028@lid_msg2",
-                    "value": {"id": "true_141394635137028@lid_msg2", "t": 1776499900, "type": "chat", "from": "12122037591@c.us", "body": "Follow-up sent"},
+                    "key": "true_111111111111111@lid_msg2",
+                    "value": {"id": "true_111111111111111@lid_msg2", "t": 1776499900, "type": "chat", "from": "15555550103@c.us", "body": "Follow-up sent"},
                 },
                 {
-                    "key": "false_141394635137028@lid_msg1",
-                    "value": {"id": "false_141394635137028@lid_msg1", "t": 1776499800, "type": "unknown", "from": "12017046817@c.us"},
+                    "key": "false_111111111111111@lid_msg1",
+                    "value": {"id": "false_111111111111111@lid_msg1", "t": 1776499800, "type": "unknown", "from": "15555550101@c.us"},
                 },
                 {
-                    "key": "false_245530529685647@lid_msg2",
-                    "value": {"id": "false_245530529685647@lid_msg2", "t": 1776400000, "type": "chat", "from": "16103895325@c.us"},
+                    "key": "false_222222222222222@lid_msg2",
+                    "value": {"id": "false_222222222222222@lid_msg2", "t": 1776400000, "type": "chat", "from": "15555550102@c.us"},
                 },
                 {
-                    "key": "true_245530529685647@lid_msg1",
-                    "value": {"id": "true_245530529685647@lid_msg1", "t": 1776399900, "type": "chat", "from": "12122037591@c.us", "body": "Sounds good"},
+                    "key": "true_222222222222222@lid_msg1",
+                    "value": {"id": "true_222222222222222@lid_msg1", "t": 1776399900, "type": "chat", "from": "15555550103@c.us", "body": "Sounds good"},
                 },
                 {
                     "key": "false_999999@lid_msg1",
@@ -181,7 +181,7 @@ class StubSession:
                 },
                 {
                     "key": "true_777777@lid_msg1",
-                    "value": {"id": "true_777777@lid_msg1", "t": 1776449900, "type": "chat", "from": "12122037591@c.us", "body": "Happy to chat"},
+                    "value": {"id": "true_777777@lid_msg1", "t": 1776449900, "type": "chat", "from": "15555550103@c.us", "body": "Happy to chat"},
                 },
             ]
         raise AssertionError(f"Unexpected async script: {script[:200]}")
@@ -327,44 +327,44 @@ def test_collect_chat_list_prefers_structured_dom_rows_for_all_view_order() -> N
                             "unread_flag": False,
                         },
                         {
-                            "chat_name": "Izaac Fouladi",
+                            "chat_name": "Example Colleague",
                             "timestamp_label": "Thursday",
                             "preview": "Let’s catch up tomorrow",
                             "unread_count": 2,
                             "unread_flag": True,
                         },
                         {
-                            "chat_name": "CotC Community!",
+                            "chat_name": "Example Community",
                             "timestamp_label": "8:09 PM",
-                            "preview": "Rabbi Eli : Stepping Up To The Plate There is no greater act than putting your own life on the line to protect human life.",
+                            "preview": "Organizer : The next example community meeting is on Thursday.",
                             "unread_count": 2,
                             "unread_flag": True,
                         },
                         {
-                            "chat_name": "Gilad Bentov",
+                            "chat_name": "Community Member",
                             "timestamp_label": "7:09 PM",
-                            "preview": "I have to play it by ear I might not have the capacity to attend the commemoration events after all",
+                            "preview": "I will confirm whether I can attend the example event.",
                             "unread_count": 1,
                             "unread_flag": True,
                         },
                         {
-                            "chat_name": "Ariella Charny",
+                            "chat_name": "Project Contact",
                             "timestamp_label": "5:50 PM",
                             "preview": "Great!",
                             "unread_count": 0,
                             "unread_flag": False,
                         },
                         {
-                            "chat_name": "Ari Goldman",
+                            "chat_name": "Meeting Contact",
                             "timestamp_label": "5:37 PM",
-                            "preview": "Hi Ari! How are you?",
+                            "preview": "Hello, are you available?",
                             "unread_count": 0,
                             "unread_flag": False,
                         },
                         {
-                            "chat_name": "+972 58-699-1569",
+                            "chat_name": "+1 555-555-0105",
                             "timestamp_label": "4:45 PM",
-                            "preview": "An expensive strawberry cheesecake has been delivered to your front door. Please retrieve it and refrigerate it before it spoils!",
+                            "preview": "An example parcel has been delivered to your front door. Please retrieve it and refrigerate it before it spoils!",
                             "unread_count": 0,
                             "unread_flag": False,
                         },
@@ -380,14 +380,14 @@ def test_collect_chat_list_prefers_structured_dom_rows_for_all_view_order() -> N
     assert [row.chat_name for row in rows[:8]] == [
         "Example Contact",
         "Example Lead",
-        "Izaac Fouladi",
-        "CotC Community!",
-        "Gilad Bentov",
-        "Ariella Charny",
-        "Ari Goldman",
-        "+972 58-699-1569",
+        "Example Colleague",
+        "Example Community",
+        "Community Member",
+        "Project Contact",
+        "Meeting Contact",
+        "+1 555-555-0105",
     ]
-    assert rows[7].preview.startswith("An expensive strawberry cheesecake")
+    assert rows[7].preview.startswith("An example parcel")
     assert rows[3].unread_count == 2
     assert rows[4].unread_count == 1
 
@@ -399,9 +399,9 @@ def test_collect_labeled_threads_joins_indexeddb_with_visible_chat_list_and_excl
 
     assert threads == [
         IndexedDBThread(
-            jid="141394635137028@lid",
+            jid="111111111111111@lid",
             display_name="Example Contact",
-            phone_or_history_id="12017046817@c.us",
+            phone_or_history_id="15555550101@c.us",
             labels=["Follow Up", "Important"],
             last_message_timestamp=1776500000,
             unread_count=0,
@@ -410,7 +410,7 @@ def test_collect_labeled_threads_joins_indexeddb_with_visible_chat_list_and_excl
             visible_in_chat_list=True,
             recent_messages=[
                 RecentMessage(
-                    message_id="true_141394635137028@lid_msg2",
+                    message_id="true_111111111111111@lid_msg2",
                     timestamp=1776499900,
                     iso_timestamp="2026-04-18T08:11:40+00:00",
                     direction="outbound",
@@ -423,9 +423,9 @@ def test_collect_labeled_threads_joins_indexeddb_with_visible_chat_list_and_excl
             ],
         ),
         IndexedDBThread(
-            jid="245530529685647@lid",
+            jid="222222222222222@lid",
             display_name="Example Lead",
-            phone_or_history_id="16103895325@c.us",
+            phone_or_history_id="15555550102@c.us",
             labels=["Follow Up"],
             last_message_timestamp=1776400000,
             unread_count=7,
@@ -434,7 +434,7 @@ def test_collect_labeled_threads_joins_indexeddb_with_visible_chat_list_and_excl
             visible_in_chat_list=True,
             recent_messages=[
                 RecentMessage(
-                    message_id="true_245530529685647@lid_msg1",
+                    message_id="true_222222222222222@lid_msg1",
                     timestamp=1776399900,
                     iso_timestamp="2026-04-17T04:25:00+00:00",
                     direction="outbound",
@@ -454,7 +454,7 @@ def test_collect_labeled_threads_enforces_allowlist_and_lookback_cap() -> None:
 
     threads = collector.collect_labeled_threads(allow_labels=["Important"], max_messages=50)
 
-    assert [thread.jid for thread in threads] == ["141394635137028@lid"]
+    assert [thread.jid for thread in threads] == ["111111111111111@lid"]
     assert len(threads[0].recent_messages) == 1
 
 
@@ -476,8 +476,8 @@ def test_collect_labeled_threads_uses_keyed_metadata_and_bounded_message_queries
     contact_script = next(script for script in session.async_scripts if 'const keys =' in script and '"contact"' in script)
     message_script = next(script for script in session.async_scripts if 'messageRangeIndex' in script)
     assert '.get(key)' in contact_script
-    assert '141394635137028@lid' in contact_script
-    assert '245530529685647@lid' in contact_script
+    assert '111111111111111@lid' in contact_script
+    assert '222222222222222@lid' in contact_script
     assert '999999@lid' not in contact_script
     assert 'IDBKeyRange.bound(lower, upper)' in message_script
     assert 'source.openCursor' in message_script
@@ -952,8 +952,8 @@ def test_dashboard_export_refreshes_stale_labeled_visible_thread_from_opened_cha
         def collect_labeled_threads(self, *args, **kwargs) -> list[IndexedDBThread]:
             return [
                 IndexedDBThread(
-                    jid="ana@lid",
-                    display_name="Ana Rajko",
+                    jid="refresh@lid",
+                    display_name="Refresh Contact",
                     phone_or_history_id=None,
                     labels=["Follow Up"],
                     last_message_timestamp=1782327000,
@@ -967,7 +967,7 @@ def test_dashboard_export_refreshes_stale_labeled_visible_thread_from_opened_cha
                             timestamp=1776500000,
                             iso_timestamp="2026-04-18T08:13:20+00:00",
                             direction="inbound",
-                            sender="Ana Rajko",
+                            sender="Refresh Contact",
                             text=None,
                             text_available=False,
                             message_type="image",
@@ -994,7 +994,7 @@ def test_dashboard_export_refreshes_stale_labeled_visible_thread_from_opened_cha
                     "messageId": "new-visible",
                     "timestamp": "2026-06-24T18:50:00+00:00",
                     "direction": "inbound",
-                    "sender": "Ana Rajko",
+                    "sender": "Refresh Contact",
                     "text": "Newest visible text",
                     "textAvailable": True,
                     "messageType": "chat",
@@ -1019,7 +1019,7 @@ def test_dashboard_export_refreshes_stale_labeled_visible_thread_from_opened_cha
     payload = collector.collect_dashboard_export(allow_labels=["Follow Up"], max_messages=15)
 
     thread = payload["threads"][0]
-    assert collector.opened_chats == ["Ana Rajko"]
+    assert collector.opened_chats == ["Refresh Contact"]
     assert thread["lastMessageAt"] == "2026-06-24T18:50:00+00:00"
     assert thread["lastMessageText"] == "Newest visible text"
     assert [message["messageId"] for message in thread["recentMessages"]] == ["new-visible", "old-media"]
@@ -1221,7 +1221,7 @@ def test_collect_events_projects_status_importance_and_recent_message_counts() -
     assert events == [
         NormalizedEvent(
             source="whatsapp_business",
-            external_thread_id="141394635137028@lid",
+            external_thread_id="111111111111111@lid",
             display_name="Example Contact",
             labels=["Follow Up", "Important"],
             summary="Need to push to beginning of may",
@@ -1236,7 +1236,7 @@ def test_collect_events_projects_status_importance_and_recent_message_counts() -
         ),
         NormalizedEvent(
             source="whatsapp_business",
-            external_thread_id="245530529685647@lid",
+            external_thread_id="222222222222222@lid",
             display_name="Example Lead",
             labels=["Follow Up"],
             summary="Haha i hear you",
@@ -1295,10 +1295,10 @@ def test_collect_dashboard_export_emits_labeled_plus_recent_default_view_threads
     assert sorted(({key: value for key, value in thread.items() if key not in {"sourceDiagnostics", "sourceViews"}}
                    for thread in payload["threads"]), key=lambda thread: thread["chatTitle"]) == [
         {
-            "threadKey": "141394635137028@lid",
+            "threadKey": "111111111111111@lid",
             "chatTitle": "Example Contact",
             "chatType": "direct",
-            "participants": [{"name": "Example Contact", "phone": "12017046817@c.us"}],
+            "participants": [{"name": "Example Contact", "phone": "15555550101@c.us"}],
             "labelsRaw": ["Follow Up", "Important"],
             "labelsNormalized": ["follow-up", "important"],
             "unread": False,
@@ -1310,7 +1310,7 @@ def test_collect_dashboard_export_emits_labeled_plus_recent_default_view_threads
             "lastMessageText": "Follow-up sent",
             "recentMessages": [
                 {
-                    "messageId": "true_141394635137028@lid_msg2",
+                    "messageId": "true_111111111111111@lid_msg2",
                     "timestamp": "2026-04-18T08:11:40+00:00",
                     "direction": "outbound",
                     "sender": "Me",
@@ -1323,7 +1323,7 @@ def test_collect_dashboard_export_emits_labeled_plus_recent_default_view_threads
             ],
             "messages": [
                 {
-                    "messageId": "true_141394635137028@lid_msg2",
+                    "messageId": "true_111111111111111@lid_msg2",
                     "timestamp": "2026-04-18T08:11:40+00:00",
                     "direction": "outbound",
                     "sender": "Me",
@@ -1336,10 +1336,10 @@ def test_collect_dashboard_export_emits_labeled_plus_recent_default_view_threads
             ],
         },
         {
-            "threadKey": "245530529685647@lid",
+            "threadKey": "222222222222222@lid",
             "chatTitle": "Example Lead",
             "chatType": "direct",
-            "participants": [{"name": "Example Lead", "phone": "16103895325@c.us"}],
+            "participants": [{"name": "Example Lead", "phone": "15555550102@c.us"}],
             "labelsRaw": ["Follow Up"],
             "labelsNormalized": ["follow-up"],
             "unread": True,
@@ -1351,7 +1351,7 @@ def test_collect_dashboard_export_emits_labeled_plus_recent_default_view_threads
             "lastMessageText": "Sounds good",
             "recentMessages": [
                 {
-                    "messageId": "true_245530529685647@lid_msg1",
+                    "messageId": "true_222222222222222@lid_msg1",
                     "timestamp": "2026-04-17T04:25:00+00:00",
                     "direction": "outbound",
                     "sender": "Me",
@@ -1364,7 +1364,7 @@ def test_collect_dashboard_export_emits_labeled_plus_recent_default_view_threads
             ],
             "messages": [
                 {
-                    "messageId": "true_245530529685647@lid_msg1",
+                    "messageId": "true_222222222222222@lid_msg1",
                     "timestamp": "2026-04-17T04:25:00+00:00",
                     "direction": "outbound",
                     "sender": "Me",
@@ -1462,9 +1462,9 @@ def test_collect_dashboard_export_opens_chat_and_uses_true_message_ids_when_inde
                 return {
                     "rows": [
                         {
-                            "chat_name": "+972 58-699-1569",
+                            "chat_name": "+1 555-555-0105",
                             "timestamp_label": "Today",
-                            "preview": "An expensive strawberry cheesecake has been delivered to your front door.",
+                            "preview": "An example parcel has been delivered to your front door.",
                             "unread_count": 0,
                             "unread_flag": False,
                         },
@@ -1473,15 +1473,15 @@ def test_collect_dashboard_export_opens_chat_and_uses_true_message_ids_when_inde
                 }
             if "OPENED_CHAT_RECENT_MESSAGES" in js:
                 return {
-                    "openedChatTitle": "+972 58-699-1569",
+                    "openedChatTitle": "+1 555-555-0105",
                     "messages": [
                         {
-                            "id": "false_49294027550955@lid_3EB0REALMSG",
+                            "id": "false_444444444444444@lid_3EB0REALMSG",
                             "t": 1776693900,
                             "type": "chat",
                             "subtype": None,
-                            "from": "972586991569@c.us",
-                            "body": "An expensive strawberry cheesecake has been delivered to your front door.",
+                            "from": "15555550105@c.us",
+                            "body": "An example parcel has been delivered to your front door.",
                         }
                     ],
                 }
@@ -1504,20 +1504,20 @@ def test_collect_dashboard_export_opens_chat_and_uses_true_message_ids_when_inde
             if '"contact"' in script:
                 return [
                     {
-                        "key": "972586991569@s.whatsapp.net",
+                        "key": "15555550105@s.whatsapp.net",
                         "value": {
-                            "id": "972586991569@s.whatsapp.net",
-                            "phoneNumber": "972586991569@c.us",
+                            "id": "15555550105@s.whatsapp.net",
+                            "phoneNumber": "15555550105@c.us",
                         },
                     }
                 ]
             if '"chat"' in script:
                 return [
                     {
-                        "key": "49294027550955@lid",
+                        "key": "444444444444444@lid",
                         "value": {
-                            "id": "49294027550955@lid",
-                            "historyChatId": "972586991569@c.us",
+                            "id": "444444444444444@lid",
+                            "historyChatId": "15555550105@c.us",
                             "t": 1776693263,
                             "unreadCount": 0,
                         },
@@ -1526,8 +1526,8 @@ def test_collect_dashboard_export_opens_chat_and_uses_true_message_ids_when_inde
             if '"message"' in script:
                 return [
                     {
-                        "key": "false_49294027550955@lid_3EB014F2B7F4065B433F",
-                        "value": {"id": "false_49294027550955@lid_3EB014F2B7F4065B433F", "t": 1776693263, "type": "e2e_notification", "subtype": "encrypt", "from": "49294027550955@lid"},
+                        "key": "false_444444444444444@lid_3EB0EXAMPLECONTROL",
+                        "value": {"id": "false_444444444444444@lid_3EB0EXAMPLECONTROL", "t": 1776693263, "type": "e2e_notification", "subtype": "encrypt", "from": "444444444444444@lid"},
                     }
                 ]
             raise AssertionError(f"Unexpected async script: {script[:200]}")
@@ -1539,11 +1539,11 @@ def test_collect_dashboard_export_opens_chat_and_uses_true_message_ids_when_inde
 
     unlabeled = [thread for thread in payload["threads"] if thread["labelsRaw"] == ["Unlabeled"]]
     assert len(unlabeled) == 1
-    assert unlabeled[0]["chatTitle"] == "+972 58-699-1569"
-    assert unlabeled[0]["threadKey"] == "49294027550955@lid"
-    assert unlabeled[0]["recentMessages"][0]["messageId"] == "false_49294027550955@lid_3EB0REALMSG"
+    assert unlabeled[0]["chatTitle"] == "+1 555-555-0105"
+    assert unlabeled[0]["threadKey"] == "444444444444444@lid"
+    assert unlabeled[0]["recentMessages"][0]["messageId"] == "false_444444444444444@lid_3EB0REALMSG"
     assert unlabeled[0]["recentMessages"][0]["messageType"] == "chat"
-    assert unlabeled[0]["recentMessages"][0]["text"].startswith("An expensive strawberry cheesecake")
+    assert unlabeled[0]["recentMessages"][0]["text"].startswith("An example parcel")
     assert session.clicked
 
 
@@ -1584,12 +1584,12 @@ def test_collect_dashboard_export_includes_recent_unlabeled_indexeddb_chat_absen
             if '"contact"' in script:
                 return [
                     {
-                        "key": "130266408456240@lid",
+                        "key": "333333333333333@lid",
                         "value": {
-                            "id": "130266408456240@lid",
-                            "name": "Tamar Simon",
-                            "shortName": "Tamar",
-                            "phoneNumber": "19176706824@c.us",
+                            "id": "333333333333333@lid",
+                            "name": "Recent Contact",
+                            "shortName": "Recent",
+                            "phoneNumber": "15555550104@c.us",
                         },
                     },
                     {
@@ -1604,11 +1604,11 @@ def test_collect_dashboard_export_includes_recent_unlabeled_indexeddb_chat_absen
             if '"chat"' in script:
                 return [
                     {
-                        "key": "130266408456240@lid",
+                        "key": "333333333333333@lid",
                         "value": {
-                            "id": "130266408456240@lid",
-                            "historyChatId": "19176706824@c.us",
-                            "accountLid": "130266408456240@lid",
+                            "id": "333333333333333@lid",
+                            "historyChatId": "15555550104@c.us",
+                            "accountLid": "333333333333333@lid",
                             "t": 1781987078,
                             "unreadCount": 0,
                         },
@@ -1626,12 +1626,12 @@ def test_collect_dashboard_export_includes_recent_unlabeled_indexeddb_chat_absen
             if '"message"' in script:
                 return [
                     {
-                        "key": "false_130266408456240@lid_3A10D07C58D1942520BA",
+                        "key": "false_333333333333333@lid_3A10EXAMPLEMESSAGE",
                         "value": {
-                            "id": "false_130266408456240@lid_3A10D07C58D1942520BA",
+                            "id": "false_333333333333333@lid_3A10EXAMPLEMESSAGE",
                             "t": 1781987078,
                             "type": "chat",
-                            "from": "130266408456240@lid",
+                            "from": "333333333333333@lid",
                             "body": "Recent IndexedDB text",
                         },
                     },
@@ -1644,15 +1644,15 @@ def test_collect_dashboard_export_includes_recent_unlabeled_indexeddb_chat_absen
         max_all_chats=5,
     )
 
-    tamar = next(thread for thread in payload["threads"] if thread["chatTitle"] == "Tamar Simon")
-    assert tamar["threadKey"] == "130266408456240@lid"
-    assert tamar["labelsRaw"] == ["Unlabeled"]
-    assert tamar["sourceView"] == "indexeddb-recent"
-    assert tamar["lastMessageAt"] == "2026-06-20T20:24:38+00:00"
-    assert tamar["lastMessageDirection"] == "inbound"
-    assert tamar["lastMessageSender"] == "130266408456240@lid"
-    assert tamar["lastMessageText"] == "Recent IndexedDB text"
-    assert len(tamar["recentMessages"]) == 1
+    recent_contact = next(thread for thread in payload["threads"] if thread["chatTitle"] == "Recent Contact")
+    assert recent_contact["threadKey"] == "333333333333333@lid"
+    assert recent_contact["labelsRaw"] == ["Unlabeled"]
+    assert recent_contact["sourceView"] == "indexeddb-recent"
+    assert recent_contact["lastMessageAt"] == "2026-06-20T20:24:38+00:00"
+    assert recent_contact["lastMessageDirection"] == "inbound"
+    assert recent_contact["lastMessageSender"] == "333333333333333@lid"
+    assert recent_contact["lastMessageText"] == "Recent IndexedDB text"
+    assert len(recent_contact["recentMessages"]) == 1
 
 
 def test_collect_dashboard_export_limits_indexeddb_fallback_to_same_top_recency_horizon() -> None:
@@ -1685,18 +1685,18 @@ def test_collect_dashboard_export_limits_indexeddb_fallback_to_same_top_recency_
                         "value": {"id": "false_group-a@g.us_m1", "t": 1782049000, "type": "chat", "from": "group-a@g.us", "body": "Group text"},
                     },
                     {
-                        "key": "false_130266408456240@lid_m1",
-                        "value": {"id": "false_130266408456240@lid_m1", "t": 1781987078, "type": "chat", "from": "130266408456240@lid", "body": "Direct text"},
+                        "key": "false_333333333333333@lid_m1",
+                        "value": {"id": "false_333333333333333@lid_m1", "t": 1781987078, "type": "chat", "from": "333333333333333@lid", "body": "Direct text"},
                     },
                 ]
             if '"contact"' in script:
                 return [
                     {
-                        "key": "130266408456240@lid",
+                        "key": "333333333333333@lid",
                         "value": {
-                            "id": "130266408456240@lid",
-                            "name": "Tamar Simon",
-                            "phoneNumber": "19176706824@c.us",
+                            "id": "333333333333333@lid",
+                            "name": "Recent Contact",
+                            "phoneNumber": "15555550104@c.us",
                         },
                     },
                 ]
@@ -1716,11 +1716,11 @@ def test_collect_dashboard_export_limits_indexeddb_fallback_to_same_top_recency_
                         "value": {"id": "group-b@g.us", "t": 1782048000, "unreadCount": 0},
                     },
                     {
-                        "key": "130266408456240@lid",
+                        "key": "333333333333333@lid",
                         "value": {
-                            "id": "130266408456240@lid",
-                            "historyChatId": "19176706824@c.us",
-                            "accountLid": "130266408456240@lid",
+                            "id": "333333333333333@lid",
+                            "historyChatId": "15555550104@c.us",
+                            "accountLid": "333333333333333@lid",
                             "t": 1781987078,
                             "unreadCount": 0,
                         },
@@ -2025,9 +2025,9 @@ def test_collect_dashboard_export_resolves_unlabeled_threads_via_chat_aliases_an
                             "unread_flag": False,
                         },
                         {
-                            "chat_name": "+972 58-699-1569",
+                            "chat_name": "+1 555-555-0105",
                             "timestamp_label": "Today",
-                            "preview": "An expensive strawberry cheesecake has been delivered to your front door.",
+                            "preview": "An example parcel has been delivered to your front door.",
                             "unread_count": 0,
                             "unread_flag": False,
                         },
@@ -2055,18 +2055,18 @@ def test_collect_dashboard_export_resolves_unlabeled_threads_via_chat_aliases_an
             if '"contact"' in script:
                 return [
                     {
-                        "key": "16103895325@s.whatsapp.net",
+                        "key": "15555550102@s.whatsapp.net",
                         "value": {
-                            "id": "16103895325@s.whatsapp.net",
+                            "id": "15555550102@s.whatsapp.net",
                             "name": "Example Lead",
-                            "phoneNumber": "16103895325@c.us",
+                            "phoneNumber": "15555550102@c.us",
                         },
                     },
                     {
-                        "key": "972586991569@s.whatsapp.net",
+                        "key": "15555550105@s.whatsapp.net",
                         "value": {
-                            "id": "972586991569@s.whatsapp.net",
-                            "phoneNumber": "972586991569@c.us",
+                            "id": "15555550105@s.whatsapp.net",
+                            "phoneNumber": "15555550105@c.us",
                         },
                     },
                 ]
@@ -2075,10 +2075,10 @@ def test_collect_dashboard_export_resolves_unlabeled_threads_via_chat_aliases_an
             if '"chat"' in script:
                 return [
                     {
-                        "key": "245530529685647@lid",
+                        "key": "222222222222222@lid",
                         "value": {
-                            "id": "245530529685647@lid",
-                            "historyChatId": "16103895325@c.us",
+                            "id": "222222222222222@lid",
+                            "historyChatId": "15555550102@c.us",
                             "t": 1776400000,
                             "unreadCount": 0,
                         },
@@ -2087,7 +2087,7 @@ def test_collect_dashboard_export_resolves_unlabeled_threads_via_chat_aliases_an
                         "key": "555123@lid",
                         "value": {
                             "id": "555123@lid",
-                            "historyChatId": "972586991569@c.us",
+                            "historyChatId": "15555550105@c.us",
                             "t": 1776500000,
                             "unreadCount": 0,
                         },
@@ -2096,20 +2096,20 @@ def test_collect_dashboard_export_resolves_unlabeled_threads_via_chat_aliases_an
             if '"message"' in script:
                 return [
                     {
-                        "key": "false_245530529685647@lid_msg2",
-                        "value": {"id": "false_245530529685647@lid_msg2", "t": 1776400000, "type": "chat", "from": "16103895325@c.us", "body": "Haha i hear you"},
+                        "key": "false_222222222222222@lid_msg2",
+                        "value": {"id": "false_222222222222222@lid_msg2", "t": 1776400000, "type": "chat", "from": "15555550102@c.us", "body": "Haha i hear you"},
                     },
                     {
-                        "key": "true_245530529685647@lid_msg1",
-                        "value": {"id": "true_245530529685647@lid_msg1", "t": 1776399900, "type": "chat", "from": "12122037591@c.us", "body": "Sounds good"},
+                        "key": "true_222222222222222@lid_msg1",
+                        "value": {"id": "true_222222222222222@lid_msg1", "t": 1776399900, "type": "chat", "from": "15555550103@c.us", "body": "Sounds good"},
                     },
                     {
                         "key": "false_555123@lid_msg2",
-                        "value": {"id": "false_555123@lid_msg2", "t": 1776500000, "type": "chat", "from": "972586991569@c.us", "body": "An expensive strawberry cheesecake has been delivered to your front door."},
+                        "value": {"id": "false_555123@lid_msg2", "t": 1776500000, "type": "chat", "from": "15555550105@c.us", "body": "An example parcel has been delivered to your front door."},
                     },
                     {
                         "key": "true_555123@lid_msg1",
-                        "value": {"id": "true_555123@lid_msg1", "t": 1776499900, "type": "chat", "from": "12122037591@c.us", "body": "Thanks!"},
+                        "value": {"id": "true_555123@lid_msg1", "t": 1776499900, "type": "chat", "from": "15555550103@c.us", "body": "Thanks!"},
                     },
                 ]
             raise AssertionError(f"Unexpected async script: {script[:200]}")
@@ -2119,33 +2119,33 @@ def test_collect_dashboard_export_resolves_unlabeled_threads_via_chat_aliases_an
     payload = collector.collect_dashboard_export(account_label="WhatsApp", allow_labels=[])
 
     unlabeled = [thread for thread in payload["threads"] if thread["labelsRaw"] == ["Unlabeled"]]
-    assert [thread["threadKey"] for thread in unlabeled] == ["555123@lid", "245530529685647@lid"]
-    assert [thread["chatTitle"] for thread in unlabeled] == ["+972 58-699-1569", "Example Lead"]
+    assert [thread["threadKey"] for thread in unlabeled] == ["555123@lid", "222222222222222@lid"]
+    assert [thread["chatTitle"] for thread in unlabeled] == ["+1 555-555-0105", "Example Lead"]
     assert [len(thread["recentMessages"]) for thread in unlabeled] == [2, 2]
     assert all(thread["recentMessages"][0]["messageType"] == "chat" for thread in unlabeled)
     assert all(thread["recentMessages"][0]["messageType"] != "visible-preview" for thread in unlabeled)
-    assert unlabeled[0]["lastMessageText"].startswith("An expensive strawberry cheesecake")
+    assert unlabeled[0]["lastMessageText"].startswith("An example parcel")
 
 
 def test_recent_messages_for_thread_excludes_null_text_messages() -> None:
     collector = WhatsAppCollector(session=StubSession())
 
     recent_messages = collector._recent_messages_for_thread(
-        jid="49294027550955@lid",
-        display_name="+972 58-699-1569",
-        phone_or_history_id="972586991569@c.us",
+        jid="444444444444444@lid",
+        display_name="+1 555-555-0105",
+        phone_or_history_id="15555550105@c.us",
         messages=[
-            {"id": "msg1", "t": 1776500000, "type": "e2e_notification", "subtype": "encrypt", "from": "972586991569@c.us", "body": "An expensive strawberry cheesecake has been delivered to your front door."},
-            {"id": "msg2", "t": 1776499999, "type": "notification_template", "subtype": "disappearing_mode_update", "from": "972586991569@c.us"},
-            {"id": "msg3", "t": 1776499998, "type": "notification_template", "subtype": "contact_info_card", "from": "972586991569@c.us"},
-            {"id": "msg4", "t": 1776499997, "type": "chat", "from": "972586991569@c.us"},
+            {"id": "msg1", "t": 1776500000, "type": "e2e_notification", "subtype": "encrypt", "from": "15555550105@c.us", "body": "An example parcel has been delivered to your front door."},
+            {"id": "msg2", "t": 1776499999, "type": "notification_template", "subtype": "disappearing_mode_update", "from": "15555550105@c.us"},
+            {"id": "msg3", "t": 1776499998, "type": "notification_template", "subtype": "contact_info_card", "from": "15555550105@c.us"},
+            {"id": "msg4", "t": 1776499997, "type": "chat", "from": "15555550105@c.us"},
         ],
-        preview="An expensive strawberry cheesecake has been delivered to your front door.",
+        preview="An example parcel has been delivered to your front door.",
         max_messages=15,
     )
 
     assert [message.message_id for message in recent_messages] == ["msg1"]
-    assert [message.text for message in recent_messages] == ["An expensive strawberry cheesecake has been delivered to your front door."]
+    assert [message.text for message in recent_messages] == ["An example parcel has been delivered to your front door."]
 
 
 def test_extract_message_text_ignores_inline_media_payloads() -> None:
@@ -2398,7 +2398,7 @@ def test_latest_thread_summary_prefers_latest_recent_message_over_preview_infere
     thread = IndexedDBThread(
         jid="sam@lid",
         display_name="Sam Wasserman",
-        phone_or_history_id="13106662345@c.us",
+        phone_or_history_id="15555550106@c.us",
         labels=["Follow Up"],
         last_message_timestamp=1776440411,
         unread_count=0,

@@ -274,13 +274,17 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     assert dashboard_source.index("chromeProfile") < dashboard_source.index("files")
     assert "deleteAction" in components_source
     assert "removeLabel" in store_source
-    assert "Messages Skipped: \\(skipped) - click for details" in export_source
-    assert "Source Diagnostics" in export_source
+    assert "Saved export notes:" in export_source
+    assert "Latest attempt:" in export_source
+    assert "Saved export was not replaced." in export_source
+    assert "Collection Status" in export_source
     assert "sourceDiagnostics" in models_source
-    assert "DisclosureGroup" not in export_source
-    assert "warningDetailsExpanded.toggle()" in export_source
-    assert ".frame(maxHeight: 160)" in export_source
-    assert "warningDetailsText(warnings)" in export_source
+    assert "thread.followUpReason" in export_source
+    assert "thread.sourceWarnings" in export_source
+    assert ".frame(maxHeight: report.chats.count > 1 ? 130 : 80)" in export_source
+    assert "export = decoded" in store_source
+    assert "guard !Task.isCancelled else { return }" in store_source
+    assert "store.exportStatusError" in dashboard_source
     assert "Current state" in automation_source
     assert "$store.draftScheduleIntervalMinutes" in automation_source
     assert "$store.draftLaunchMinimizedEnabled" in automation_source

@@ -20,6 +20,7 @@ global.setTimeout = (fn, ms) => { timerCalls++; now += Math.max(ms, timerStep); 
 const load = {contextLoaded: true, noEarlierMsgs: false};
 let model = {id: {_serialized: 'a@lid'}, msgs: {_models: [], msgLoadState: load}};
 let available = true, jid = 'a@lid', progress = false, unresolved = false;
+let chatTitle = 'Example Chat';
 let appendUnresolved = false;
 const unknownContainer = {};
 let socketState, alertText = '', fetches = 0, scrollWrites = 0;
@@ -37,6 +38,7 @@ update();
 global.window = {require: () => ({Socket: {state: socketState}, ChatCollection: {get: () => available ? model : null}})};
 global.document = {
     querySelector(selector) {
+        if (selector.includes('conversation-info-header-chat-title')) return {textContent: chatTitle};
         if (selector === '#main header') return {__reactFiber$x: {memoizedProps: {chat: {id: jid}}}};
         if (selector.includes('conversation-panel-messages')) return panel;
         if (selector.includes('progressbar')) return progress ? {} : null;
@@ -51,12 +53,12 @@ global.document = {
 """
 
 
-def capture(scenario="", *, max_messages=1, expected_jids=None, verified_media=None):
+def capture(scenario="", *, max_messages=1, expected_jids=None, verified_media=None, expected_names=None):
     node = shutil.which("node")
     if not node:
         pytest.skip("Node is required for JavaScript fixtures")
     script = WhatsAppCollector._opened_chat_recent_messages_js(
-        max_messages=max_messages, expected_jids=expected_jids, verified_media=verified_media)
+        max_messages=max_messages, expected_jids=expected_jids, verified_media=verified_media, expected_names=expected_names)
     result = subprocess.run(
         [node, "-e", FIXTURE.replace("SCENARIO", scenario) + script +
          ".then(value => console.log(JSON.stringify({value:JSON.parse(value), elapsed:now, fetches, scrollWrites, timerCalls})))"

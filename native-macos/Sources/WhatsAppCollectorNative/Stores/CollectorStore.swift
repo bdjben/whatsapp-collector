@@ -52,6 +52,19 @@ final class CollectorStore: ObservableObject {
 
     var isBusy: Bool { busyState != .idle }
 
+    var latestExportAttempt: ExportAttempt? { automationRecord.recentAttempts?.last }
+
+    var latestExportFailure: ExportFailureReport? {
+        let report = ExportFailureReport.decode(retained: lastExportFailureDiagnostics)
+        return report?.belongs(to: latestExportAttempt) == true ? report : nil
+    }
+
+    var exportStatusError: String? {
+        guard let attempt = latestExportAttempt,
+              attempt.outcome == .failed || attempt.outcome == .interrupted else { return nil }
+        return latestExportFailure?.summary ?? attempt.failureMessage ?? "The latest export did not finish."
+    }
+
     var displayedDiagnostics: String {
         var sections = ["NATIVE AUTOMATION (current scheduler)\n\(automationDiagnostics.formattedJSON)"]
         if let exportProgress {
@@ -423,26 +436,13 @@ final class CollectorStore: ObservableObject {
         let url = URL(fileURLWithPath: NSString(string: configuration.outputPath).expandingTildeInPath)
         do {
             let data = try Data(contentsOf: url)
-            let decoded = try JSONDecoder().decode(WhatsAppExport.self, from: data)
+            var decoded = try JSONDecoder().decode(WhatsAppExport.self, from: data)
+            decoded.threads = decoded.threads.sortedByRecency()
             exportContentDiagnostics = ExportContentDiagnostics.formattedJSON(from: data)
             let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
             let modifiedAt = (attributes?[.modificationDate] as? Date).map { Self.isoFormatter.string(from: $0) }
             let sizeBytes = (attributes?[.size] as? NSNumber)?.intValue ?? data.count
-            export = WhatsAppExport(
-                source: decoded.source,
-                exportedAt: decoded.exportedAt,
-                account: decoded.account,
-                allowLabels: decoded.allowLabels,
-                excludeLabels: decoded.excludeLabels,
-                maxRecentMessages: decoded.maxRecentMessages,
-                maxAllViewChats: decoded.maxAllViewChats,
-                includeGroups: decoded.includeGroups,
-                attachmentsRoot: decoded.attachmentsRoot,
-                attachmentPolicy: decoded.attachmentPolicy,
-                attachmentSummary: decoded.attachmentSummary,
-                threads: decoded.threads.sortedByRecency(),
-                exportWarnings: decoded.exportWarnings
-            )
+            export = decoded
             exportSummary = ExportSummary(
                 path: url.path,
                 exists: true,
@@ -610,7 +610,10 @@ final class CollectorStore: ObservableObject {
         persistAutomationRecord()
         rebuildScheduleState()
 
-        await closePendingOwnedChromeNow()
+        chromeCleanupTask?.cancel()
+        if canReuseFailedExportBrowser == false {
+            await closePendingOwnedChromeNow()
+        }
         let ownershipURL = pendingChromeOwnershipURL
         defaults.set(ownershipURL.path, forKey: AppPreferences.pendingChromeOwnershipPath)
         let response = await perform(
@@ -991,8 +994,18 @@ final class CollectorStore: ObservableObject {
             if delaySeconds > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
             }
+            guard !Task.isCancelled else { return }
             await self?.closePendingOwnedChromeNow()
         }
+    }
+
+    private var canReuseFailedExportBrowser: Bool {
+        guard let data = try? Data(contentsOf: pendingChromeOwnershipURL),
+              let record = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              record["profileDir"] as? String == configuration.profileDir,
+              record["debugPort"] as? Int == configuration.debugPort,
+              record["targetUrl"] as? String == configuration.targetUrl else { return false }
+        return true
     }
 
     private func closePendingOwnedChromeNow() async {

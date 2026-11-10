@@ -190,6 +190,8 @@ struct WhatsAppExport: Decodable, Sendable {
     var attachmentSummary: ExportAttachmentSummary?
     var threads: [ExportThread]
     var exportWarnings: [String]?
+    var exportDiagnostics: SavedExportDiagnostics?
+    var exportQuality: ExportQualitySummary?
 }
 
 struct ExportAttachmentPolicy: Decodable, Sendable {
@@ -282,6 +284,7 @@ struct SourceDiagnostics: Codable, Sendable {
     var mergedMessageCount: Int?
     var maxMessages: Int?
     var issues: [SourceDiagnosticIssue]?
+    var captureState: CaptureStateSummary?
 }
 
 struct SourceDiagnosticIssue: Codable, Identifiable, Sendable {

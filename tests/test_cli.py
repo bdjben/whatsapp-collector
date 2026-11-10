@@ -25,9 +25,9 @@ class StubCollector:
     def collect_labeled_threads(self, allow_labels=None, exclude_labels=None, max_messages=15):
         return [
             IndexedDBThread(
-                jid="141394635137028@lid",
+                jid="111111111111111@lid",
                 display_name="Example Contact",
-                phone_or_history_id="12017046817@c.us",
+                phone_or_history_id="15555550101@c.us",
                 labels=allow_labels or ["Important"],
                 last_message_timestamp=1776500000,
                 unread_count=0,
@@ -36,7 +36,7 @@ class StubCollector:
                 visible_in_chat_list=True,
                 recent_messages=[
                     RecentMessage(
-                        message_id="false_141394635137028@lid_msg3",
+                        message_id="false_111111111111111@lid_msg3",
                         timestamp=1776500000,
                         iso_timestamp="2026-04-18T08:13:20+00:00",
                         direction="inbound",
@@ -54,7 +54,7 @@ class StubCollector:
         return [
             NormalizedEvent(
                 source="whatsapp_business",
-                external_thread_id="141394635137028@lid",
+                external_thread_id="111111111111111@lid",
                 display_name="Example Contact",
                 labels=allow_labels or ["Important"],
                 summary="Need to push to beginning of may",
@@ -111,10 +111,10 @@ class StubCollector:
             "includeGroups": include_groups,
             "threads": [
                 {
-                    "threadKey": "141394635137028@lid",
+                    "threadKey": "111111111111111@lid",
                     "chatTitle": "Example Contact",
                     "chatType": "direct",
-                    "participants": [{"name": "Example Contact", "phone": "12017046817@c.us"}],
+                    "participants": [{"name": "Example Contact", "phone": "15555550101@c.us"}],
                     "labelsRaw": allow_labels or ["Important"],
                     "labelsNormalized": ["important"],
                     "unread": False,
@@ -126,7 +126,7 @@ class StubCollector:
                     "lastMessageText": "Need to push to beginning of may",
                     "recentMessages": [
                         {
-                            "messageId": "false_141394635137028@lid_msg3",
+                            "messageId": "false_111111111111111@lid_msg3",
                             "timestamp": "2026-04-19T00:00:00+00:00",
                             "direction": "inbound",
                             "sender": "Example Contact",
@@ -138,7 +138,7 @@ class StubCollector:
                     ][:max_messages],
                     "messages": [
                         {
-                            "messageId": "false_141394635137028@lid_msg3",
+                            "messageId": "false_111111111111111@lid_msg3",
                             "timestamp": "2026-04-19T00:00:00+00:00",
                             "direction": "inbound",
                             "sender": "Example Contact",
@@ -206,7 +206,7 @@ def test_cli_labeled_threads_prints_joined_thread_records(capsys, tmp_path: Path
     assert exit_code == 0
     out = capsys.readouterr().out
     assert '"display_name": "Example Contact"' in out
-    assert '"jid": "141394635137028@lid"' in out
+    assert '"jid": "111111111111111@lid"' in out
     assert '"recent_messages"' in out
 
 
@@ -261,7 +261,7 @@ def test_cli_dashboard_export_writes_atomic_contract_file(tmp_path: Path) -> Non
     assert output.exists()
     text = output.read_text()
     assert '"source": "whatsapp"' in text
-    assert '"threadKey": "141394635137028@lid"' in text
+    assert '"threadKey": "111111111111111@lid"' in text
     assert '"excludeLabels": [' in text
     assert '"maxRecentMessages": 5' in text
     assert '"recentMessages"' in text
@@ -291,7 +291,7 @@ def test_cli_dashboard_export_backs_up_existing_output_before_replacing_it(tmp_p
     assert len(backups) == 1
     backup_text = backups[0].read_text()
     assert '"old-thread"' in backup_text
-    assert '"141394635137028@lid"' in output.read_text()
+    assert '"111111111111111@lid"' in output.read_text()
 
 
 def test_cli_dashboard_export_rejects_degraded_payload_without_writing(capsys, tmp_path: Path) -> None:

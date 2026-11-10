@@ -11,7 +11,7 @@ struct DashboardView: View {
 
                 StatusBanner(
                     busyState: store.busyState,
-                    error: store.lastError,
+                    error: store.lastError ?? store.exportStatusError,
                     scheduledRunActive: store.scheduledExportIsRunning,
                     scheduledRunText: store.scheduledExportStatusText
                 )

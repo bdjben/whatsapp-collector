@@ -16,6 +16,15 @@ _WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _DEFAULT_TIMEOUT_SECONDS = 120.0
 
 CHAT_IDENTITY_HELPERS_JS = '''
+    const waCollectorChatTitle = () => {
+        const title = document.querySelector('#main header [data-testid="conversation-info-header-chat-title"]')
+            || document.querySelector('#main header [data-testid="conversation-info-header-chat-title-name"]');
+        if (title) return (title.textContent || '').trim();
+        // Older layouts put the title on a span; never read button tooltips or other headers.
+        const candidates = [...document.querySelectorAll('#main header span[dir="auto"]')];
+        return candidates.filter(el => !el.closest('button, [role="button"], [data-testid="chat-subtitle"]'))
+            .map(el => (el.textContent || '').trim()).find(Boolean) || '';
+    };
     const waCollectorChatId = element => {
         const key = element && Object.keys(element).find(key => key.startsWith('__reactFiber$'));
         let fiber = key ? element[key] : null;
@@ -814,7 +823,7 @@ class ChromeDevToolsBridge:
         remote_value = result.get("result", {})
         point = remote_value.get("value") if isinstance(remote_value, dict) else None
         if point is None:
-            raise RuntimeError("No matching visible WhatsApp target was found. It may be absent, hidden, or not loaded yet.")
+            raise RuntimeError("The requested WhatsApp interface element was not found. It may be offscreen, hidden, or not loaded yet.")
         if not isinstance(point, dict) or not isinstance(point.get("x"), (int, float)) or not isinstance(point.get("y"), (int, float)):
             raise RuntimeError("WhatsApp returned an invalid position for the matching target.")
         return {"x": float(point["x"]), "y": float(point["y"])}

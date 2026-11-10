@@ -56,7 +56,7 @@ Example Lead
 Monday
 Haha i hear you
 7 unread messages
-Tamar Simon
+Recent Contact
 Friday
 Photo
 1
@@ -78,7 +78,7 @@ Photo
             "unread_flag": True,
         },
         {
-            "chat_name": "Tamar Simon",
+            "chat_name": "Recent Contact",
             "timestamp_label": "Friday",
             "preview": "Photo",
             "unread_count": 1,

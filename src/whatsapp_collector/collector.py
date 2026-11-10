@@ -194,6 +194,7 @@ class WhatsAppCollector:
         self._chat_expiry_settings: dict[str, dict[str, Any]] = {}
         self._excluded_thread_keys: set[str] = set()
         self._run_captures: dict[tuple[str, int], dict[str, Any]] | None = None
+        self.capture_checkpoint: list[dict[str, Any]] = []
         self._run_timings: list[dict[str, Any]] | None = None
         self._run_started = 0.0
 
@@ -482,6 +483,7 @@ class WhatsAppCollector:
         download_attachments: bool = True,
         max_total_attachment_bytes: int = DEFAULT_MAX_ATTACHMENT_TOTAL_BYTES,
         previous_export: dict[str, Any] | None = None,
+        resume_captures: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         previous_store = self._attachment_store
         previous_horizon = getattr(self, "_all_view_capture_horizon", DEFAULT_ALL_VIEW_CHAT_LIMIT)
@@ -507,6 +509,10 @@ class WhatsAppCollector:
         )
         self._attachment_store = AttachmentStore(attachments_root, policy=self._attachment_policy) if attachments_root else None
         self._run_captures, self._run_timings, self._run_started = {}, [], time.monotonic()
+        self.capture_checkpoint = []
+        for capture in resume_captures or []:
+            if capture.get("complete") and capture.get("fingerprint") and capture.get("threadKey"):
+                self._run_captures[(capture["threadKey"], max_messages)] = {**deepcopy(capture), "needsRevalidation": True}
         try:
             with self._cached_idb_reads():
                 payload = self._collect_dashboard_export(
@@ -524,6 +530,8 @@ class WhatsAppCollector:
                     {key: value for key, value in capture.items() if key not in {"messages", "state", "error"}}
                     for capture in self._run_captures.values()
                 ]
+                self.capture_checkpoint = [deepcopy(capture) for capture in self._run_captures.values()
+                                           if capture.get("complete") and capture.get("fingerprint")]
                 self._export_progress("complete", 1, 1, "candidate-ready" if payload["exportQuality"]["ok"] else "candidate-rejected")
                 return payload
         finally:
@@ -1675,10 +1683,25 @@ class WhatsAppCollector:
         expected_exportable_timestamp: Any = None,
     ) -> dict[str, Any]:
         key = (thread_key, max_messages)
+        cached_key = key
         cached = (self._run_captures or {}).get(key)
         if cached is None:
-            cached = next((capture for (_, limit), capture in (self._run_captures or {}).items()
-                           if limit == max_messages and capture["state"].get("resolvedThreadKey") == thread_key), None)
+            match = next(((capture_key, capture) for capture_key, capture in (self._run_captures or {}).items()
+                          if capture_key[1] == max_messages and capture["state"].get("resolvedThreadKey") == thread_key), None)
+            if match:
+                cached_key, cached = match
+        if cached is not None:
+            if cached.pop("needsRevalidation", False):
+                jid = cached.get("state", {}).get("resolvedThreadKey")
+                now = datetime.now(timezone.utc).isoformat()
+                fingerprint = self._live_capture_fingerprint(jid)
+                if (not fingerprint or fingerprint != cached.get("fingerprint")
+                        or any(expected_expired(message, now, grace_seconds=0) for message in cached.get("messages", []))
+                        or not self._resumed_media_verified(cached.get("messages", []))):
+                    self._run_captures.pop(cached_key, None)
+                    cached = None
+                else:
+                    cached["resumed"] = True
         if cached is not None:
             cached["reuseCount"] += 1
             self._opened_capture_details[thread_key] = deepcopy(cached["state"])
@@ -1719,12 +1742,52 @@ class WhatsAppCollector:
         result["elapsedSeconds"] = round(time.monotonic() - started, 3)
         result["recovered"] = successful and result["captureAttempts"] > 1
         result["complete"] = complete
+        resumable = complete and result["state"].get("identityVerified") and not result["state"].get("captureIncomplete")
+        result["fingerprint"] = self._live_capture_fingerprint(result["state"].get("resolvedThreadKey")) if resumable else None
         result["usable"] = successful
         result["incomplete"] = not successful and any(a["outcome"] in {"loading", "stale", "coverage-incomplete"} for a in result["attempts"])
         if self._run_captures is not None:
             self._run_captures[key] = deepcopy(result)
         self._export_progress("chat-capture", completed + 1, None, "captured" if successful else "exhausted")
         return result
+
+    @staticmethod
+    def _resumed_media_verified(messages: list[dict[str, Any]]) -> bool:
+        for message in messages:
+            for attachment in message.get("attachments", []):
+                if attachment.get("status") != "downloaded":
+                    return False
+                try:
+                    path = Path(attachment["localPath"])
+                    if (path.stat().st_size != attachment.get("sizeBytes")
+                            or hashlib.sha256(path.read_bytes()).hexdigest() != attachment.get("sha256")):
+                        return False
+                except (OSError, KeyError, TypeError):
+                    return False
+        return True
+
+    def _live_capture_fingerprint(self, jid: str | None) -> str | None:
+        if not jid or not hasattr(self.session, "run_json"):
+            return None
+        try:
+            snapshot = self.session.run_json(f'''(() => {{
+                if (!navigator.onLine) return JSON.stringify(null);
+                {MESSAGE_EXPIRY_HELPERS_JS}
+                const module = window.require('WAWebChatCollection');
+                const chat = (module.ChatCollection || module.Chat).get({json.dumps(jid)});
+                const load = chat?.msgs?.msgLoadState;
+                if (!chat || !load?.contextLoaded || chat.pendingInitialLoading || load.isLoadingEarlierMsgs
+                    || load.isLoadingRecentMsgs || load.isLoadingAroundMsgs || load.isRepairingMsgHistory)
+                    return JSON.stringify(null);
+                const messages = chat.msgs.getModelsArray?.() || chat.msgs.models || chat.msgs._models;
+                if (!Array.isArray(messages)) return JSON.stringify(null);
+                return JSON.stringify({{t:chat.t, expiry:chat.ephemeralDuration,
+                    messages:messages.map(m => [m.id?._serialized || m.id, m.t, m.type, m.subtype,
+                        m.body, m.caption, m.text, m.filehash, m.size, m.lat, m.lng, waCollectorExpiry(m)])}});
+            }})()''')
+            return hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest() if snapshot else None
+        except (RuntimeError, ValueError, TypeError):
+            return None
 
     def _refresh_recent_messages_from_opened_chat(
         self,
@@ -2403,6 +2466,7 @@ class WhatsAppCollector:
                     ) if store else []
                     captured = self.session.run_json(self._opened_chat_recent_messages_js(
                         max_messages=max_messages, verified_media=verified_media, expected_jids=expected_jids,
+                        expected_names=candidates,
                     ))
                     if not self._opened_chat_matches_identity(captured, candidates=candidates, expected_jids=expected_jids):
                         raise RuntimeError(f"Opened chat identity did not match {chat_name!r} (opened title: {captured.get('openedChatTitle')!r})")
@@ -2480,12 +2544,27 @@ class WhatsAppCollector:
 
     @staticmethod
     def _chat_row_click_point_expression(chat_name: str) -> str:
-        return f'''(()=>{{const targetTitle={json.dumps(chat_name)}; const titleEl=[...document.querySelectorAll('#pane-side [data-testid="cell-frame-title"] [title], #pane-side [data-testid^="list-item-"] [title]')].find(el => ((el.getAttribute('title')||'').trim()===targetTitle)); if(!titleEl) return null; const clickable=titleEl.closest('[data-testid^="list-item-"]')||titleEl.closest('[data-testid="cell-frame-container"]')||titleEl.closest('[role="row"]')||titleEl; clickable.scrollIntoView({{block:'center'}}); const rect=clickable.getBoundingClientRect(); return {{x: rect.left + rect.width/2, y: rect.top + rect.height/2}};}})()'''
+        return f'''(() => {{
+            const normalize = text => String(text || '').normalize('NFKC').replace(/[\\u200e\\u200f]/g, '').replace(/\\s+/g, ' ').trim().toLocaleLowerCase();
+            const wanted = normalize({json.dumps(chat_name)});
+            const rows = [...document.querySelectorAll('#pane-side [role="row"], #pane-side [data-testid^="list-item-"]')]
+                .filter(row => row.offsetParent !== null);
+            const matches = rows.filter(row => {{
+                const title = row.querySelector('[data-testid="cell-frame-title"] [title], [title]');
+                return normalize(title?.getAttribute('title') || String(row.innerText || '').split('\\n').find(text => text.trim())) === wanted;
+            }});
+            if (matches.length !== 1) return null;
+            const row = matches[0];
+            row.scrollIntoView({{block:'center'}});
+            const rect = row.getBoundingClientRect();
+            return {{x:rect.left + rect.width / 2, y:rect.top + rect.height / 2}};
+        }})()'''
 
     @staticmethod
     def _opened_chat_recent_messages_js(
         *, max_messages: int, verified_media: list[dict[str, Any]] | None = None,
         expected_jids: list[str] | None = None,
+        expected_names: list[str] | None = None,
     ) -> str:
         return f'''(async () => {{
             {CHAT_IDENTITY_HELPERS_JS}
@@ -2498,14 +2577,21 @@ class WhatsAppCollector:
             const mediaTypes = new Set(['image', 'document', 'video', 'ptt', 'audio', 'sticker']);
             const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
             const expectedJids = new Set({json.dumps(list(expected_jids or []))});
+            const normalizeTitle = value => {{
+                const text = String(value || '').normalize('NFKC').replace(/[\\u200e\\u200f]/g, '').replace(/\\s+/g, ' ').trim().toLocaleLowerCase();
+                return /^[+\\d\\s().-]+$/.test(text) && text.replace(/\\D/g, '').length >= 7 ? text.replace(/\\D/g, '') : text;
+            }};
+            const expectedNames = new Set({json.dumps(list(expected_names or []))}.map(normalizeTitle));
             let identityWaitMs = 0;
-            if (expectedJids.size) {{
+            if (expectedJids.size || expectedNames.size) {{
                 const started = performance.now();
                 const deadline = started + 3000;
                 let matched = false;
                 for (let poll = 0; poll <= 30; poll += 1) {{
                     if (performance.now() >= deadline) break;
-                    if (expectedJids.has(waCollectorChatId(document.querySelector('#main header')))) {{ matched = true; break; }}
+                    const jid = waCollectorChatId(document.querySelector('#main header'));
+                    const ready = expectedJids.size ? expectedJids.has(jid) : Boolean(jid && expectedNames.has(normalizeTitle(waCollectorChatTitle())));
+                    if (ready) {{ matched = true; break; }}
                     if (poll < 30) await wait(Math.min(100, Math.max(0, deadline - performance.now())));
                 }}
                 identityWaitMs = performance.now() - started;
@@ -2513,10 +2599,7 @@ class WhatsAppCollector:
                     throw new Error(`The expected opened chat did not become ready before capture (${{identityWaitMs}} ms).`);
                 }}
             }}
-            const titleCandidates = [...document.querySelectorAll('header [title], #main header [title], #main header span[dir="auto"], #main header div[dir="auto"]')]
-                .map(el => (el.getAttribute('title') || (el.textContent || '').trim()))
-                .filter(Boolean);
-            const openedChatTitle = titleCandidates.find(title => !['Profile details', 'click here for contact info'].includes(title)) || '';
+            const openedChatTitle = waCollectorChatTitle();
             const openedChatJid = waCollectorChatId(document.querySelector('#main header'));
             if (expectedJids.size && !expectedJids.has(openedChatJid)) {{
                 throw new Error('The opened chat changed during message capture.');
