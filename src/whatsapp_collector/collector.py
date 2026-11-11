@@ -25,7 +25,7 @@ from whatsapp_collector.attachment_store import (
 )
 from whatsapp_collector.attachment_retention import AttachmentStorageError
 from whatsapp_collector.chrome_session import ChromeWhatsAppSession
-from whatsapp_collector.devtools_bridge import CHAT_IDENTITY_HELPERS_JS
+from whatsapp_collector.devtools_bridge import CHAT_IDENTITY_HELPERS_JS, MEDIA_MESSAGE_HELPERS_JS
 from whatsapp_collector.export_quality import attach_export_quality
 from whatsapp_collector.message_expiry import (
     MESSAGE_EXPIRY_HELPERS_JS, complete_live_capture, confirmed_empty, epoch, expected_expired, expiry_metadata,
@@ -2588,6 +2588,7 @@ class WhatsAppCollector:
         return f'''(async () => {{
             {CHAT_IDENTITY_HELPERS_JS}
             {MESSAGE_EXPIRY_HELPERS_JS}
+            {MEDIA_MESSAGE_HELPERS_JS}
             const maxMessages = {int(max_messages)};
             const maxInlineBytes = 8000000;
             const verifiedMedia = {json.dumps(verified_media or [])};
@@ -2716,32 +2717,15 @@ class WhatsAppCollector:
                 if (verified) return {{status: 'notDownloaded', skippedReason: 'verified-local-media'}};
                 return src ? fetchAttachment(src) : {{status: 'notDownloaded', skippedReason: 'no-full-media-dom-source'}};
             }};
-            const albumChildren = (msg) => {{
-                if (!msg || String(msg.type || '').toLowerCase() !== 'album') return [];
-                try {{
-                    const collection = msg.collection && typeof msg.collection.byParentMessage === 'function'
-                        ? msg.collection.byParentMessage(msg.id)
-                        : null;
-                    const models = collection && (collection.models || collection._models);
-                    if (!Array.isArray(models)) return [];
-                    const unique = new Map();
-                    for (const child of models) {{
-                        const childId = messageId(child);
-                        const childType = String(child && child.type || '').toLowerCase();
-                        if (childId && mediaTypes.has(childType)) unique.set(childId, child);
-                    }}
-                    return [...unique.values()];
-                }} catch (_) {{
-                    return [];
-                }}
-            }};
+            const mediaChildren = msg => waCollectorMediaChildren(msg,
+                chatModel?.msgs?.getModelsArray?.() || chatModel?.msgs?.models || chatModel?.msgs?._models || []);
             const domAttachments = async (container, msg) => {{
                 const msgType = String(msg && msg.type || '').toLowerCase();
                 const kind = msgType === 'ptt' ? 'audio' : msgType;
                 if (mediaTypes.has(msgType)) {{
                     let nodes = [];
-                    if (['image', 'sticker'].includes(msgType)) nodes = [...container.querySelectorAll('img[src^="blob:"], img[src^="data:"]')];
-                    if (msgType === 'video') nodes = [...container.querySelectorAll('video[src^="blob:"], video[src^="data:"]')];
+                    if (['image', 'sticker'].includes(msgType)) nodes = [...(container?.querySelectorAll('img[src^="blob:"], img[src^="data:"]') || [])];
+                    if (msgType === 'video') nodes = [...(container?.querySelectorAll('video[src^="blob:"], video[src^="data:"]') || [])];
                     const node = nodes[0] || null;
                     const src = node ? (node.getAttribute('src') || '') : '';
                     const fetched = await fetchMessageAttachment(src, msg);
@@ -2763,7 +2747,7 @@ class WhatsAppCollector:
                 if (msgType !== 'album') return [];
                 const nodes = [...container.querySelectorAll('img[src^="blob:"], img[src^="data:"], video[src^="blob:"], video[src^="data:"]')];
                 const items = [];
-                const children = albumChildren(msg);
+                const children = mediaChildren(msg);
                 if (children.length) {{
                     for (let index = 0; index < children.length; index += 1) {{
                         const child = children[index];
@@ -2852,6 +2836,18 @@ class WhatsAppCollector:
                     return null;
                 }});
                 return messages.filter(item => item && item.msg && item.msg.id);
+            }};
+            const captureMessages = () => {{
+                const visible = visibleMessages();
+                const items = new Map(visible.map(item => [messageId(item.msg), item]));
+                for (const item of visible) {{
+                    if (String(item.msg.type || '').toLowerCase() === 'album') continue;
+                    for (const child of mediaChildren(item.msg)) {{
+                        // Keep real media messages separate, without borrowing the parent's image bytes.
+                        if (!items.has(messageId(child))) items.set(messageId(child), {{msg: child, container: null}});
+                    }}
+                }}
+                return [...items.values()];
             }};
             const scroller = () => document.querySelector('#main [data-testid="conversation-panel-messages"]')
                 || [...document.querySelectorAll('#main *')].find(el => el.scrollHeight > el.clientHeight + 40)
@@ -2972,7 +2968,7 @@ class WhatsAppCollector:
             let historyStartReached = false;
             for (let pass = 0; pass < maxPasses; pass += 1) {{
                 if (performance.now() >= captureDeadline) {{ waitTimedOut = true; break; }}
-                for (const item of visibleMessages()) {{
+                for (const item of captureMessages()) {{
                     const key = messageId(item.msg);
                     if (!key) continue;
                     seen.set(key, item);
@@ -3004,7 +3000,7 @@ class WhatsAppCollector:
                 }} else stableTopPasses = 0;
             }}
             // Include content delivered by the final scroll, including a timed-out wait.
-            for (const item of visibleMessages()) seen.set(messageId(item.msg), item);
+            for (const item of captureMessages()) seen.set(messageId(item.msg), item);
             const selected = [...seen.values()]
                 .filter(item => item && item.msg && messageId(item.msg) && hasExportableContent(item.msg))
                 .sort((a, b) => (Number(b.msg.t) || 0) - (Number(a.msg.t) || 0))
@@ -3012,7 +3008,7 @@ class WhatsAppCollector:
             const selectedMediaMessages = new Map();
             for (const item of selected) {{
                 selectedMediaMessages.set(messageId(item.msg), item.msg);
-                for (const child of albumChildren(item.msg)) selectedMediaMessages.set(messageId(child), child);
+                for (const child of mediaChildren(item.msg)) selectedMediaMessages.set(messageId(child), child);
             }}
             window.__waCollectorSelectedMediaMessages = selectedMediaMessages;
             window.__waCollectorSelectedMediaChatJid = openedChatJid;
@@ -3027,7 +3023,7 @@ class WhatsAppCollector:
             for (const message of messages) {{
                 if (message.type !== 'album') continue;
                 const parent = selected.find(item => messageId(item.msg) === message.id)?.msg;
-                const children = new Set(albumChildren(parent).map(messageId));
+                const children = new Set(mediaChildren(parent).map(messageId));
                 for (const attachment of message.attachments || []) {{
                     if (children.has(attachment.sourceMessageId)) capturedIds.add(attachment.sourceMessageId);
                 }}
@@ -3069,6 +3065,15 @@ class WhatsAppCollector:
                 isLoading, historyStartReached, confirmedEmpty, modelExportableCount,
                 captureIncomplete, incompleteReasons, modelCoverageComplete,
                 missingModelMessageCount: missingModelMessages.length, missingRequiredMessageCount: missingRequiredMessages.length,
+                missingRequiredMessages: missingRequiredMessages.map(msg => ({{
+                    messageId: messageId(msg), messageType: msg.type || null,
+                    timestamp: Number(msg.t) > 0 && Number.isFinite(Number(msg.t))
+                        && Number(msg.t) < 8640000000000 ? new Date(Number(msg.t) * 1000).toISOString() : null,
+                    parentMessageId: waCollectorMessageKey(msg.parentMsgKey) || waCollectorMessageKey(msg.parentMsgId) || null,
+                    fileName: typeof msg.fileName === 'string' ? msg.fileName : typeof msg.filename === 'string' ? msg.filename : null,
+                    sizeBytes: Number.isSafeInteger(Number(msg.size || msg.fileSize)) && Number(msg.size || msg.fileSize) > 0
+                        ? Number(msg.size || msg.fileSize) : null
+                }})),
                 unresolvedObservedContainerCount: unresolvedContainers.size,
                 domContainerCount: finalState.domContainerCount, domResolvedCount: finalState.domResolvedCount,
                 domUnresolvedCount: finalState.domUnresolvedCount, domExportableCount: finalState.domExportableCount,

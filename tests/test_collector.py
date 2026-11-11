@@ -2359,7 +2359,7 @@ def test_opened_chat_recent_messages_js_scrolls_to_load_enough_visible_history()
     assert "const messageId = (msg)" in script
     assert "const hasExportableContent = (msg)" in script
     assert "exportableSeen >= maxMessages" in script
-    assert "msg.collection.byParentMessage(msg.id)" in script
+    assert "parent.collection?.byParentMessage?.(parent.id)" in script
     assert "sourceMessageId: messageId(child)" in script
     assert "selectedMediaMessages.set(messageId(child), child)" in script
     assert ".slice(0, maxMessages)" in script

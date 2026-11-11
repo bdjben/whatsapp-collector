@@ -44,6 +44,32 @@ CHAT_IDENTITY_HELPERS_JS = '''
 '''
 
 
+MEDIA_MESSAGE_HELPERS_JS = '''
+    const waCollectorMessageKey = value => typeof value === 'string'
+        ? value : value && (value._serialized || value.$1 || String(value));
+    const waCollectorMediaTypes = new Set(['image', 'document', 'video', 'ptt', 'audio', 'sticker']);
+    const waCollectorMediaChildren = (parent, chatMessages = []) => {
+        const parentId = waCollectorMessageKey(parent?.id);
+        const type = String(parent?.type || '').toLowerCase();
+        if (!parentId || (!waCollectorMediaTypes.has(type) && type !== 'album')) return [];
+        const children = new Map();
+        const add = (child, linkedByCollection) => {
+            const id = waCollectorMessageKey(child?.id);
+            const link = waCollectorMessageKey(child?.parentMsgKey) || waCollectorMessageKey(child?.parentMsgId);
+            if (id && id !== parentId && waCollectorMediaTypes.has(String(child.type || '').toLowerCase())
+                && (link === parentId || (!link && linkedByCollection))) children.set(id, child);
+        };
+        try {
+            const collection = parent.collection?.byParentMessage?.(parent.id);
+            for (const child of collection?.getModelsArray?.() || collection?.models || collection?._models || [])
+                add(child, true);
+        } catch (_) {}
+        for (const child of chatMessages) add(child, false);
+        return [...children.values()];
+    };
+'''
+
+
 class _LocalWebSocket:
     def __init__(self, url: str, *, timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS) -> None:
         self.url = url
@@ -487,10 +513,11 @@ class ChromeDevToolsBridge:
         return dict(self._run_action("read-cached-media", run))
 
     def request_visible_media_download(self, message_id: str, *, file_hash: str | None, force: bool) -> dict[str, Any]:
-        """Ask WhatsApp's live message model to fetch and decrypt one visible media item."""
+        """Fetch and decrypt an exact media message from the identity-verified conversation."""
 
         expression = f'''(async () => {{
             {CHAT_IDENTITY_HELPERS_JS}
+            {MEDIA_MESSAGE_HELPERS_JS}
             const targetId = {json.dumps(message_id)};
             const expectedHash = {json.dumps(file_hash)};
             const messageId = (value) => typeof value === 'string'
@@ -506,9 +533,7 @@ class ChromeDevToolsBridge:
                     while (fiber) {{
                         const candidate = fiber.memoizedProps && fiber.memoizedProps.msg;
                         if (candidate && messageId(candidate.id) === targetId) return candidate;
-                        const children = typeof candidate?.collection?.byParentMessage === 'function'
-                            ? candidate.collection.byParentMessage(candidate.id) : null;
-                        const child = (children?.models || children?._models || []).find(item => messageId(item.id) === targetId);
+                        const child = waCollectorMediaChildren(candidate).find(item => messageId(item.id) === targetId);
                         if (child) return child;
                         fiber = fiber.return;
                     }}
@@ -517,6 +542,17 @@ class ChromeDevToolsBridge:
             }};
             if (!message) message = findVisibleMessage();
             const targetChatJid = targetId.split('_')[1];
+            // A grouped photo may have no separate rendered bubble. Resolve its exact live model.
+            if (!message && openedChatJid && targetChatJid === openedChatJid) {{
+                try {{
+                    const module = window.require('WAWebChatCollection');
+                    const chat = (module.ChatCollection || module.Chat)?.get(openedChatJid);
+                    if (messageId(chat?.id) === openedChatJid) {{
+                        const models = chat.msgs?.getModelsArray?.() || chat.msgs?.models || chat.msgs?._models || [];
+                        message = models.find(item => messageId(item.id) === targetId) || null;
+                    }}
+                }} catch (_) {{}}
+            }}
             // Only scroll for a message in the identity-verified current conversation.
             if (!message && openedChatJid && (targetChatJid === openedChatJid || selectedChatMatches)) {{
                 const panel = document.querySelector('#main [data-testid="conversation-panel-messages"]');

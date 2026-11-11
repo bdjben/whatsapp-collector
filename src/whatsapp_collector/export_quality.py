@@ -18,6 +18,67 @@ class ExportQualityError(RuntimeError):
         super().__init__(quality_error_message(report))
 
 
+def _incomplete_chat_problem(thread: dict[str, Any]) -> dict[str, Any]:
+    diagnostics = _object(thread.get("sourceDiagnostics"))
+    state = _object(diagnostics.get("captureState"))
+    missing_count = _positive_int(state.get("missingRequiredMessageCount"))
+    reasons = set(state.get("incompleteReasons") or [])
+    details: list[str] = []
+    if missing_count:
+        noun = "message" if missing_count == 1 else "messages"
+        details.append(f"{missing_count} recent {noun} could not be captured.")
+    if state.get("activeLoading") or "active-loading" in reasons:
+        details.append("WhatsApp was still loading the conversation.")
+    elif missing_count and state.get("activeLoading") is False and state.get("contextLoaded"):
+        details.append("WhatsApp had finished loading, but the collector could not read all required content.")
+    if any(state.get(flag) for flag in ("waitTimedOut", "timedOut", "timeout")):
+        details.append("The capture deadline was reached before the conversation could be verified.")
+    if "disconnected" in reasons:
+        details.append("WhatsApp lost its connection during capture.")
+    if "unresolved-dom-message-models" in reasons:
+        details.append("Some visible message bubbles could not be read.")
+    if "missing-chat-identity" in reasons:
+        details.append("The opened conversation's identity could not be verified.")
+    if "context-not-loaded" in reasons:
+        details.append("WhatsApp did not finish initializing the conversation.")
+    if "unknown-model-coverage" in reasons:
+        details.append("The collector could not verify WhatsApp's recent-message list.")
+    if not details:
+        details.append("The collector could not verify that all required recent messages were captured.")
+    attempts = _positive_int(diagnostics.get("captureAttempts"))
+    if attempts > 1:
+        details.append(f"This remained incomplete after {attempts} capture attempts.")
+
+    # Retain identifiers and media metadata, never message bodies, for user-facing failures.
+    problems: dict[str, dict[str, Any]] = {}
+    for missing in state.get("missingRequiredMessages") or []:
+        if not isinstance(missing, dict):
+            continue
+        problem = {key: missing.get(key) for key in (
+            "messageId", "messageType", "timestamp", "parentMessageId", "fileName", "sizeBytes")}
+        problem["reason"] = "not-captured"
+        problems[str(problem.get("messageId") or len(problems))] = problem
+    for message in _thread_messages(thread):
+        for attachment in message.get("attachments") or []:
+            if not isinstance(attachment, dict) or attachment.get("status") != "notDownloaded":
+                continue
+            message_id = attachment.get("sourceMessageId") or message.get("messageId")
+            key = str(message_id or attachment.get("attachmentId") or len(problems))
+            problem = problems.setdefault(key, {
+                "messageId": message_id, "messageType": attachment.get("kind") or message.get("messageType"),
+                "timestamp": message.get("timestamp"), "reason": "attachment-not-downloaded",
+            })
+            for name in ("fileName", "sizeBytes"):
+                if not problem.get(name):
+                    problem[name] = attachment.get(name)
+            problem["downloadFailure"] = attachment.get("skippedReason")
+    return {
+        "chatTitle": _thread_title(thread), "threadKey": thread.get("threadKey"),
+        "reason": "live-chat-capture-incomplete", "detail": " ".join(details),
+        "messageProblems": list(problems.values()), "sourceDiagnostics": diagnostics,
+    }
+
+
 def assess_export_quality(payload: dict[str, Any]) -> dict[str, Any]:
     threads = payload.get("threads")
     thread_items = threads if isinstance(threads, list) else []
@@ -168,8 +229,7 @@ def assess_export_quality(payload: dict[str, Any]) -> dict[str, Any]:
                for issue in _object(thread.get("sourceDiagnostics")).get("issues", []) if isinstance(issue, dict))
     ]
     incomplete_live_threads = [
-        {"chatTitle": _thread_title(thread), "threadKey": thread.get("threadKey"),
-         "sourceDiagnostics": _object(thread.get("sourceDiagnostics"))}
+        _incomplete_chat_problem(thread)
         for thread in thread_items if isinstance(thread, dict)
         if _object(thread.get("sourceDiagnostics")).get("captureIncomplete")
         or any(_object(_object(thread.get("sourceDiagnostics")).get("captureState")).get(flag)
@@ -178,7 +238,7 @@ def assess_export_quality(payload: dict[str, Any]) -> dict[str, Any]:
     if incomplete_live_threads:
         issues.append({
             "code": "live-chat-capture-incomplete", "severity": "error", "threads": incomplete_live_threads,
-            "detail": "Live capture remained loading, timed out, or stale after bounded recovery; cached content cannot prove completion.",
+            "detail": "Recent-message capture could not be verified. Each affected chat lists its cause and any missing messages or attachments.",
         })
     identity_conflicts = [finding for finding in _object(payload.get("exportDiagnostics")).get("identityConsolidation", [])
                           if any(conflict.get("code") in {"matching-message-timestamp-conflict", "newer-evidence-outside-complete-capture"}
@@ -425,17 +485,21 @@ def quality_error_message(report: dict[str, Any]) -> str:
         return "WhatsApp export failed quality validation."
     codes = [str(issue.get("code") or "unknown") for issue in issues if isinstance(issue, dict)]
     message = "WhatsApp export failed quality validation: " + ", ".join(codes)
-    failed_names = [
-        str(thread.get("chatTitle") or "Unknown chat")
-        for issue in issues if isinstance(issue, dict)
-        for thread in issue.get("threads", []) if isinstance(thread, dict)
-        if issue.get("code") == "configured-labeled-chat-message-capture-incomplete"
-    ]
-    if failed_names:
-        message += ". Could not capture recent messages from Always Include chats: " + ", ".join(failed_names[:5])
-        if len(failed_names) > 5:
-            message += f" (and {len(failed_names) - 5} more)"
-        message += ". See Diagnostics for details."
+    failed_chats: dict[str, str] = {}
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        for thread in issue.get("threads", []):
+            if not isinstance(thread, dict):
+                continue
+            name = str(thread.get("chatTitle") or thread.get("threadKey") or "Unknown chat")
+            failed_chats[name] = str(thread.get("detail") or issue.get("detail") or "Capture could not be verified.")
+        for name in issue.get("chatTitles", []) or issue.get("threadKeys", []):
+            failed_chats.setdefault(str(name), str(issue.get("detail") or "Capture could not be verified."))
+    if failed_chats:
+        message += ". " + " ".join(f"{name}: {detail}" for name, detail in list(failed_chats.items())[:5])
+        if len(failed_chats) > 5:
+            message += f" Also affected: {len(failed_chats) - 5} more chats."
     return message
 
 

@@ -21,11 +21,68 @@ def test_album_children_count_as_covered_only_when_exported_as_attachments():
 def test_album_does_not_hide_unrepresented_child():
     result = capture('''
         message.type = 'album'; message.body = ''; message.t = 100;
-        const child = {id:'child',type:'image',t:102,parentMsgKey:'m1'};
+        const child = {id:'child',type:'image',t:102};
         model.msgs._models = [message,child]; visible = [container];
     ''')
     assert result['value']['captureState']['missingRequiredMessageCount'] == 1
     assert result['value']['captureState']['captureIncomplete']
+
+
+@pytest.mark.parametrize('parent_type,child_type', [('image', 'image'), ('video', 'image'), ('image', 'video')])
+@pytest.mark.parametrize('relation', ['collection', 'parentMsgKey', 'parentMsgId'])
+def test_grouped_media_preserves_each_real_message_and_never_borrows_parent_bytes(parent_type, child_type, relation):
+    scenario = '''
+        message.type = PARENT_TYPE; message.body = ''; message.caption = 'First caption'; message.size = 42;
+        const child = {id:'child',type:CHILD_TYPE,t:102,caption:'Second caption',size:84};
+        if (RELATION === 'collection') message.collection = {byParentMessage: () => ({models:[child,child]})};
+        else child[RELATION] = {_serialized:'m1'};
+        model.msgs._models = [message,child]; visible = [container]; load.noEarlierMsgs = true;
+        container.querySelectorAll = () => [{getAttribute:()=> 'blob:parent-only'}];
+    '''.replace('PARENT_TYPE', repr(parent_type)).replace('CHILD_TYPE', repr(child_type)).replace('RELATION', repr(relation))
+    value = capture(scenario, max_messages=15)['value']
+    assert [m['id'] for m in value['messages']] == ['child', 'm1']
+    assert [m['caption'] for m in value['messages']] == ['Second caption', 'First caption']
+    assert value['messages'][0]['attachments'][0]['dataUrl'] is None
+    assert value['messages'][0]['attachments'][0]['sizeBytes'] == 84
+    assert not value['captureState']['captureIncomplete']
+
+
+def test_grouped_media_respects_latest_message_limit_and_deduplicates_visible_child():
+    value = capture('''
+        message.type='image'; message.body='';
+        const child={id:'child',type:'image',t:102,parentMsgKey:'m1'};
+        model.msgs._models=[message,child];
+        visible=[container,{__reactFiber$x:{memoizedProps:{msg:child}},querySelectorAll:()=>[]}];
+    ''')['value']
+    assert [m['id'] for m in value['messages']] == ['child']
+    assert not value['captureState']['captureIncomplete']
+
+
+def test_album_children_can_be_resolved_by_explicit_parent_link():
+    value = capture('''
+        message.type='album'; message.body='';
+        const child={id:'child',type:'image',t:102,parentMsgKey:'m1'};
+        model.msgs._models=[message,child]; visible=[container];
+    ''')['value']
+    assert value['messages'][0]['attachments'][0]['sourceMessageId'] == 'child'
+    assert not value['captureState']['captureIncomplete']
+
+
+def test_unrelated_media_is_not_included_and_missing_message_diagnostics_exclude_content():
+    value = capture('''
+        message.type='image'; message.body='';
+        const child={id:'child',type:'image',t:102,parentMsgKey:'different-parent',caption:'PRIVATE CAPTION',size:84};
+        message.collection={byParentMessage:()=>({models:[child]})};
+        model.msgs._models=[message,child]; visible=[container];
+    ''')['value']
+    assert [m['id'] for m in value['messages']] == ['m1']
+    state = value['captureState']
+    assert state['missingRequiredMessageCount'] == 1
+    assert state['missingRequiredMessages'] == [{
+        'messageId':'child', 'messageType':'image', 'timestamp':'1970-01-01T00:01:42.000Z',
+        'parentMessageId':'different-parent', 'fileName':None, 'sizeBytes':84,
+    }]
+    assert 'PRIVATE CAPTION' not in str(state)
 
 
 def test_shared_location_is_real_content_not_its_base64_map_thumbnail():

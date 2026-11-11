@@ -430,7 +430,7 @@ def test_visible_media_download_uses_stable_whatsapp_message_id(fake_devtools_se
     assert any("value._serialized || value.$1 || String(value)" in expression for expression in expressions)
 
 
-@pytest.mark.parametrize("scenario", ["selected", "scrolled", "wrong-chat", "changed-chat", "wrong-hash"])
+@pytest.mark.parametrize("scenario", ["selected", "scrolled", "grouped", "live-model", "wrong-chat", "changed-chat", "wrong-hash"])
 def test_media_recovery_javascript_checks_identity_and_loads_exact_message(scenario):
     node = shutil.which("node")
     if node is None:
@@ -450,7 +450,13 @@ def test_media_recovery_javascript_checks_identity_and_loads_exact_message(scena
                        set scrollTop(value){this.value=value;scrolls++}};
         const window = {__waCollectorSelectedMediaChatJid:'expected@lid',
                         __waCollectorSelectedMediaMessages:new Map([['false_expected@lid_message',message]])};
-        if(scenario==='scrolled') window.__waCollectorSelectedMediaMessages.clear();
+        if(['scrolled','grouped','live-model'].includes(scenario)) window.__waCollectorSelectedMediaMessages.clear();
+        if(scenario==='grouped') {
+            message.type='image'; message.parentMsgKey='false_expected@lid_parent';
+            container.__reactFiber$test.memoizedProps.msg={id:'false_expected@lid_parent',type:'image',
+                collection:{byParentMessage:()=>({models:[message]})}};
+        }
+        if(scenario==='live-model') window.require=()=>({ChatCollection:{get:()=>({id:'expected@lid',msgs:{_models:[message]}})}});
         const document = {
             querySelector(selector){
                 if(selector==='#main header'){
@@ -461,14 +467,14 @@ def test_media_recovery_javascript_checks_identity_and_loads_exact_message(scena
                 if(selector.includes('conversation-panel-messages')) return panel;
                 return null;
             },
-            querySelectorAll(){return scenario==='scrolled'&&scrolls>0?[container]:[]}
+            querySelectorAll(){return (scenario==='scrolled'&&scrolls>0)||scenario==='grouped'?[container]:[]}
         };
         const caches = {open:async()=>({match:async()=>({blob:async()=>({size:12})})})};
     '''.replace("SCENARIO", json.dumps(scenario))
     result = subprocess.run([node, "-e", fixture + script[0] + ".then(result=>console.log(JSON.stringify({result:JSON.parse(result),downloads,scrolls})));"],
                             check=True, capture_output=True, text=True)
     observed = json.loads(result.stdout)
-    if scenario in ("selected", "scrolled"):
+    if scenario in ("selected", "scrolled", "grouped", "live-model"):
         assert observed["result"]["ok"] is True, observed
         assert observed["downloads"] == 1
         assert observed["scrolls"] == (1 if scenario == "scrolled" else 0)

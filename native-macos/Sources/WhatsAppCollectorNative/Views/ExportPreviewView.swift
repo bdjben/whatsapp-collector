@@ -134,15 +134,18 @@ struct ExportPreviewView: View {
                                         .buttonStyle(.link)
                                         .help("Select this chat in the saved export, when available")
                                         Text(chat.explanation).font(.callout)
-                                        if let detail = chat.sourceDiagnostics?.issues?.compactMap(\.detail).first {
+                                        ForEach(chat.affectedMessages) { message in
+                                            Text(message.summary).font(.caption).textSelection(.enabled)
+                                        }
+                                        if !chat.technicalDetails.isEmpty {
                                             DisclosureGroup("Technical details") {
-                                                Text(detail).font(.caption).textSelection(.enabled)
+                                                Text(chat.technicalDetails).font(.caption).textSelection(.enabled)
                                             }
                                         }
                                     }
                                 }
                             }.frame(maxWidth: .infinity, alignment: .leading)
-                        }.frame(maxHeight: report.chats.count > 1 ? 130 : 80)
+                        }.frame(maxHeight: report.chats.count > 1 ? 220 : 160)
                     } else {
                         Text(attempt.failureMessage ?? "The attempt was interrupted.")
                             .font(.caption).textSelection(.enabled)

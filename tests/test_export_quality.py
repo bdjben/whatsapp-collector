@@ -6,6 +6,7 @@ from pathlib import Path
 from whatsapp_collector.export_quality import (
     ExportQualityError,
     assess_export_quality,
+    quality_error_message,
     restore_latest_acceptable_backup,
     validate_export_quality,
 )
@@ -49,6 +50,42 @@ def test_incomplete_capture_failure_retains_state_without_message_bodies() -> No
     issue = next(issue for issue in report["issues"] if issue["code"] == "live-chat-capture-incomplete")
     assert issue["threads"][0]["sourceDiagnostics"] == diagnostics
     assert "PRIVATE MESSAGE CONTENT" not in json.dumps(report)
+
+
+def test_missing_grouped_photo_failure_names_chat_and_attachment_without_claiming_loading() -> None:
+    thread = _thread("Photo Group", [_message("photo2", text_available=False, attachments=[{
+        "kind": "image", "status": "notDownloaded", "sourceMessageId": "photo2", "sizeBytes": 279234,
+        "skippedReason": "download-retry-exhausted", "fileName": "attachment-1.jpg",
+    }])])
+    thread["sourceDiagnostics"] = {"captureIncomplete": True, "captureAttempts": 2, "captureState": {
+        "isLoading": True, "activeLoading": False, "contextLoaded": True,
+        "missingRequiredMessageCount": 1, "incompleteReasons": ["missing-required-model-messages"],
+        "missingRequiredMessages": [{"messageId": "photo2", "messageType": "image",
+            "parentMessageId": "photo1", "timestamp": "2026-11-11T19:35:25Z", "sizeBytes": 279234}],
+    }}
+    report = assess_export_quality({"threads": [thread]})
+    problem = report["issues"][0]["threads"][0]
+    assert "1 recent message" in problem["detail"]
+    assert "had finished loading" in problem["detail"]
+    assert "2 capture attempts" in problem["detail"]
+    assert len(problem["messageProblems"]) == 1
+    assert problem["messageProblems"][0]["parentMessageId"] == "photo1"
+    assert problem["messageProblems"][0]["downloadFailure"] == "download-retry-exhausted"
+    assert "Photo Group:" in quality_error_message(report)
+    assert "still loading" not in quality_error_message(report)
+
+
+def test_loading_timeout_and_disconnect_failures_keep_their_specific_causes() -> None:
+    thread = _thread("Loading Chat", [_message("m1")])
+    thread["sourceDiagnostics"] = {"captureIncomplete": True, "captureState": {
+        "activeLoading": True, "waitTimedOut": True, "incompleteReasons": ["disconnected"],
+    }}
+    report = assess_export_quality({"threads": [thread]})
+    message = quality_error_message(report)
+    assert "Loading Chat:" in message
+    assert "still loading" in message
+    assert "deadline" in message
+    assert "lost its connection" in message
 
 
 def test_export_quality_accepts_readable_all_view_export() -> None:

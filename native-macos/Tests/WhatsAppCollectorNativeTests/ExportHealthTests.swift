@@ -3,6 +3,33 @@ import XCTest
 @testable import WhatsAppCollectorNative
 
 final class ExportHealthTests: XCTestCase {
+    func testMissingPhotoFailureShowsChatTimeSizeAndSpecificCause() throws {
+        let report = try XCTUnwrap(ExportFailureReport.decode(retained: """
+        {"exportQuality":{"issues":[{"code":"live-chat-capture-incomplete","threads":[{
+        "chatTitle":"Photo Group","detail":"1 recent message could not be captured. WhatsApp had finished loading.",
+        "messageProblems":[{"messageId":"photo2","messageType":"image","parentMessageId":"photo1",
+        "timestamp":"2026-11-11T19:35:25Z","sizeBytes":279234,"reason":"not-captured","downloadFailure":"download-retry-exhausted"}]}]}]}}
+        """))
+        let chat = try XCTUnwrap(report.chats.first)
+        XCTAssertTrue(report.summary.contains("Photo Group"))
+        XCTAssertTrue(chat.explanation.contains("had finished loading"))
+        XCTAssertTrue(chat.affectedMessages[0].summary.contains("Photo in a media group"))
+        XCTAssertTrue(chat.affectedMessages[0].summary.contains("279"))
+        XCTAssertTrue(chat.affectedMessages[0].summary.contains("Not captured"))
+        XCTAssertTrue(chat.technicalDetails.contains("photo2"))
+    }
+
+    func testLegacyIncompleteFailureDoesNotMislabelCoverageAsLoading() throws {
+        let report = try XCTUnwrap(ExportFailureReport.decode(retained: """
+        {"exportQuality":{"issues":[{"code":"live-chat-capture-incomplete","threads":[{
+        "chatTitle":"Photo Group","sourceDiagnostics":{"captureState":{"isLoading":true,
+        "activeLoading":false,"contextLoaded":true,"missingRequiredMessageCount":1}}}]}]}}
+        """))
+        XCTAssertTrue(report.summary.contains("1 recent message"))
+        XCTAssertTrue(report.summary.contains("had finished loading"))
+        XCTAssertFalse(report.summary.contains("still loading"))
+    }
+
     func testLoginActionUsesStructuredFailureNotErrorText() throws {
         let login = try XCTUnwrap(ExportFailureReport.decode(retained:
             #"{"error":"Sign in required","loginRequired":true}"#))
