@@ -281,7 +281,7 @@ def test_native_app_source_has_help_cleanup_and_single_window_guardrails() -> No
     assert "sourceDiagnostics" in models_source
     assert "thread.followUpReason" in export_source
     assert "thread.sourceWarnings" in export_source
-    assert ".frame(maxHeight: report.chats.count > 1 ? 130 : 80)" in export_source
+    assert ".frame(maxHeight: report.chats.count > 1 ? 220 : 160)" in export_source
     assert "export = decoded" in store_source
     assert "guard !Task.isCancelled else { return }" in store_source
     assert "store.exportStatusError" in dashboard_source

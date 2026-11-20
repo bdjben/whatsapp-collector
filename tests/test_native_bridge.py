@@ -132,6 +132,24 @@ def test_login_failure_has_structured_user_action(monkeypatch, capsys):
     assert report["errorType"] == "WhatsAppLoginRequiredError"
 
 
+def test_all_view_failure_includes_structured_diagnostics_without_chat_content(monkeypatch, capsys):
+    bridge = _load_native_bridge()
+    state = {"phase": "discovery", "ready": False, "blockedBy": "all-filter-unverified",
+             "allFilter": {"ariaPressed": "false", "ariaSelected": None}, "requestedHorizon": 31,
+             "capturedRows": 0, "elapsedMs": 11200}
+
+    def fail(*args):
+        raise bridge.AllViewSidebarError(state)
+
+    monkeypatch.setattr(bridge, "dispatch", fail)
+    monkeypatch.setattr(bridge.sys, "stdin", io.StringIO("{}"))
+    assert bridge.main(["native_bridge.py", "run-export"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["sidebarCapture"] == state
+    assert "select All" in report["error"]
+    assert "loginRequired" not in report
+
+
 @pytest.mark.parametrize("failure_stage", [None, "preparing-browser", "validating", "writing"])
 def test_native_progress_phases_surround_operations_and_only_complete_after_commit(
     tmp_path: Path, monkeypatch, capsys, failure_stage: str | None,

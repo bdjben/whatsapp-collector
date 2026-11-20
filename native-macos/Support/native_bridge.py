@@ -30,6 +30,7 @@ _bootstrap_paths()
 
 from whatsapp_collector.chrome_session import ChromeTarget, ChromeWhatsAppSession  # noqa: E402
 from whatsapp_collector.collector import (  # noqa: E402
+    AllViewSidebarError,
     DEFAULT_ALL_VIEW_CHAT_LIMIT,
     GROUP_INCLUDE_STANDARD,
     MAX_MESSAGE_LOOKBACK_HARD_LIMIT,
@@ -514,6 +515,8 @@ def main(argv: list[str]) -> int:
         }
         if isinstance(exc, AttachmentStorageError):
             error_payload["storageProblem"] = exc.storage_diagnostics
+        if isinstance(exc, AllViewSidebarError):
+            error_payload["sidebarCapture"] = exc.diagnostics
         if isinstance(exc, WhatsAppLoginRequiredError):
             error_payload["loginRequired"] = True
         if isinstance(exc, ExportQualityError):

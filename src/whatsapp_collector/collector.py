@@ -43,11 +43,27 @@ from whatsapp_collector.parsing import parse_chat_list, parse_labels
 
 PAGE_META_JS = 'JSON.stringify(Object.assign({PAGE_META:true},{title:document.title,url:location.href}))'
 LABELS_BODY_JS = '''JSON.stringify({LABELS_BODY:true,body:(()=>{const isLabels=(el)=>{const aria=(el.getAttribute('aria-label')||'').trim();const text=(el.innerText||'').trim();return ['Labels','Lists'].includes(aria)||['Labels','Lists'].some(name=>text.startsWith(name));};const close=[...document.querySelectorAll('button,[role="button"]')].find(el=>el.getAttribute('aria-label')==='Close');if(close){close.click();}const directLabels=document.getElementById("labels-filter")||document.querySelector('[data-testid="biz-tools-labels"]')||[...document.querySelectorAll('button,[role="button"],a')].find(isLabels);if(directLabels){directLabels.click();return document.body.innerText;}const menu=[...document.querySelectorAll('button,[role="button"]')].find(el=>el.getAttribute('aria-label')==='Menu');if(menu){menu.click();const menuLabels=[...document.querySelectorAll('button,[role="button"],a')].find(isLabels);if(menuLabels){menuLabels.click();return document.body.innerText;}}const tools=[...document.querySelectorAll('button,[role="button"]')].find(el=>el.getAttribute('aria-label')==='Tools');if(tools){tools.click();const toolLabels=document.querySelector('[data-testid="biz-tools-labels"]')||[...document.querySelectorAll('button,[role="button"],a')].find(isLabels);if(toolLabels){toolLabels.click();}}return document.body.innerText;})()})'''
-CHAT_LIST_RESET_JS = r'''(async () => {
+SIDEBAR_FILTER_HELPERS_JS = '''
+    const findAll = () => document.getElementById("all-filter") ||
+        [...document.querySelectorAll('#side [role="tab"], #side [role="button"], #side button')]
+            .find(el => (el.innerText || el.textContent || '').trim() === 'All');
+    const selection = el => {
+        const read = key => {
+            const value = el?.getAttribute(key);
+            return value === 'true' || value === 'false' ? value : null;
+        };
+        const ariaPressed = read('aria-pressed'), ariaSelected = read('aria-selected');
+        const values = [ariaPressed, ariaSelected];
+        const conflicting = values.includes('true') && values.includes('false');
+        return {ariaPressed, ariaSelected, selected: values.includes('true') && !conflicting, conflicting};
+    };
+'''
+CHAT_LIST_RESET_JS = '(async () => {\n' + SIDEBAR_FILTER_HELPERS_JS + r'''
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     const controls = () => [...document.querySelectorAll('button,[role="button"],a')];
     const chats = controls().find(el => el.getAttribute('aria-label') === 'Chats');
-    const clickedChats = Boolean(chats && chats.getAttribute('aria-pressed') !== 'true');
+    const chatsSelection = selection(chats);
+    const clickedChats = Boolean(chats && !chatsSelection.selected && !chatsSelection.conflicting);
     if (clickedChats) { chats.click(); await sleep(350); }
     for (let i = 0; i < 3; i++) {
         const close = [...document.querySelectorAll('button,[role="button"]')]
@@ -56,20 +72,20 @@ CHAT_LIST_RESET_JS = r'''(async () => {
         close.click();
         await sleep(250);
     }
-    const all = document.getElementById('all-filter') || controls().find(el => (el.innerText || '').trim() === 'All');
-    if (all && all.getAttribute('aria-selected') !== 'true') { all.click(); await sleep(250); }
+    const all = findAll();
+    const allSelection = selection(all);
+    if (all && !allSelection.selected && !allSelection.conflicting) { all.click(); await sleep(250); }
     const pane = document.querySelector('#pane-side');
     if (pane) { pane.scrollTop = 0; pane.dispatchEvent(new Event('scroll', {bubbles: true})); }
     return JSON.stringify({CHAT_LIST_RESET: true, ok: true, clickedChats});
 })()'''
-CHAT_LIST_BODY_JS = r'''(async () => {
+CHAT_LIST_BODY_JS = '(async () => {\n' + SIDEBAR_FILTER_HELPERS_JS + r'''
     const requestedHorizon = 15;
     const deadlineMs = Math.min(120000, 8000 + Math.max(0, requestedHorizon - 15) * 200);
     const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
     const clean = value => String(value || '').replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '').replace(/\u00a0/g, ' ').trim();
     const timestampPattern = /^(Today|Yesterday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|\d{1,2}:\d{2}(?:\s?[AP]M)?|\d{1,2}\/\d{1,2}\/\d{2,4})$/i;
-    const all = document.getElementById("all-filter") || [...document.querySelectorAll('#side [role="tab"], #side button')].find(el => clean(el.innerText) === 'All');
-    if (all && all.getAttribute('aria-selected') !== 'true') all.click();
+    const attemptedFilters = new WeakSet();
     const found = new Map();
     const skippedIndices = new Set();
     const rowIndex = row => {
@@ -82,18 +98,32 @@ CHAT_LIST_BODY_JS = r'''(async () => {
         return match ? Number(match[1]) : null;
     };
     let lastSignature = '', stableSince = performance.now(), lastPane = null, anchored = false;
-    let lastState = {};
+    let lastState = {}, scrollSteps = 0;
     const started = performance.now();
     for (let pass = 0; pass < Math.ceil(deadlineMs / 100) && performance.now() - started < deadlineMs; pass++) {
+        // WhatsApp may replace its filter control and the list during navigation.
+        const all = findAll();
+        const filter = selection(all);
+        if (all && !filter.selected && !filter.conflicting && !attemptedFilters.has(all)) {
+            attemptedFilters.add(all);
+            all.click();
+        }
         const pane = document.querySelector('#pane-side') || document.querySelector('#side [data-testid="chat-list"]');
-        if (!pane) { await wait(100); continue; }
+        const state = {source:'all-view-sidebar', allSelected:filter.selected, allFilterFound:Boolean(all),
+            allFilter:filter, panePresent:Boolean(pane), requestedHorizon, deadlineMs, scrollSteps};
+        if (!pane || !filter.selected) {
+            // Never combine rows captured on different visits to the All view.
+            lastPane = null; found.clear(); skippedIndices.clear(); anchored = false;
+            lastState = {...state, capturedRows:0, blockedBy:!pane ? 'sidebar-unavailable' : 'all-filter-unverified'};
+            await wait(100); continue;
+        }
         if (pane !== lastPane) {
             lastPane = pane; found.clear(); skippedIndices.clear(); anchored = false;
             pane.scrollTop = 0; pane.dispatchEvent(new Event('scroll', {bubbles:true}));
             lastSignature = ''; stableSince = performance.now();
         }
-        const selected = all && all.getAttribute('aria-selected') === 'true';
-        const loading = Boolean(pane.querySelector('[role="progressbar"], [aria-busy="true"], [data-testid*="loading"], [data-testid*="spinner"]'));
+        const loading = pane.getAttribute?.('aria-busy') === 'true' ||
+            Boolean(pane.querySelector('[role="progressbar"], [aria-busy="true"], [data-testid*="loading"], [data-testid*="spinner"]'));
         const candidates = [...pane.querySelectorAll('[role="row"], [data-testid^="list-item-"], [data-testid="cell-frame-container"]')];
         const nodes = candidates.filter(node => !candidates.some(parent => parent !== node && parent.contains(node)));
         const parsed = nodes.map((row, ordinal) => {
@@ -116,16 +146,21 @@ CHAT_LIST_BODY_JS = r'''(async () => {
             return {chat_name:name, timestamp_label:timestamp, preview:preview.replace(/\s+/g,' ').trim(),
                 unread_count:unread, unread_flag:unread > 0, index, position:rowPosition(row), ordinal};
         }).filter(Boolean);
-        const signature = JSON.stringify(parsed);
-        if (signature !== lastSignature || loading || !selected) { lastSignature = signature; stableSince = performance.now(); }
+        // Wait for virtual rows to finish moving, not for previews or unread counts to stop changing.
+        const signature = JSON.stringify(parsed.map(row => [row.chat_name, row.index, row.position, row.ordinal]));
+        if (signature !== lastSignature || loading) { lastSignature = signature; stableSince = performance.now(); }
         const indices = nodes.map(rowIndex).filter(index => index !== null);
         const positions = nodes.map(rowPosition).filter(position => position !== null);
         const topReady = anchored || (pane.scrollTop === 0 && (positions.length ? positions.includes(0) : !indices.length || indices.includes(0)));
         const grid = pane.querySelector('[aria-rowcount]');
-        const rowCount = grid ? Number(grid.getAttribute('aria-rowcount')) : null;
-        lastState = {source:'all-view-sidebar', allSelected:Boolean(selected), loading, rowCount,
-            renderedRows:parsed.length, capturedRows:found.size, requestedHorizon, elapsedMs:performance.now()-started};
-        if (selected && !loading && topReady && performance.now() - stableSince >= 250) {
+        const count = grid?.getAttribute('aria-rowcount');
+        const rowCount = /^\d+$/.test(count || '') ? Number(count) : null;
+        const layoutReady = performance.now() - stableSince >= 250;
+        lastState = {...state, loading, rowCount, renderedRows:parsed.length, renderedSlots:nodes.length,
+            capturedRows:found.size, topAnchored:topReady, scrollTop:pane.scrollTop,
+            blockedBy:loading ? 'sidebar-loading' : !topReady ? 'sidebar-top-unverified' :
+                !layoutReady ? 'sidebar-rows-changing' : 'sidebar-coverage-incomplete'};
+        if (!loading && topReady && layoutReady) {
             anchored = true;
             for (const node of nodes) {
                 const index = rowIndex(node);
@@ -141,20 +176,32 @@ CHAT_LIST_BODY_JS = r'''(async () => {
             const lastIndex = ordered[Math.min(requestedHorizon, ordered.length)-1]?.index;
             const contiguous = !indexed || (lastIndex !== undefined && Array.from({length:lastIndex+1},(_,i) => found.has(`index:${i}`) || skippedIndices.has(i)).every(Boolean));
             const horizonReady = found.size >= requestedHorizon && contiguous;
-            const complete = horizonReady || (rowCount !== null && rowCount >= 0 && found.size + skippedIndices.size >= rowCount) || (rowCount === null && atEnd && found.size > 0 && contiguous);
-            if (complete) {
+            const endVerified = (rowCount === 0 && nodes.length === 0) ||
+                (rowCount !== null && rowCount > 0 && found.size + skippedIndices.size >= rowCount && (found.size === 0 || contiguous)) ||
+                (rowCount === null && atEnd && found.size > 0 && contiguous);
+            if (horizonReady || endVerified) {
                 const rows = ordered.slice(0,requestedHorizon).map(({index,position,ordinal,...row}) => row);
-                return JSON.stringify({CHAT_LIST_BODY:true, rows, bodyScope:'sidebar', captureState:{...lastState, capturedRows:rows.length, ready:true}});
+                const {blockedBy, ...verified} = lastState;
+                return JSON.stringify({CHAT_LIST_BODY:true, rows, bodyScope:'sidebar', captureState:{...verified,
+                    capturedRows:rows.length, elapsedMs:performance.now()-started, ready:true,
+                    readyReason:horizonReady ? 'requested-horizon' : 'verified-end'}});
             }
-            if (parsed.length) {
+            lastState.capturedRows = found.size;
+            if (parsed.length && !atEnd) {
+                const previousTop = pane.scrollTop;
                 pane.scrollTop += Math.max(100, pane.clientHeight * 0.75);
-                pane.dispatchEvent(new Event('scroll', {bubbles:true}));
-                lastSignature = ''; stableSince = performance.now();
+                if (pane.scrollTop !== previousTop) {
+                    pane.dispatchEvent(new Event('scroll', {bubbles:true}));
+                    scrollSteps++;
+                    lastSignature = ''; stableSince = performance.now();
+                }
             }
         }
         await wait(100);
     }
-    return JSON.stringify({CHAT_LIST_BODY:true, rows:[], bodyScope:'sidebar', captureState:{...lastState, ready:false}, error:'All-view sidebar did not settle before the capture deadline'});
+    return JSON.stringify({CHAT_LIST_BODY:true, rows:[], bodyScope:'sidebar',
+        captureState:{...lastState, scrollSteps, elapsedMs:performance.now()-started, ready:false},
+        error:lastState.blockedBy || 'sidebar-coverage-incomplete'});
 })()'''
 MODEL_STORAGE_STORES_JS = '''window.__hermes_async_result = null;(function(){const req=indexedDB.open("model-storage");req.onerror=()=>{window.__hermes_async_result=JSON.stringify({error:String(req.error)});};req.onsuccess=()=>{const db=req.result;window.__hermes_async_result=JSON.stringify({stores:Array.from(db.objectStoreNames)});db.close();};})();"started"'''
 
@@ -178,6 +225,22 @@ IDB_OPERATION_ATTEMPTS = 3
 CHAT_CAPTURE_ATTEMPTS = 2
 IDB_MESSAGE_ROWS_PER_DIRECTION_FLOOR = 64
 IDB_MESSAGE_ROWS_PER_DIRECTION_CEILING = 256
+
+
+class AllViewSidebarError(RuntimeError):
+    _MESSAGES = {
+        "sidebar-unavailable": "WhatsApp Web did not display its chat list. Open WhatsApp Web and check that Chats is visible, then retry.",
+        "all-filter-unverified": "Could not verify that WhatsApp Web was showing All chats. Open Chats, select All, then retry.",
+        "sidebar-loading": "WhatsApp Web was still loading its chat list. Wait for the list to finish loading, then retry.",
+        "sidebar-top-unverified": "Could not verify the top of the All chats list. Return to the top of Chats, then retry.",
+        "sidebar-rows-changing": "The order of WhatsApp's chat list did not stabilize. Retry once the chat list finishes updating.",
+        "sidebar-coverage-incomplete": "Could not verify the requested recent chats in the All chats list. Retry after WhatsApp Web finishes updating.",
+    }
+
+    def __init__(self, state: dict[str, Any]) -> None:
+        self.diagnostics = dict(state)
+        reason = self.diagnostics.get("blockedBy")
+        super().__init__(self._MESSAGES.get(reason, self._MESSAGES["sidebar-coverage-incomplete"]))
 
 
 class WhatsAppCollector:
@@ -211,6 +274,9 @@ class WhatsAppCollector:
         self._export_progress(phase, 0, 1, "started")
         try:
             return callback(*args, **kwargs)
+        except AllViewSidebarError as exc:
+            exc.diagnostics.setdefault("phase", phase)
+            raise
         finally:
             if self._run_timings is not None:
                 self._run_timings.append({"phase": phase, "elapsedSeconds": round(time.monotonic() - started, 3)})
@@ -253,7 +319,7 @@ class WhatsAppCollector:
         state = payload.get("captureState")
         self._chat_list_capture_details = dict(state) if isinstance(state, dict) else {}
         if payload.get("error") or isinstance(state, dict) and state.get("ready") is not True:
-            raise RuntimeError(str(payload.get("error") or "All-view sidebar capture is incomplete"))
+            raise AllViewSidebarError(self._chat_list_capture_details)
         structured_rows = payload.get("rows") if isinstance(payload, dict) else None
         if isinstance(structured_rows, list) and structured_rows:
             rows: list[ChatRow] = []
