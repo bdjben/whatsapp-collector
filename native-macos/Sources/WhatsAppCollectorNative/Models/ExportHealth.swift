@@ -33,6 +33,10 @@ struct ExportChatProblem: Decodable, Identifiable, Sendable {
     var sourceDiagnostics: SourceDiagnostics?
     var detail: String?
     var messageProblems: [ExportMessageProblem]?
+    var previousMessageCount: Int?
+    var currentMessageCount: Int?
+    var unexplainedMissingMessageCount: Int?
+    var missingMessages: [ExportMessageProblem]?
     var id: String { threadKey ?? chatTitle ?? "unknown" }
     var title: String { chatTitle ?? threadKey ?? "Unknown chat" }
 
@@ -40,6 +44,15 @@ struct ExportChatProblem: Decodable, Identifiable, Sendable {
         if let detail, !detail.isEmpty { return detail }
         if let explanation = sourceDiagnostics?.captureState?.failureExplanation { return explanation }
         switch reason {
+        case "unverified-history-regression":
+            var parts: [String] = []
+            if let currentMessageCount, let previousMessageCount {
+                parts.append("This attempt captured \(currentMessageCount) recent \(currentMessageCount == 1 ? "message" : "messages"); the previous export had \(previousMessageCount).")
+            }
+            if let count = unexplainedMissingMessageCount, count > 0 {
+                parts.append("\(count) previously exported \(count == 1 ? "message" : "messages") could not be verified.")
+            }
+            return parts.isEmpty ? "The collector could not verify why recent messages disappeared from this capture." : parts.joined(separator: " ")
         case "locked-chat": return "Locked in WhatsApp; not collected."
         case "chat-open-failed": return "Could not open and verify this conversation."
         case "attachment-storage-problem": return "An attachment storage problem stopped the attempted export."
@@ -48,7 +61,8 @@ struct ExportChatProblem: Decodable, Identifiable, Sendable {
     }
 
     var affectedMessages: [ExportMessageProblem] {
-        messageProblems ?? sourceDiagnostics?.captureState?.missingRequiredMessages ?? []
+        messageProblems ?? sourceDiagnostics?.captureState?.missingRequiredMessages
+            ?? missingMessages?.filter { $0.reason == "unexplained" } ?? []
     }
 
     var technicalDetails: String {

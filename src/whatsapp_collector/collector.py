@@ -250,6 +250,7 @@ class WhatsAppCollector:
         self._idb_key_cache: dict[str, dict[str, dict[str, Any] | None]] | None = None
         self._idb_message_rows_by_jid: dict[str, list[dict[str, Any]]] | None = None
         self._idb_queried_message_jids: set[str] | None = None
+        self._indexed_text_hints: dict[str, list[dict[str, Any]]] = {}
         self._attachment_store: AttachmentStore | None = None
         self._attachment_policy = AttachmentPolicy()
         self._previous_threads: dict[str, dict[str, Any]] = {}
@@ -864,10 +865,12 @@ class WhatsAppCollector:
         previous_key_cache = self._idb_key_cache
         previous_message_cache = self._idb_message_rows_by_jid
         previous_queried_message_jids = self._idb_queried_message_jids
+        previous_text_hints = self._indexed_text_hints
         self._idb_read_cache = {}
         self._idb_key_cache = {}
         self._idb_message_rows_by_jid = {}
         self._idb_queried_message_jids = set()
+        self._indexed_text_hints = {}
         try:
             yield
         finally:
@@ -875,6 +878,7 @@ class WhatsAppCollector:
             self._idb_key_cache = previous_key_cache
             self._idb_message_rows_by_jid = previous_message_cache
             self._idb_queried_message_jids = previous_queried_message_jids
+            self._indexed_text_hints = previous_text_hints
 
     def _run_idb_operation(self, script: str, *, operation: str) -> Any:
         return self._timed_export_call("indexeddb", self._run_idb_operation_with_retries, script, operation=operation)
@@ -1010,6 +1014,7 @@ class WhatsAppCollector:
             script = f'''window.__hermes_async_result = null;(function(){{
                 const jids = {jids_json};
                 const perDirectionLimit = {per_direction_limit};
+                const hintLimit = {min(max(1, max_messages), per_direction_limit)};
                 const startedAt = performance.now();
                 const mediaTypes = new Set(["image", "document", "video", "ptt", "audio", "sticker"]);
                 const isPotentiallyExportable = (value) => {{
@@ -1041,6 +1046,7 @@ class WhatsAppCollector:
                         db.close();
                     }};
                     const allRecords = [];
+                    const textLookupHints = [];
                     let scannedRowCount = 0;
                     let eligibleRowCount = 0;
                     let fallbackJidCount = 0;
@@ -1050,6 +1056,7 @@ class WhatsAppCollector:
                         allRecords.sort((left, right) => (Number(right.value && right.value.t) || 0) - (Number(left.value && left.value.t) || 0));
                         window.__hermes_async_result = JSON.stringify({{
                             rows: allRecords,
+                            textLookupHints,
                             diagnostics: {{
                                 store: "message",
                                 queriedJidCount: jids.length,
@@ -1081,6 +1088,7 @@ class WhatsAppCollector:
                         }};
                         const scan = (jid, partition) => {{
                             const rows = [];
+                            const hints = [];
                             let scanned = 0;
                             const lower = mode === "messageRangeIndex"
                                 ? `${{jid}}_${{partition}}_`
@@ -1092,6 +1100,7 @@ class WhatsAppCollector:
                             request.onsuccess = (event) => {{
                                 const cursor = event.target.result;
                                 if (!cursor) {{
+                                    textLookupHints.push(...hints);
                                     finishOne(jid, rows, scanned);
                                     return;
                                 }}
@@ -1104,6 +1113,7 @@ class WhatsAppCollector:
                                     if (mode === "messageRangeIndex") {{
                                         rows.push(candidate);
                                         if (rows.length >= perDirectionLimit) {{
+                                            textLookupHints.push(...hints);
                                             finishOne(jid, rows, scanned);
                                             return;
                                         }}
@@ -1115,6 +1125,15 @@ class WhatsAppCollector:
                                             if ((Number(rows[index].value && rows[index].value.t) || 0) < (Number(rows[oldestIndex].value && rows[oldestIndex].value.t) || 0)) oldestIndex = index;
                                         }}
                                         if ((Number(value.t) || 0) > (Number(rows[oldestIndex].value && rows[oldestIndex].value.t) || 0)) rows[oldestIndex] = candidate;
+                                    }}
+                                }} else if (value?.type === "chat" && typeof cursor.primaryKey === "string"
+                                        && Number.isFinite(value.t) && value.t > 0) {{
+                                    // These rows have an ID and time but no readable body. They are addresses, not content.
+                                    if (hints.length < hintLimit) hints.push({{id: cursor.primaryKey, t: value.t}});
+                                    else if (mode === "primaryKey") {{
+                                        let oldest = 0;
+                                        for (let i = 1; i < hints.length; i++) if (hints[i].t < hints[oldest].t) oldest = i;
+                                        if (value.t > hints[oldest].t) hints[oldest] = {{id: cursor.primaryKey, t: value.t}};
                                     }}
                                 }}
                                 cursor.continue();
@@ -1152,6 +1171,16 @@ class WhatsAppCollector:
             fetched_rows = self._idb_payload_rows(payload, operation=operation)
             fetched_by_jid: dict[str, list[dict[str, Any]]] = defaultdict(list)
             requested = set(missing_jids)
+            hints_by_jid: dict[str, list[dict[str, Any]]] = defaultdict(list)
+            text_hints = payload.get("textLookupHints", []) if isinstance(payload, dict) else []
+            for hint in text_hints:
+                if not isinstance(hint, dict):
+                    continue
+                jid = self._message_jid_from_storage_key(hint.get("id"))
+                if jid in requested and epoch(hint.get("t")) is not None:
+                    hints_by_jid[jid].append({"id": hint["id"], "t": hint["t"]})
+            for jid in missing_jids:
+                self._indexed_text_hints[jid] = hints_by_jid.get(jid, [])
             for row in fetched_rows:
                 storage_jid = self._message_jid_from_storage_key(row.get("key"))
                 if storage_jid in requested:
@@ -1172,6 +1201,15 @@ class WhatsAppCollector:
                 if isinstance(key, str):
                     deduplicated[key] = row
         return list(deduplicated.values())
+
+    def _has_indexed_text_gap(self, jid: str | None, messages: list[dict[str, Any]], limit: int) -> bool:
+        hints = self._indexed_text_hints.get(jid or "")
+        if not hints:
+            return False
+        present = {m.get("messageId") for m in messages}
+        timestamps = sorted((epoch(m.get("timestamp")) or 0 for m in messages), reverse=True)
+        floor = timestamps[limit - 1] if 0 < limit <= len(timestamps) else 0
+        return any(h["id"] not in present and (epoch(h["t"]) or 0) >= floor for h in hints)
 
     @staticmethod
     def _normalized_chat_identity(value: str) -> str:
@@ -1781,6 +1819,7 @@ class WhatsAppCollector:
                 now = datetime.now(timezone.utc).isoformat()
                 fingerprint = self._live_capture_fingerprint(jid)
                 if (not fingerprint or fingerprint != cached.get("fingerprint")
+                        or self._has_indexed_text_gap(jid, cached.get("messages", []), max_messages)
                         or any(expected_expired(message, now, grace_seconds=0) for message in cached.get("messages", []))
                         or not self._resumed_media_verified(cached.get("messages", []))):
                     self._run_captures.pop(cached_key, None)
@@ -1827,7 +1866,9 @@ class WhatsAppCollector:
         result["elapsedSeconds"] = round(time.monotonic() - started, 3)
         result["recovered"] = successful and result["captureAttempts"] > 1
         result["complete"] = complete
-        resumable = complete and result["state"].get("identityVerified") and not result["state"].get("captureIncomplete")
+        # The panel fingerprint cannot revalidate messages read outside the panel.
+        resumable = (complete and result["state"].get("identityVerified") and not result["state"].get("captureIncomplete")
+                     and not result["state"].get("indexedTextLookup", {}).get("requested"))
         result["fingerprint"] = self._live_capture_fingerprint(result["state"].get("resolvedThreadKey")) if resumable else None
         result["usable"] = successful
         result["incomplete"] = not successful and any(a["outcome"] in {"loading", "stale", "coverage-incomplete"} for a in result["attempts"])
@@ -1890,7 +1931,8 @@ class WhatsAppCollector:
         previous_messages = self._previous_threads.get(thread_key, {}).get("messages", [])
         previous_latest = self._exported_message_epoch(self._latest_exported_message(previous_messages) or {})
         current_latest = self._exported_message_epoch(self._latest_exported_message(recent_messages) or {})
-        if previous_latest is not None and (current_latest is None or previous_latest > current_latest + 1):
+        if ((previous_latest is not None and (current_latest is None or previous_latest > current_latest + 1))
+                or self._has_indexed_text_gap(thread_key, recent_messages, max_messages)):
             force = True
         if not force and not self._should_refresh_opened_chat_messages(
             recent_messages,
@@ -2552,6 +2594,7 @@ class WhatsAppCollector:
                     captured = self.session.run_json(self._opened_chat_recent_messages_js(
                         max_messages=max_messages, verified_media=verified_media, expected_jids=expected_jids,
                         expected_names=candidates,
+                        indexed_text_hints=[hint for jid in expected_jids for hint in self._indexed_text_hints.get(jid, [])],
                     ))
                     if not self._opened_chat_matches_identity(captured, candidates=candidates, expected_jids=expected_jids):
                         raise RuntimeError(f"Opened chat identity did not match {chat_name!r} (opened title: {captured.get('openedChatTitle')!r})")
@@ -2650,6 +2693,7 @@ class WhatsAppCollector:
         *, max_messages: int, verified_media: list[dict[str, Any]] | None = None,
         expected_jids: list[str] | None = None,
         expected_names: list[str] | None = None,
+        indexed_text_hints: list[dict[str, Any]] | None = None,
     ) -> str:
         return f'''(async () => {{
             {CHAT_IDENTITY_HELPERS_JS}
@@ -2658,6 +2702,7 @@ class WhatsAppCollector:
             const maxMessages = {int(max_messages)};
             const maxInlineBytes = 8000000;
             const verifiedMedia = {json.dumps(verified_media or [])};
+            const indexedTextHints = {json.dumps(indexed_text_hints or [])};
             const maxPasses = Math.max(12, Math.min(160, maxMessages * 4 + 8));
             const captureDeadline = performance.now() + 45000;
             const mediaTypes = new Set(['image', 'document', 'video', 'ptt', 'audio', 'sticker']);
@@ -3067,6 +3112,57 @@ class WhatsAppCollector:
             }}
             // Include content delivered by the final scroll, including a timed-out wait.
             for (const item of captureMessages()) seen.set(messageId(item.msg), item);
+            // A quiet panel can show a full but much older window. Ask the signed-in Web client
+            // for current text by exact ID; neither an index row nor yesterday's export is a message body.
+            const renderedTimes = [...seen.values()].filter(item => hasExportableContent(item.msg))
+                .map(item => Number(item.msg.t) || 0).sort((a,b) => b-a);
+            const renderedFloor = renderedTimes[maxMessages - 1] || 0;
+            const provesEmpty = state => Boolean(openedChatJid && state.contextLoaded && state.connection.connected
+                && !state.isLoading && !waitTimedOut && !observedContent && state.modelExportableCount === 0
+                && state.domModelsResolved && (state.explicitHistoryStart || stableEmptyProof));
+            const verifiedEmptyPanel = indexedTextHints.length && !renderedTimes.length && provesEmpty(sampleState());
+            const pendingText = new Map(indexedTextHints.filter(h => !verifiedEmptyPanel && expectedJids.has(openedChatJid)
+                && typeof h.id === 'string' && h.id.split('_')[1] === openedChatJid
+                && Number.isFinite(h.t) && h.t > 0 && h.t >= renderedFloor
+                && !hasExportableContent(seen.get(h.id)?.msg)).map(h => [h.id, h]));
+            const indexedTextLookup = {{requested: pendingText.size, recovered: 0, withheld: 0, status: 'not-needed'}};
+            if (pendingText.size) {{
+                const state = sampleState();
+                indexedTextLookup.status = 'not-ready';
+                if (state.contextLoaded && state.connection.connected && !state.isLoading && !waitTimedOut) {{
+                    let timer;
+                    try {{
+                        const module = window.require('WAWebMsgCollection');
+                        const collection = module.MsgCollection || module.Msg;
+                        const budget = Math.max(0, Math.min(4000, captureDeadline - performance.now()));
+                        const result = await Promise.race([collection.getMessagesById([...pendingText.keys()]),
+                            new Promise(resolve => {{timer = setTimeout(() => resolve(null), budget);}})]);
+                        if (waCollectorChatId(document.querySelector('#main header')) !== openedChatJid)
+                            throw new Error('Chat changed during indexed text lookup');
+                        indexedTextLookup.status = !result ? 'timed-out' : result.canceled ? 'canceled' : 'returned';
+                        for (const msg of result && !result.canceled && Array.isArray(result.messages) ? result.messages : []) {{
+                            const id = messageId(msg), hint = pendingText.get(id);
+                            if (!hint || Number(msg.t) !== hint.t) continue;
+                            const expiry = waCollectorExpiry(msg);
+                            const kept = expiry.isKept ?? expiry.keepInChat;
+                            const seconds = value => Number(value) > 1e10 ? Number(value) / 1000 : Number(value);
+                            const deadline = seconds(expiry.expiredTimestamp) || (expiry.ephemeralDuration > 0
+                                ? (seconds(expiry.ephemeralStartTimestamp) || Number(msg.t)) + expiry.ephemeralDuration : 0);
+                            if (msg.type === 'revoked' || (kept === false && !expiry.ephemeralOutOfSync && deadline > 0
+                                && deadline <= Date.now() / 1000 && expiry.isEphemeral !== false)) {{
+                                pendingText.delete(id); indexedTextLookup.withheld++; continue;
+                            }}
+                            if (msg.type !== 'chat' || !hasExportableContent(msg) || expiry.ephemeralOutOfSync
+                                || ((expiry.isEphemeral || deadline) && kept !== true && !(deadline > Date.now()/1000))) continue;
+                            seen.set(id, {{msg, container: null}});
+                            pendingText.delete(id);
+                            indexedTextLookup.recovered++;
+                        }}
+                    }} catch (_) {{ indexedTextLookup.status = 'unavailable'; }}
+                    finally {{ clearTimeout(timer); }}
+                    refreshChatModel();
+                }}
+            }}
             const selected = [...seen.values()]
                 .filter(item => item && item.msg && messageId(item.msg) && hasExportableContent(item.msg))
                 .sort((a, b) => (Number(b.msg.t) || 0) - (Number(a.msg.t) || 0))
@@ -3102,7 +3198,14 @@ class WhatsAppCollector:
             const missingRequiredMessages = missingModelMessages.filter(msg => !capped || !messageId(msg)
                 || !Number.isFinite(Number(msg.t)) || Number(msg.t) <= 0 || oldestCapturedTime <= 0
                 || Number(msg.t) > oldestCapturedTime);
+            const missingIndexedText = [...pendingText.values()].filter(h => !capped || h.t > oldestCapturedTime);
+            indexedTextLookup.missingRequired = missingIndexedText.length;
+            const existingMissing = new Set(missingRequiredMessages.map(messageId));
+            for (const h of missingIndexedText) {{
+                if (!existingMissing.has(h.id)) missingRequiredMessages.push({{id: h.id, type: 'chat', t: h.t}});
+            }}
             const incompleteReasons = [];
+            if (missingIndexedText.length) incompleteReasons.push('indexed-text-not-verified');
             if (waitTimedOut) incompleteReasons.push('state-wait-timeout');
             if (finalState.isLoading) incompleteReasons.push('active-loading');
             if (!connection.connected) incompleteReasons.push('disconnected');
@@ -3116,9 +3219,7 @@ class WhatsAppCollector:
             const isLoading = captureIncomplete;
             const stableEmpty = stableEmptyProof && !waitTimedOut && messages.length === 0 && selected.length === 0;
             historyStartReached = !captureIncomplete && (stableEmpty || (explicitHistoryStart && modelCoverageComplete));
-            const confirmedEmpty = messages.length === 0 && selected.length === 0 && modelExportableCount === 0
-                && Boolean(openedChatJid) && (explicitHistoryStart || stableEmpty) && contextLoaded && !isLoading
-                && !observedContent && finalState.domModelsResolved;
+            const confirmedEmpty = messages.length === 0 && selected.length === 0 && !isLoading && provesEmpty(finalState);
             const expirySetting = chatModel && typeof chatModel.ephemeralDuration === 'number' ? {{
                 durationSeconds: chatModel.ephemeralDuration,
                 settingChangedAt: chatModel.ephemeralSettingTimestamp ? new Date(chatModel.ephemeralSettingTimestamp * 1000).toISOString() : null,
@@ -3130,6 +3231,7 @@ class WhatsAppCollector:
                 observedMessageCount: seen.size, exportableMessageCount: selected.length,
                 isLoading, historyStartReached, confirmedEmpty, modelExportableCount,
                 captureIncomplete, incompleteReasons, modelCoverageComplete,
+                indexedTextLookup,
                 missingModelMessageCount: missingModelMessages.length, missingRequiredMessageCount: missingRequiredMessages.length,
                 missingRequiredMessages: missingRequiredMessages.map(msg => ({{
                     messageId: messageId(msg), messageType: msg.type || null,

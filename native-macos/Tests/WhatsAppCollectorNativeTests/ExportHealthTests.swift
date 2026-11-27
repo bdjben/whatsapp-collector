@@ -3,6 +3,18 @@ import XCTest
 @testable import WhatsAppCollectorNative
 
 final class ExportHealthTests: XCTestCase {
+    func testRetainedHistoryGapShowsCountsAndOnlyUnexplainedMissingMessages() throws {
+        let report = try XCTUnwrap(ExportFailureReport.decode(retained: """
+        {"exportQuality":{"issues":[{"code":"unverified-history-regression","threads":[{
+          "chatTitle":"Example","previousMessageCount":15,"currentMessageCount":4,"unexplainedMissingMessageCount":14,
+          "missingMessages":[{"messageId":"missing","reason":"unexplained"},{"messageId":"expired","reason":"expected-expiration"}]}]}]}}
+        """))
+        XCTAssertTrue(report.summary.contains("captured 4 recent messages"))
+        XCTAssertTrue(report.summary.contains("previous export had 15"))
+        XCTAssertTrue(report.summary.contains("14 previously exported messages"))
+        XCTAssertEqual(report.chats.first?.affectedMessages.map(\.messageId), ["missing"])
+    }
+
     func testMissingPhotoFailureShowsChatTimeSizeAndSpecificCause() throws {
         let report = try XCTUnwrap(ExportFailureReport.decode(retained: """
         {"exportQuality":{"issues":[{"code":"live-chat-capture-incomplete","threads":[{

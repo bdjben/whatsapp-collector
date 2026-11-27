@@ -53,19 +53,80 @@ global.document = {
 """
 
 
-def capture(scenario="", *, max_messages=1, expected_jids=None, verified_media=None, expected_names=None):
+def capture(scenario="", *, max_messages=1, expected_jids=None, verified_media=None, expected_names=None,
+            indexed_text_hints=None, setup=""):
     node = shutil.which("node")
     if not node:
         pytest.skip("Node is required for JavaScript fixtures")
     script = WhatsAppCollector._opened_chat_recent_messages_js(
-        max_messages=max_messages, expected_jids=expected_jids, verified_media=verified_media, expected_names=expected_names)
+        max_messages=max_messages, expected_jids=expected_jids, verified_media=verified_media, expected_names=expected_names,
+        indexed_text_hints=indexed_text_hints)
     result = subprocess.run(
-        [node, "-e", FIXTURE.replace("SCENARIO", scenario) + script +
+        [node, "-e", FIXTURE.replace("SCENARIO", scenario) + setup + script +
          ".then(value => console.log(JSON.stringify({value:JSON.parse(value), elapsed:now, fetches, scrollWrites, timerCalls})))"
          ".catch(error => console.log(JSON.stringify({error:String(error), elapsed:now, timerCalls})));"],
         capture_output=True, text=True, check=True, timeout=10,
     )
     return json.loads(result.stdout)
+
+
+def indexed_capture(response, *, extra_hints=(), max_messages=1):
+    hints = [{"id": "false_a@lid_new", "t": 110}, *extra_hints]
+    setup = """
+    const fallback = window.require;
+    window.require = name => name === 'WAWebMsgCollection'
+        ? {MsgCollection: {getMessagesById: ids => {
+            if (ids.some(id => !id.includes('_a@lid_'))) throw Error('wrong chat');
+            return RESPONSE;
+        }}} : fallback(name);
+    """.replace("RESPONSE", response)
+    return capture("model.msgs._models = [message]; visible = [container]; load.noEarlierMsgs = true;",
+                   max_messages=max_messages, expected_jids=["a@lid"], indexed_text_hints=hints, setup=setup)["value"]
+
+
+def test_current_indexed_text_replaces_full_but_older_panel_by_exact_id():
+    result = indexed_capture("""{messages:[
+        {id:{$1:'false_a@lid_new'},t:110,type:'chat',body:'Current edited text'},
+        {id:'false_b@lid_wrong',t:111,type:'chat',body:'Other chat'}]}""",
+        extra_hints=[{"id": "false_b@lid_wrong", "t": 111}])
+    assert [(m["id"], m["body"]) for m in result["messages"]] == [("false_a@lid_new", "Current edited text")]
+    lookup = result["captureState"]["indexedTextLookup"]
+    assert (lookup["requested"], lookup["recovered"], lookup["missingRequired"]) == (1, 1, 0)
+    assert not result["captureState"]["captureIncomplete"]
+
+
+@pytest.mark.parametrize("response", [
+    "{messages:[]}", "{canceled:true,messages:[{id:'false_a@lid_new',t:110,type:'chat',body:'Canceled'}]}",
+    "{messages:[{id:'false_b@lid_new',t:110,type:'chat',body:'Other chat'}]}",
+    "{messages:[{id:'false_a@lid_new',t:99,type:'chat',body:'Wrong timestamp'}]}",
+    "new Promise(() => {})",
+])
+def test_unresolved_current_index_entry_fails_closed_even_with_full_panel(response):
+    result = indexed_capture(response)
+    state = result["captureState"]
+    assert [m["id"] for m in result["messages"]] == ["m1"]
+    assert "indexed-text-not-verified" in state["incompleteReasons"]
+    assert state["missingRequiredMessages"][0]["messageId"] == "false_a@lid_new"
+    assert not state["historyStartReached"] and not state["confirmedEmpty"]
+
+
+@pytest.mark.parametrize("attributes", [
+    "type:'revoked',body:'Obsolete'",
+    "type:'chat',body:'Expired',isEphemeral:true,isKept:false,expiredTimestamp:150",
+])
+def test_verified_revoked_or_expired_index_entry_is_not_resurrected(attributes):
+    result = indexed_capture("{messages:[{id:'false_a@lid_new',t:110," + attributes + "}]}")
+    assert [m["id"] for m in result["messages"]] == ["m1"]
+    assert result["captureState"]["indexedTextLookup"]["withheld"] == 1
+    assert not result["captureState"]["captureIncomplete"]
+
+
+@pytest.mark.parametrize("explicit", [True, False])
+def test_stale_index_address_does_not_override_verified_empty_chat(explicit):
+    result = capture(f"load.noEarlierMsgs = {json.dumps(explicit)};", expected_jids=["a@lid"],
+                     indexed_text_hints=[{"id": "false_a@lid_old", "t": 110}])["value"]
+    assert result["captureState"]["confirmedEmpty"] and result["messages"] == []
+    assert result["captureState"]["indexedTextLookup"]["requested"] == 0
 
 
 def test_stable_empty_has_explicit_alternate_proof_and_downstream_compatibility():

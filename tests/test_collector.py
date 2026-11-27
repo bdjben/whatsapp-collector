@@ -110,7 +110,7 @@ class StubSession:
             ]
         if '"group-metadata"' in script:
             return []
-        if '"chat"' in script:
+        if 'db.transaction("chat",' in script:
             return [
                 {
                     "key": "111111111111111@lid",
@@ -1144,7 +1144,7 @@ def test_collect_labeled_threads_includes_all_labeled_chats_except_archive_label
                 ]
             if '"group-metadata"' in script:
                 return []
-            if '"chat"' in script:
+            if 'db.transaction("chat",' in script:
                 return [
                     {"key": "archive-label-only@lid", "value": {"id": "archive-label-only@lid", "t": 100, "unreadCount": 0}},
                     {"key": "excluded-label-only@lid", "value": {"id": "excluded-label-only@lid", "t": 200, "unreadCount": 0}},
@@ -1511,7 +1511,7 @@ def test_collect_dashboard_export_opens_chat_and_uses_true_message_ids_when_inde
                         },
                     }
                 ]
-            if '"chat"' in script:
+            if 'db.transaction("chat",' in script:
                 return [
                     {
                         "key": "444444444444444@lid",
@@ -1601,7 +1601,7 @@ def test_collect_dashboard_export_includes_recent_unlabeled_indexeddb_chat_absen
                         },
                     },
                 ]
-            if '"chat"' in script:
+            if 'db.transaction("chat",' in script:
                 return [
                     {
                         "key": "333333333333333@lid",
@@ -1705,7 +1705,7 @@ def test_collect_dashboard_export_limits_indexeddb_fallback_to_same_top_recency_
                     {"key": "group-a@g.us", "value": {"id": "group-a@g.us", "subject": "Newer Group A"}},
                     {"key": "group-b@g.us", "value": {"id": "group-b@g.us", "subject": "Newer Group B"}},
                 ]
-            if '"chat"' in script:
+            if 'db.transaction("chat",' in script:
                 return [
                     {
                         "key": "group-a@g.us",
@@ -1777,7 +1777,7 @@ def test_collect_dashboard_export_can_skip_groups_unless_always_include_label_ma
                 ]
             if '"group-metadata"' in script:
                 return [{"key": "group-a@g.us", "value": {"id": "group-a@g.us", "subject": "Massive Group"}}]
-            if '"chat"' in script:
+            if 'db.transaction("chat",' in script:
                 return [
                     {"key": "group-a@g.us", "value": {"id": "group-a@g.us", "t": 1782049000, "unreadCount": 0}},
                     {
@@ -1859,7 +1859,7 @@ def test_collect_dashboard_export_skips_unlabeled_open_chat_runtime_failures_ins
                 return []
             if '"contact"' in script:
                 return [{"key": "15550101@s.whatsapp.net", "value": {"id": "15550101@s.whatsapp.net", "phoneNumber": "15550101@c.us"}}]
-            if '"chat"' in script:
+            if 'db.transaction("chat",' in script:
                 return [{"key": "1234567890@lid", "value": {"id": "1234567890@lid", "historyChatId": "15550101@c.us", "t": 1776693263}}]
             if '"message"' in script:
                 return [{"key": "false_1234567890@lid_3EB0META", "value": {"id": "false_1234567890@lid_3EB0META", "t": 1776693263, "type": "e2e_notification", "subtype": "encrypt", "from": "1234567890@lid"}}]
@@ -1910,7 +1910,7 @@ def test_collect_dashboard_export_uses_all_view_when_label_indexeddb_times_out()
                         },
                     }
                 ]
-            if '"chat"' in script:
+            if 'db.transaction("chat",' in script:
                 return [
                     {
                         "key": "1234567890@lid",
@@ -1994,7 +1994,7 @@ def test_collect_dashboard_export_opens_visible_chat_when_default_lookup_maps_ti
                 return []
             if '"contact"' in script:
                 raise TimeoutError("Timed out waiting for Chrome async result variable __hermes_async_result")
-            if '"chat"' in script or '"message"' in script:
+            if 'db.transaction("chat",' in script or '"message"' in script:
                 return []
             raise AssertionError(f"Unexpected async script: {script[:200]}")
 
@@ -2072,7 +2072,7 @@ def test_collect_dashboard_export_resolves_unlabeled_threads_via_chat_aliases_an
                 ]
             if '"group-metadata"' in script:
                 return []
-            if '"chat"' in script:
+            if 'db.transaction("chat",' in script:
                 return [
                     {
                         "key": "222222222222222@lid",
@@ -2224,7 +2224,7 @@ class IdentityFallbackSession:
     def run_async_json(self, script, **kwargs):
         if '"contact"' in script:
             return {"rows": [{"key": "123@lid", "value": {"id": "123@lid", "displayNameLID": "+44\u2219\u2219\u2219\u221923", "phoneNumber": "447700900123@c.us"}}]}
-        if '"chat"' in script:
+        if 'db.transaction("chat",' in script:
             return {"rows": [{"key": "123@lid", "value": {"id": "123@lid"}}]}
         raise AssertionError("Unexpected database lookup")
 

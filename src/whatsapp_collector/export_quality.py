@@ -29,6 +29,8 @@ def _incomplete_chat_problem(thread: dict[str, Any]) -> dict[str, Any]:
         details.append(f"{missing_count} recent {noun} could not be captured.")
     if state.get("activeLoading") or "active-loading" in reasons:
         details.append("WhatsApp was still loading the conversation.")
+    elif "indexed-text-not-verified" in reasons:
+        details.append("WhatsApp listed recent text messages that were missing from the open chat and did not return their verified content.")
     elif missing_count and state.get("activeLoading") is False and state.get("contextLoaded"):
         details.append("WhatsApp had finished loading, but the collector could not read all required content.")
     if any(state.get(flag) for flag in ("waitTimedOut", "timedOut", "timeout")):
